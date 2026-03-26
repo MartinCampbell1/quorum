@@ -7,7 +7,7 @@ from typing import Annotated
 from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
 
-from orchestrator.modes.base import call_agent, make_message
+from orchestrator.modes.base import call_agent_cfg, make_message, strip_markdown_fence
 
 
 class TournamentState(TypedDict):
@@ -27,7 +27,7 @@ def all_compete(state: TournamentState) -> dict:
     submissions = []
     messages = []
     for agent in competitors:
-        response = call_agent(agent["provider"], f"Solve this task. Give your best answer.\n\n{state['task']}", agent.get("system_prompt", ""))
+        response = call_agent_cfg(agent, f"Solve this task. Give your best answer.\n\n{state['task']}")
         sub = {"agent_id": agent["role"], "provider": agent["provider"], "solution": response}
         submissions.append(sub)
         messages.append(make_message(agent["role"], response, "submission"))
@@ -61,9 +61,9 @@ def judge_matches(state: TournamentState) -> dict:
             f"Which solution is better? Respond with JSON:\n"
             f'{{\"winner\": \"A\" or \"B\", \"reasoning\": \"why\"}}\nReturn ONLY valid JSON.'
         )
-        response = call_agent(judge["provider"], prompt, judge.get("system_prompt", ""))
+        response = call_agent_cfg(judge, prompt)
         try:
-            verdict = json.loads(response.strip().strip("```json").strip("```"))
+            verdict = json.loads(strip_markdown_fence(response))
         except json.JSONDecodeError:
             verdict = {"winner": "A", "reasoning": response}
         winner_entry = match["a"] if verdict.get("winner", "A").upper() == "A" else match["b"]

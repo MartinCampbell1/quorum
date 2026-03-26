@@ -55,6 +55,7 @@ class GatewayChatModel(BaseChatModel):
     workdir: Optional[str] = None
     model_override: Optional[str] = None
     timeout: int = 300
+    mcp_tools: Optional[list[str]] = None
 
     @property
     def _llm_type(self) -> str:
@@ -91,6 +92,7 @@ class GatewayChatModel(BaseChatModel):
                     "workdir": self.workdir,
                     "model": self.model_override,
                     "timeout": self.timeout,
+                    "mcp_tools": self.mcp_tools,
                 },
             )
             resp.raise_for_status()
@@ -138,6 +140,7 @@ class GatewayChatModel(BaseChatModel):
                     "workdir": self.workdir,
                     "model": self.model_override,
                     "timeout": self.timeout,
+                    "mcp_tools": self.mcp_tools,
                 },
             )
             resp.raise_for_status()

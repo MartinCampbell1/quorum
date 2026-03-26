@@ -58,6 +58,26 @@ async def ep_modes():
     }
 
 
+@router.get("/tool-logs")
+async def ep_tool_logs(limit: int = 50):
+    """Read recent tool call logs."""
+    import json
+    from pathlib import Path
+    log_dir = Path(__file__).parent.parent / ".tool_logs"
+    if not log_dir.exists():
+        return []
+    entries = []
+    for log_file in log_dir.glob("*.jsonl"):
+        with open(log_file) as f:
+            for line in f:
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+    entries.sort(key=lambda e: e.get("timestamp", 0), reverse=True)
+    return entries[:limit]
+
+
 @router.get("/agents")
 async def ep_agents():
     import httpx

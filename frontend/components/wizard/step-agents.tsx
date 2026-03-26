@@ -1,14 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ChevronUp, ArrowRight, Plus, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronUp, ArrowRight, Plus, Trash2, Wrench } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { PROVIDER_LABELS } from "@/lib/constants";
+import { SelectorChips } from "@/components/ui/selector-chips";
+import { PROVIDER_LABELS, ALL_TOOL_KEYS, TOOL_LABELS, TOOL_DESCRIPTIONS } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 import type { AgentConfig } from "@/lib/types";
 import { Stepper } from "./stepper";
+import { CustomToolForm } from "./custom-tool-form";
+import { addCustomTool } from "@/lib/api";
 
 interface StepAgentsProps {
   agents: AgentConfig[];
@@ -21,6 +24,7 @@ const providers = ["claude", "gemini", "codex", "minimax"] as const;
 
 export function StepAgents({ agents, onChange, onNext, onBack }: StepAgentsProps) {
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+  const [showCustomToolForm, setShowCustomToolForm] = useState(false);
 
   function updateAgent(index: number, updates: Partial<AgentConfig>) {
     const next = agents.map((a, i) => (i === index ? { ...a, ...updates } : a));
@@ -33,6 +37,7 @@ export function StepAgents({ agents, onChange, onNext, onBack }: StepAgentsProps
       role: `worker_${workerCount + 1}`,
       provider: "codex",
       system_prompt: "",
+      tools: [],
     };
     onChange([...agents, newWorker]);
   }
@@ -52,12 +57,12 @@ export function StepAgents({ agents, onChange, onNext, onBack }: StepAgentsProps
             Настройка агентов
           </h2>
           <p className="text-[13px] text-muted-foreground/60 mb-7">
-            Назначьте провайдера каждой роли. Раскройте для настройки промптов.
+            Назначьте провайдера и инструменты каждой роли. Раскройте для детальной настройки.
           </p>
 
           <div className="flex flex-col gap-2.5">
             {agents.map((agent, i) => (
-              <Card key={i} className={cn(
+              <Card key={agent.role} className={cn(
                 "py-0 transition-shadow duration-200",
                 expandedIdx === i && "shadow-sm"
               )}>
@@ -71,6 +76,15 @@ export function StepAgents({ agents, onChange, onNext, onBack }: StepAgentsProps
                     <span className="font-mono text-xs font-medium text-foreground truncate flex-1">
                       {agent.role}
                     </span>
+
+                    {/* Tool count badge */}
+                    {(agent.tools?.length ?? 0) > 0 && (
+                      <span className="flex items-center gap-1 text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded-full">
+                        <Wrench size={10} />
+                        {agent.tools?.length}
+                      </span>
+                    )}
+
                     <Select
                       value={agent.provider}
                       onValueChange={(v) => updateAgent(i, { provider: v as AgentConfig["provider"] })}
@@ -104,7 +118,46 @@ export function StepAgents({ agents, onChange, onNext, onBack }: StepAgentsProps
                   </div>
                   {expandedIdx === i && (
                     <div className="mt-3 pt-3 border-t border-border/50" style={{ animation: "fade-in 0.15s ease-out" }}>
-                      <label className="text-[10px] uppercase tracking-widest text-muted-foreground/60 mb-1.5 block font-medium">
+                      {/* Tools section */}
+                      <label className="text-[10px] uppercase tracking-widest text-muted-foreground/60 mb-2 block font-medium">
+                        Инструменты
+                      </label>
+                      <SelectorChips
+                        options={ALL_TOOL_KEYS}
+                        value={agent.tools ?? []}
+                        onChange={(selected) => updateAgent(i, { tools: selected })}
+                        labels={TOOL_LABELS}
+                        descriptions={TOOL_DESCRIPTIONS}
+                      />
+
+                      {/* Custom tool button / form */}
+                      {showCustomToolForm ? (
+                        <div className="mt-3">
+                          <CustomToolForm
+                            onAdd={async (tool) => {
+                              try {
+                                await addCustomTool(tool as any);
+                                updateAgent(i, { tools: [...(agent.tools ?? []), tool.key] });
+                                setShowCustomToolForm(false);
+                              } catch (err) {
+                                console.error("Failed to add custom tool:", err);
+                              }
+                            }}
+                            onCancel={() => setShowCustomToolForm(false)}
+                          />
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setShowCustomToolForm(true)}
+                          className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                        >
+                          <Plus size={12} />
+                          Добавить свой инструмент
+                        </button>
+                      )}
+
+                      {/* System prompt section */}
+                      <label className="text-[10px] uppercase tracking-widest text-muted-foreground/60 mb-1.5 mt-4 block font-medium">
                         Системный промпт
                       </label>
                       <textarea

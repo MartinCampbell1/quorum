@@ -7,7 +7,7 @@ from typing import Annotated
 from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
 
-from orchestrator.modes.base import call_agent, make_message
+from orchestrator.modes.base import call_agent, call_agent_cfg, make_message, strip_markdown_fence
 
 
 class BoardState(TypedDict):
@@ -19,7 +19,7 @@ class BoardState(TypedDict):
     max_rounds: int
     consensus_reached: bool
     decision: str
-    worker_results: Annotated[list[dict], operator.add]
+    worker_results: list[dict]
     result: str
 
 
@@ -39,9 +39,9 @@ def directors_analyze(state: BoardState) -> dict:
             f"Respond with JSON: {{\"position\": \"your stance\", \"reasoning\": \"why\", "
             f"\"action_items\": [\"what to delegate to workers\"]}}\nReturn ONLY valid JSON."
         )
-        response = call_agent(d["provider"], prompt, d.get("system_prompt", ""))
+        response = call_agent_cfg(d, prompt)
         try:
-            pos = json.loads(response.strip().strip("```json").strip("```"))
+            pos = json.loads(strip_markdown_fence(response))
         except json.JSONDecodeError:
             pos = {"position": response[:300], "reasoning": "", "action_items": []}
         pos["director"] = d["role"]
@@ -52,13 +52,14 @@ def directors_analyze(state: BoardState) -> dict:
 
 def check_consensus(state: BoardState) -> dict:
     positions_text = "\n".join(f"- {p['director']}: {p['position']}" for p in state["positions"])
+    # TODO: make arbitrator provider configurable via state config
     response = call_agent(
         "minimax",
         f"Do these board members agree? Analyze their positions.\n\n"
         f"{positions_text}\n\nRespond with JSON: {{\"consensus\": true, \"unified_decision\": \"the agreed position\"}}\nReturn ONLY valid JSON.",
     )
     try:
-        result = json.loads(response.strip().strip("```json").strip("```"))
+        result = json.loads(strip_markdown_fence(response))
     except json.JSONDecodeError:
         result = {"consensus": True, "unified_decision": state["positions"][0]["position"]}
     return {
@@ -83,10 +84,9 @@ def chairman_decides(state: BoardState) -> dict:
     positions_text = "\n".join(
         f"- {p['director']}: {p['position']}\n  Reasoning: {p['reasoning']}" for p in state["positions"]
     )
-    response = call_agent(
-        chairman["provider"],
+    response = call_agent_cfg(
+        chairman,
         f"As chairman, no consensus after {state['vote_round']} rounds.\n\nPositions:\n{positions_text}\n\nMake the final decision.",
-        chairman.get("system_prompt", ""),
     )
     return {"decision": response, "messages": [make_message(chairman["role"], response, "chairman_decision")]}
 
@@ -96,10 +96,9 @@ def delegate_to_workers(state: BoardState) -> dict:
     results = []
     messages = []
     for worker in workers:
-        response = call_agent(
-            worker["provider"],
+        response = call_agent_cfg(
+            worker,
             f"The board decided:\n{state['decision']}\n\nExecute your part.\nOriginal task: {state['task']}",
-            worker.get("system_prompt", ""),
         )
         results.append({"worker": worker["role"], "result": response})
         messages.append(make_message(worker["role"], response, "worker_execution"))

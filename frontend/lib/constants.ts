@@ -44,3 +44,21 @@ export const PROVIDER_LABELS: Record<string, string> = {
   gemini: "Gemini",
   minimax: "MiniMax",
 };
+
+export const TOOL_LABELS: Record<string, string> = {
+  web_search: "Веб-поиск",
+  perplexity: "Perplexity AI",
+  code_exec: "Python",
+  shell_exec: "Shell",
+  http_request: "HTTP запрос",
+};
+
+export const TOOL_DESCRIPTIONS: Record<string, string> = {
+  web_search: "Поиск в интернете через Brave Search API",
+  perplexity: "AI-поиск с цитатами через Perplexity Sonar",
+  code_exec: "Выполнение Python кода (вычисления, обработка данных)",
+  shell_exec: "Выполнение shell команд (файлы, git, система)",
+  http_request: "HTTP запросы к любым API (GET/POST/PUT/DELETE)",
+};
+
+export const ALL_TOOL_KEYS = Object.keys(TOOL_LABELS);

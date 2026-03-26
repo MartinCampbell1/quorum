@@ -1,4 +1,4 @@
-import type { Session, SessionSummary, ModeInfo, RunRequest } from "./types";
+import type { Session, SessionSummary, ModeInfo, RunRequest, ToolDefinition, CustomToolConfig } from "./types";
 
 const BASE = "http://localhost:8800";
 
@@ -18,6 +18,33 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 export async function getModes(): Promise<Record<string, ModeInfo>> {
   return request("/orchestrate/modes");
+}
+
+export async function getTools(): Promise<ToolDefinition[]> {
+  return request("/orchestrate/tools");
+}
+
+export async function addCustomTool(
+  config: CustomToolConfig
+): Promise<CustomToolConfig> {
+  return request("/orchestrate/tools/custom", {
+    method: "POST",
+    body: JSON.stringify(config),
+  });
+}
+
+export async function getCustomTools(): Promise<CustomToolConfig[]> {
+  return request("/orchestrate/tools/custom");
+}
+
+export async function removeCustomTool(key: string): Promise<void> {
+  await request(`/orchestrate/tools/custom/${key}`, { method: "DELETE" });
+}
+
+export async function getToolLogs(
+  limit: number = 50
+): Promise<Record<string, unknown>[]> {
+  return request(`/orchestrate/tool-logs?limit=${limit}`);
 }
 
 export async function getSessions(): Promise<SessionSummary[]> {
