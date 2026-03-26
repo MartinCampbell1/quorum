@@ -1,5 +1,11 @@
-"""Democracy mode: all agents vote, majority wins, tie → re-vote."""
+"""Democracy mode: all agents vote, majority wins, tie -> re-vote.
 
+If no majority appears after the configured rounds, a deterministic plurality
+fallback picks the most-supported position so the graph can terminate without
+hidden arbitration.
+"""
+
+from collections import Counter
 import json
 import operator
 from typing import Annotated
@@ -7,7 +13,7 @@ from typing import Annotated
 from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
 
-from orchestrator.modes.base import call_agent, call_agent_cfg, make_message, strip_markdown_fence
+from orchestrator.modes.base import call_agent_cfg, make_message, strip_markdown_fence
 
 
 class DemocracyState(TypedDict):
@@ -19,6 +25,35 @@ class DemocracyState(TypedDict):
     max_rounds: int
     majority_position: str
     result: str
+
+
+def _normalize_position(position: str) -> str:
+    return " ".join(position.split()).strip().lower()
+
+
+def _vote_summary(votes: list[dict]) -> tuple[Counter, dict[str, str], dict[str, int]]:
+    counts: Counter = Counter()
+    representatives: dict[str, str] = {}
+    first_seen: dict[str, int] = {}
+
+    for idx, vote in enumerate(votes):
+        raw_position = str(vote.get("position", "")).strip()
+        if not raw_position:
+            continue
+        key = _normalize_position(raw_position)
+        counts[key] += 1
+        representatives.setdefault(key, raw_position)
+        first_seen.setdefault(key, idx)
+
+    return counts, representatives, first_seen
+
+
+def _pick_plurality(votes: list[dict]) -> str:
+    counts, representatives, first_seen = _vote_summary(votes)
+    if not counts:
+        return ""
+    winner = max(counts.keys(), key=lambda key: (counts[key], -first_seen[key], key))
+    return representatives[winner]
 
 
 def collect_votes(state: DemocracyState) -> dict:
@@ -44,28 +79,36 @@ def collect_votes(state: DemocracyState) -> dict:
         vote["agent_id"] = agent["role"]
         votes.append(vote)
         messages.append(make_message(agent["role"], f"Vote: {vote['position']}", f"voting_round_{state['round'] + 1}"))
+    if not votes:
+        messages.append(make_message("system", "No agents available for voting", f"voting_round_{state['round'] + 1}"))
     return {"votes": votes, "round": state["round"] + 1, "messages": messages}
 
 
 def tally_votes(state: DemocracyState) -> dict:
-    votes_text = "\n".join(f"- {v['agent_id']}: {v['position']}" for v in state["votes"])
-    prompt = (
-        f"Analyze these votes and determine if there is a clear majority.\n\n"
-        f"VOTES:\n{votes_text}\n\n"
-        f"Respond with JSON:\n"
-        f'{{"has_majority": true, "majority_position": "the winning position", "summary": "brief summary"}}\n'
-        f"Return ONLY valid JSON."
+    counts, representatives, first_seen = _vote_summary(state["votes"])
+    messages = []
+
+    if not counts:
+        messages.append(make_message("system", "No valid votes were cast", f"tally_round_{state['round']}"))
+        return {"majority_position": "", "result": "", "messages": messages}
+
+    total_votes = sum(counts.values())
+    for key, count in counts.items():
+        if count > total_votes / 2:
+            position = representatives[key]
+            messages.append(make_message(
+                "system",
+                f"Majority reached: {position} ({count}/{total_votes})",
+                f"tally_round_{state['round']}",
+            ))
+            return {"majority_position": position, "result": position, "messages": messages}
+
+    summary = ", ".join(
+        f"{representatives[key]} x{counts[key]}"
+        for key in sorted(counts.keys(), key=lambda key: (-counts[key], first_seen[key], key))
     )
-    # TODO: make arbitrator provider configurable via state config
-    response = call_agent("minimax", prompt)
-    try:
-        tally = json.loads(strip_markdown_fence(response))
-    except json.JSONDecodeError:
-        tally = {"has_majority": True, "majority_position": state["votes"][0]["position"], "summary": response}
-    messages = [make_message("system", f"Tally: {tally.get('summary', '')}", f"tally_round_{state['round']}")]
-    if tally.get("has_majority"):
-        return {"majority_position": tally.get("majority_position", ""), "result": tally.get("majority_position", ""), "messages": messages}
-    return {"majority_position": "", "messages": messages}
+    messages.append(make_message("system", f"No majority yet: {summary}", f"tally_round_{state['round']}"))
+    return {"majority_position": "", "result": "", "messages": messages}
 
 
 def route_after_tally(state: DemocracyState) -> str:
@@ -77,14 +120,24 @@ def route_after_tally(state: DemocracyState) -> str:
 
 
 def force_decision(state: DemocracyState) -> dict:
-    votes_text = "\n".join(f"- {v['agent_id']}: {v['position']}" for v in state["votes"])
-    # TODO: make arbitrator provider configurable via state config
-    response = call_agent(
-        "minimax",
-        f"No majority was reached after {state['round']} rounds.\n\nVotes:\n{votes_text}\n\n"
-        f"Summarize both positions and pick the most-supported one as the final answer.",
-    )
-    return {"result": response, "messages": [make_message("system", response, "forced_decision")]}
+    winner = _pick_plurality(state["votes"])
+    if winner:
+        message = (
+            f"No majority after {state['round']} rounds. "
+            f"Deterministic fallback selected: {winner}"
+        )
+        return {
+            "majority_position": winner,
+            "result": winner,
+            "messages": [make_message("system", message, "forced_decision")],
+        }
+
+    message = f"No valid votes available after {state['round']} rounds."
+    return {
+        "majority_position": "",
+        "result": message,
+        "messages": [make_message("system", message, "forced_decision")],
+    }
 
 
 def build_democracy_graph() -> StateGraph:

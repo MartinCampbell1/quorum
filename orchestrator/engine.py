@@ -57,8 +57,8 @@ DEFAULT_AGENTS = {
 
 AVAILABLE_MODES = {
     "dictator": "One director delegates to workers, collects and synthesizes results",
-    "board": "Council of 3 directors discuss and vote, then delegate to workers",
-    "democracy": "All agents vote equally, majority wins, ties trigger re-vote",
+    "board": "Council of 3 directors discuss and vote, deadlocks resolve with the chairman",
+    "democracy": "All agents vote equally, majority wins, ties trigger re-vote, final rounds use deterministic fallback",
     "debate": "Proponent vs opponent argue in rounds, judge decides winner",
     "map_reduce": "Split task into chunks, process in parallel, synthesize results",
     "creator_critic": "Creator produces work, critic reviews, iterate until approved",
@@ -120,7 +120,7 @@ async def run(mode: str, task: str, agents: list[AgentConfig] | None = None, con
         try:
             graph = _build_graph(mode)
             initial_state = _build_initial_state(mode, task, agents, config)
-            final_state = await asyncio.to_thread(graph.invoke, initial_state)
+            final_state = await graph.ainvoke(initial_state)
             store.update(session_id,
                 status="completed",
                 result=final_state.get("result", ""),

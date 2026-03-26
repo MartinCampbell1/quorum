@@ -1,5 +1,6 @@
 """Map-Reduce mode: split task into chunks, process in parallel, synthesize."""
 
+import asyncio
 import json
 import operator
 from typing import Annotated
@@ -20,7 +21,20 @@ class MapReduceState(TypedDict):
     result: str
 
 
+def _normalize_chunks(value: object, fallback: str) -> list[str]:
+    if not isinstance(value, list):
+        return [fallback]
+    chunks = [str(item).strip() for item in value if str(item).strip()]
+    return chunks or [fallback]
+
+
 def plan_chunks(state: MapReduceState) -> dict:
+    if not state["agents"]:
+        return {
+            "chunks": [state["task"]],
+            "messages": [make_message("system", "No agents available; using the task as a single chunk", "planning")],
+        }
+
     planner = state["agents"][0]
     num_workers = max(len(state["agents"]) - 2, 1)
     prompt = (
@@ -29,26 +43,54 @@ def plan_chunks(state: MapReduceState) -> dict:
     )
     response = call_agent_cfg(planner, prompt)
     try:
-        chunks = json.loads(strip_markdown_fence(response))
+        chunks = _normalize_chunks(json.loads(strip_markdown_fence(response)), state["task"])
     except json.JSONDecodeError:
         chunks = [state["task"]]
     return {"chunks": chunks, "messages": [make_message(planner["role"], f"Split into {len(chunks)} chunks", "planning")]}
 
 
-def process_chunks(state: MapReduceState) -> dict:
-    workers = state["agents"][1:-1] or [state["agents"][0]]
-    results = []
-    messages = []
-    for i, chunk in enumerate(state["chunks"]):
+async def process_chunks(state: MapReduceState) -> dict:
+    workers = state["agents"][1:-1] or state["agents"][:1]
+    if not workers:
+        return {
+            "chunk_results": [],
+            "messages": [make_message("system", "No workers available for chunk processing", "chunks")],
+        }
+
+    async def run_chunk(i: int, chunk: str) -> tuple[dict, dict]:
         worker = workers[i % len(workers)]
-        response = call_agent_cfg(worker, f"Process this sub-task:\n{chunk}\n\nOverall context: {state['task']}")
-        results.append({"chunk": chunk, "worker": worker["role"], "result": response})
-        messages.append(make_message(worker["role"], response, f"chunk_{i}"))
-    return {"chunk_results": results, "messages": messages}
+        response = await asyncio.to_thread(
+            call_agent_cfg,
+            worker,
+            f"Process this sub-task:\n{chunk}\n\nOverall context: {state['task']}",
+        )
+        return (
+            {"chunk": chunk, "worker": worker["role"], "result": response},
+            make_message(worker["role"], response, f"chunk_{i}"),
+        )
+
+    results = await asyncio.gather(*(run_chunk(i, chunk) for i, chunk in enumerate(state["chunks"])))
+    chunk_results = [item[0] for item in results]
+    messages = [item[1] for item in results]
+    return {"chunk_results": chunk_results, "messages": messages}
 
 
 def synthesize(state: MapReduceState) -> dict:
+    if not state["agents"]:
+        return {
+            "synthesis": state["task"],
+            "result": state["task"],
+            "messages": [make_message("system", "No synthesizer available; returning the original task", "synthesis")],
+        }
+
     synth = state["agents"][-1]
+    if not state["chunk_results"]:
+        return {
+            "synthesis": state["task"],
+            "result": state["task"],
+            "messages": [make_message(synth["role"], "No chunk results available; returning the original task", "synthesis")],
+        }
+
     chunks_text = "\n\n".join(f"## Chunk: {r['chunk']}\nResult: {r['result']}" for r in state["chunk_results"])
     prompt = (
         f"Synthesize these partial results into one comprehensive answer.\n\n"
