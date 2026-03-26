@@ -1,11 +1,36 @@
 """Generic HTTP request tool."""
 
+import ipaddress
 import json
+import socket
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
 from orchestrator.tools.base import BaseTool, ToolParam
+
+
+def _validate_url(url: str) -> str | None:
+    """Return error message if URL is unsafe, None if OK."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return "Invalid URL"
+    if parsed.scheme not in ("http", "https"):
+        return f"Scheme '{parsed.scheme}' not allowed (http/https only)"
+    hostname = parsed.hostname or ""
+    if not hostname:
+        return "No hostname"
+    # Block internal/private IPs
+    try:
+        ip = socket.gethostbyname(hostname)
+        addr = ipaddress.ip_address(ip)
+        if addr.is_private or addr.is_loopback or addr.is_link_local:
+            return f"Internal IP {ip} blocked (SSRF protection)"
+    except socket.gaierror:
+        return f"Cannot resolve hostname: {hostname}"
+    return None
 
 
 class HttpRequestTool(BaseTool):
@@ -22,6 +47,10 @@ class HttpRequestTool(BaseTool):
         )
 
     async def execute(self, url: str, method: str = "GET", body: str = "", headers: str = "", **kwargs: Any) -> str:
+        error = _validate_url(url)
+        if error:
+            return f"[http_request] Error: {error}"
+
         parsed_headers: dict[str, str] = {}
         if headers:
             try:
@@ -36,7 +65,7 @@ class HttpRequestTool(BaseTool):
             except json.JSONDecodeError:
                 parsed_body = body
 
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
             try:
                 resp = await client.request(
                     method.upper(),

@@ -88,17 +88,43 @@ async def list_tools() -> list[Tool]:
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     t0 = time.time()
-    try:
-        if name == "code_exec":
-            result = await code_exec.execute(**arguments)
-        elif name == "shell_exec":
-            result = await shell_exec.execute(**arguments)
-        elif name == "http_request":
-            result = await http_request.execute(**arguments)
+    if name == "code_exec":
+        code = arguments.get("code")
+        if not isinstance(code, str) or not code.strip():
+            result = "[code_exec] Error: 'code' parameter required (string)"
         else:
-            result = f"Unknown tool: {name}"
-    except Exception as e:
-        result = f"[{name}] Error: {e}"
+            try:
+                result = await code_exec.execute(code=code)
+            except Exception as e:
+                result = f"[code_exec] Error: {e}"
+    elif name == "shell_exec":
+        command = arguments.get("command")
+        if not isinstance(command, str) or not command.strip():
+            result = "[shell_exec] Error: 'command' parameter required (string)"
+        else:
+            try:
+                result = await shell_exec.execute(
+                    command=command,
+                    workdir=arguments.get("workdir", "/tmp"),
+                )
+            except Exception as e:
+                result = f"[shell_exec] Error: {e}"
+    elif name == "http_request":
+        url = arguments.get("url")
+        if not isinstance(url, str) or not url.strip():
+            result = "[http_request] Error: 'url' parameter required (string)"
+        else:
+            try:
+                result = await http_request.execute(
+                    url=url,
+                    method=arguments.get("method", "GET"),
+                    body=arguments.get("body", ""),
+                    headers=arguments.get("headers", ""),
+                )
+            except Exception as e:
+                result = f"[http_request] Error: {e}"
+    else:
+        result = f"Unknown tool: {name}"
 
     log_tool_call("exec-server", name, arguments, result, round(time.time() - t0, 2))
     return [TextContent(type="text", text=result)]
