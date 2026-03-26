@@ -48,7 +48,7 @@ This pass focuses on the unresolved review findings after `350c639`:
 - Full branch rollback: switch away from `codex/remediation-fixes` back to the base branch at `350c639`.
 - Partial rollback on this branch:
   - `git revert 02c96b6` reverts the mode-semantics slice only.
-  - The final remediation commit will capture the remaining backend/frontend contract fixes as one revertible unit.
+  - `git revert 4662a34` reverts the backend/frontend contract and cleanup slice.
 
 ## Status
 
@@ -56,4 +56,4 @@ This pass focuses on the unresolved review findings after `350c639`:
 - [x] P1 mode semantics fixes
 - [x] P2 cleanup fixes
 - [x] Tests and verification
-- [ ] Final remediation commit
+- [x] Final remediation commit (`4662a34`)
