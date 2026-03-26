@@ -70,8 +70,18 @@
 }
 
 @keyframes fade-up {
-  from { opacity: 0; transform: translateY(12px); }
+  from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
 
 :root {
@@ -107,6 +117,14 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+
+  /* Agent colors — light mode */
+  --color-agent-claude: #6366f1;
+  --color-agent-codex: #10b981;
+  --color-agent-gemini: #f59e0b;
+  --color-agent-minimax: #ec4899;
+  --color-agent-system: #94a3b8;
+  --color-agent-user: #0ea5e9;
 }
 
 .dark {
@@ -141,6 +159,14 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+
+  /* Agent colors — dark mode */
+  --color-agent-claude: #818cf8;
+  --color-agent-codex: #34d399;
+  --color-agent-gemini: #fbbf24;
+  --color-agent-minimax: #f472b6;
+  --color-agent-system: #94a3b8;
+  --color-agent-user: #38bdf8;
 }
 
 @layer base {

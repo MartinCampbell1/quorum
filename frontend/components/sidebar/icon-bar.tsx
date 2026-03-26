@@ -2,8 +2,8 @@
 
 import { MessageSquare, Clock, Sliders, Sun, Moon } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
 import { useTheme } from "next-themes";
+import { cn } from "@/lib/utils";
 
 type View = "chat" | "history" | "settings";
 
@@ -22,17 +22,20 @@ export function IconBar({ activeView, onViewChange }: IconBarProps) {
   const { theme, setTheme } = useTheme();
 
   return (
-    <div className="flex h-full w-[60px] flex-col items-center border-r bg-muted/30 py-4 gap-1.5">
-      <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-primary-foreground font-mono text-sm font-bold mb-4">
+    <div className="flex h-full w-[56px] flex-col items-center border-r bg-background py-3 gap-1">
+      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-foreground text-background font-semibold text-xs tracking-tight mb-3">
         Q
       </div>
-      <Separator className="w-8 mb-2" />
+      <div className="h-px w-6 bg-border mb-2" />
       {navItems.map(({ id, icon: Icon, label }) => (
         <Button
           key={id}
           variant={activeView === id ? "secondary" : "ghost"}
           size="icon"
-          className="h-9 w-9"
+          className={cn(
+            "h-8 w-8 transition-colors",
+            activeView === id && "bg-secondary text-foreground"
+          )}
           onClick={() => onViewChange(id)}
           aria-label={label}
         >
@@ -43,7 +46,7 @@ export function IconBar({ activeView, onViewChange }: IconBarProps) {
         <Button
           variant="ghost"
           size="icon"
-          className="h-9 w-9"
+          className="h-8 w-8"
           onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
           aria-label="Toggle theme"
         >
