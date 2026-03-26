@@ -38,6 +38,15 @@ Branch: `codex/personal-mvp-refine`
   - `GET /orchestrate/session/{id}/events` streams those events over SSE
   - frontend chat now renders a live timeline rail from `EventSource` without waiting for snapshot polling
   - event coverage includes session start/completion, checkpoints, user instructions, pause/resume/cancel, and agent messages
+- Added a user-facing scenario layer on top of raw modes:
+  - backend exposes `GET /orchestrate/scenarios`
+  - wizard now starts from personal-ready scenarios instead of raw orchestration terms
+  - current shipped presets: `Repo Audit`, `Pattern Mining`, `News + Context`, `Strategy Review`
+- Added checkpoint branching for paused/finished sessions:
+  - backend supports `restart_from_checkpoint`
+  - a paused session can now fork into a new branch with an optional instruction
+  - branch sessions preserve `forked_from` and `forked_checkpoint_id`
+  - the paused-state composer can spawn a new run and automatically switch the UI to it
 
 ## UX pass
 
@@ -58,6 +67,7 @@ Branch: `codex/personal-mvp-refine`
 
 - `python3 -m py_compile gateway.py orchestrator/api.py orchestrator/models.py orchestrator/tool_configs.py mcp_servers/configured_tools_server.py`
 - `python3 -m py_compile orchestrator/engine.py orchestrator/api.py orchestrator/models.py orchestrator/modes/*.py`
+- `python3 -m py_compile orchestrator/engine.py orchestrator/api.py orchestrator/models.py orchestrator/scenarios.py orchestrator/modes/*.py`
 - `python3 -m pytest tests/test_api_contracts.py tests/test_modes.py tests/test_interactive_runtime.py -q`
 - `cd frontend && npx tsc --noEmit`
 - `cd frontend && npm run build`
@@ -74,13 +84,13 @@ All of the above passed during this pass.
 
 ## Still not done
 
-- Restart from checkpoint / branch-from-checkpoint
-- Full scenario layer on top of raw modes
 - Real per-run MCP injection for `Gemini` and `Codex`
 - True “any MCP server on any provider” support
+- Choosing an arbitrary historical checkpoint from the UI (backend supports checkpoint branching, current UI forks the active checkpoint)
+- Rich mode-specific visualizations beyond the general timeline rail
 
 ## Notes for the next agent
 
-- Do not assume `frontend/components/wizard/step-task.tsx`, `frontend/package.json`, `frontend/package-lock.json`, `.omc/`, or `.next/` belong to this pass. They were already dirty in the worktree.
+- Do not assume `frontend/package.json`, `frontend/package-lock.json`, `.omc/`, or `.next/` belong to this pass. They were already dirty in the worktree.
 - The highest-value next backend slice is provider-aware custom tool support beyond `Claude`.
-- The highest-value next product slice is `restart from checkpoint` plus a scenario layer on top of the new runner.
+- The highest-value next product slice is richer scenario-specific visualization and a checkpoint picker in the timeline.

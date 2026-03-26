@@ -10,9 +10,10 @@ import { InputBar } from "./input-bar";
 
 interface ChatViewProps {
   sessionId: string;
+  onForkSession?: (sessionId: string) => void;
 }
 
-export function ChatView({ sessionId }: ChatViewProps) {
+export function ChatView({ sessionId, onForkSession }: ChatViewProps) {
   const { session, isLoading, refresh } = useSession(sessionId);
   const bottomRef = useRef<HTMLDivElement>(null);
   const { events } = useSessionEvents(session?.id ?? null, session?.events ?? [], refresh);
@@ -71,6 +72,8 @@ export function ChatView({ sessionId }: ChatViewProps) {
         sessionId={session.id}
         status={session.status}
         pendingInstructions={session.pending_instructions}
+        currentCheckpointId={session.current_checkpoint_id}
+        onForkSession={onForkSession}
         onRefresh={refresh}
       />
     </div>

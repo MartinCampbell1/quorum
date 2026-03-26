@@ -16,6 +16,7 @@ from orchestrator.models import (
     validate_agents_for_mode,
 )
 from orchestrator.engine import (
+    fork_from_checkpoint,
     inject_instruction,
     request_cancel,
     request_pause,
@@ -24,20 +25,36 @@ from orchestrator.engine import (
     AVAILABLE_MODES,
     DEFAULT_AGENTS,
 )
+from orchestrator.scenarios import get_scenario, list_scenarios
 from orchestrator.tool_configs import tool_config_store, ToolConfig, TOOL_TYPES, PROMPT_TEMPLATES
 
 router = APIRouter(prefix="/orchestrate", tags=["orchestrate"])
 
 
 def _resolve_agents(req: RunRequest):
-    return req.agents if req.agents else DEFAULT_AGENTS.get(req.mode, [])
+    if req.agents:
+        return req.agents
+    scenario = get_scenario(req.scenario_id) if req.scenario_id else None
+    if scenario:
+        return scenario["default_agents"]
+    return DEFAULT_AGENTS.get(req.mode, [])
 
 
 @router.post("/run")
 async def ep_run(req: RunRequest):
+    scenario = get_scenario(req.scenario_id) if req.scenario_id else None
+    if req.scenario_id and not scenario:
+        raise HTTPException(422, f"Unknown scenario: {req.scenario_id}")
+    if scenario and scenario["mode"] != req.mode:
+        raise HTTPException(
+            422,
+            f"Scenario '{req.scenario_id}' is bound to mode '{scenario['mode']}', not '{req.mode}'.",
+        )
     if req.mode not in AVAILABLE_MODES:
         raise HTTPException(400, f"Unknown mode: {req.mode}. Available: {list(AVAILABLE_MODES.keys())}")
     agents = normalize_agent_configs(_resolve_agents(req))
+    run_config = dict(scenario.get("default_config", {})) if scenario else {}
+    run_config.update(req.config)
     errors = validate_agents_for_mode(req.mode, agents)
     if errors:
         raise HTTPException(422, {
@@ -47,9 +64,10 @@ async def ep_run(req: RunRequest):
         })
     session_id = await run(
         mode=req.mode, task=req.task,
-        agents=agents, config=req.config,
+        agents=agents, config=run_config,
+        scenario_id=req.scenario_id,
     )
-    return {"session_id": session_id, "mode": req.mode, "status": "running"}
+    return {"session_id": session_id, "mode": req.mode, "status": "running", "scenario_id": req.scenario_id}
 
 
 @router.get("/session/{session_id}")
@@ -98,6 +116,11 @@ async def ep_sessions():
     return store.list_recent()
 
 
+@router.get("/scenarios")
+async def ep_scenarios():
+    return list_scenarios()
+
+
 @router.post("/session/{session_id}/message")
 async def ep_user_message(session_id: str, req: MessageRequest):
     session = store.get(session_id)
@@ -138,6 +161,16 @@ async def ep_session_control(session_id: str, req: ControlRequest):
         if not request_cancel(session_id):
             raise HTTPException(409, f"Session '{session_id}' cannot be cancelled from status '{session['status']}'.")
         return {"status": "cancel_requested"}
+    if action == "restart_from_checkpoint":
+        if session["status"] in {"running", "pause_requested", "cancel_requested"}:
+            raise HTTPException(
+                409,
+                f"Session '{session_id}' must be paused or finished before creating a branch from a checkpoint.",
+            )
+        new_session_id = fork_from_checkpoint(session_id, req.checkpoint_id, req.content)
+        if not new_session_id:
+            raise HTTPException(422, "Checkpoint not found or branch restart is unavailable for this session.")
+        return {"status": "running", "new_session_id": new_session_id}
     raise HTTPException(422, f"Unknown control action: {req.action}")
 
 

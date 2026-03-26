@@ -77,6 +77,7 @@ class RunRequest(BaseModel):
     """POST /orchestrate/run request body."""
     mode: str
     task: str
+    scenario_id: Optional[str] = None
     agents: list[AgentConfig] = Field(default_factory=list)
     config: dict = Field(default_factory=dict)
 
@@ -90,6 +91,7 @@ class ControlRequest(BaseModel):
     """POST /orchestrate/session/{id}/control request body."""
     action: str
     content: str = ""
+    checkpoint_id: str = ""
 
 
 class SessionResponse(BaseModel):
@@ -102,6 +104,9 @@ class SessionResponse(BaseModel):
     result: Optional[str] = None
     status: str
     config: dict = Field(default_factory=dict)
+    active_scenario: Optional[str] = None
+    forked_from: Optional[str] = None
+    forked_checkpoint_id: Optional[str] = None
     capabilities: dict = Field(default_factory=lambda: dict(SESSION_CAPABILITIES))
     created_at: float
     elapsed_sec: Optional[float] = None
@@ -140,7 +145,16 @@ class SessionStore:
         self._max = max_sessions
         self._lock = threading.Lock()
 
-    def create(self, mode: str, task: str, agents: list[AgentConfig], config: dict) -> str:
+    def create(
+        self,
+        mode: str,
+        task: str,
+        agents: list[AgentConfig],
+        config: dict,
+        scenario_id: Optional[str] = None,
+        forked_from: Optional[str] = None,
+        forked_checkpoint_id: Optional[str] = None,
+    ) -> str:
         sid = f"sess_{uuid.uuid4().hex[:12]}"
         with self._lock:
             self._sessions[sid] = {
@@ -152,6 +166,9 @@ class SessionStore:
                 "result": None,
                 "status": "running",
                 "config": copy.deepcopy(config),
+                "active_scenario": scenario_id,
+                "forked_from": forked_from,
+                "forked_checkpoint_id": forked_checkpoint_id,
                 "capabilities": dict(SESSION_CAPABILITIES),
                 "created_at": time.time(),
                 "elapsed_sec": None,

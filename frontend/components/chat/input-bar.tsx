@@ -11,10 +11,19 @@ interface InputBarProps {
   sessionId: string;
   status: Session["status"];
   pendingInstructions?: number;
+  currentCheckpointId?: string | null;
+  onForkSession?: (sessionId: string) => void;
   onRefresh?: () => void;
 }
 
-export function InputBar({ sessionId, status, pendingInstructions = 0, onRefresh }: InputBarProps) {
+export function InputBar({
+  sessionId,
+  status,
+  pendingInstructions = 0,
+  currentCheckpointId,
+  onForkSession,
+  onRefresh,
+}: InputBarProps) {
   const [draft, setDraft] = useState("");
   const [isWorking, setIsWorking] = useState(false);
 
@@ -36,6 +45,26 @@ export function InputBar({ sessionId, status, pendingInstructions = 0, onRefresh
       await controlSession(sessionId, "resume", draft.trim() || undefined);
       setDraft("");
       await onRefresh?.();
+    } finally {
+      setIsWorking(false);
+    }
+  }
+
+  async function forkFromCheckpoint() {
+    if (!currentCheckpointId) return;
+    setIsWorking(true);
+    try {
+      const result = await controlSession(
+        sessionId,
+        "restart_from_checkpoint",
+        draft.trim() || undefined,
+        currentCheckpointId
+      );
+      setDraft("");
+      await onRefresh?.();
+      if (result.new_session_id) {
+        onForkSession?.(result.new_session_id);
+      }
     } finally {
       setIsWorking(false);
     }
@@ -85,6 +114,16 @@ export function InputBar({ sessionId, status, pendingInstructions = 0, onRefresh
                 >
                   {isWorking ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Play className="mr-1.5 h-3.5 w-3.5" />}
                   {draft.trim() ? "Продолжить с инструкцией" : "Продолжить"}
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="text-xs"
+                  onClick={forkFromCheckpoint}
+                  disabled={isWorking || !currentCheckpointId}
+                >
+                  {isWorking ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Play className="mr-1.5 h-3.5 w-3.5" />}
+                  Новая ветка
                 </Button>
               </div>
             </div>

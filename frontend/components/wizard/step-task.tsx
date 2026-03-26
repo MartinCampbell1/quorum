@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Rocket, Wrench } from "lucide-react";
-import { MODE_LABELS, TOOL_LABELS } from "@/lib/constants";
+import { MODE_LABELS } from "@/lib/constants";
 import type { AgentConfig } from "@/lib/types";
 import { Stepper } from "./stepper";
 
@@ -14,9 +14,19 @@ interface StepTaskProps {
   onLaunch: (task: string, config: Record<string, number>) => void;
   onBack: () => void;
   isLaunching: boolean;
+  taskPlaceholder?: string;
+  scenarioLabel?: string;
 }
 
-export function StepTask({ mode, agents, onLaunch, onBack, isLaunching }: StepTaskProps) {
+export function StepTask({
+  mode,
+  agents,
+  onLaunch,
+  onBack,
+  isLaunching,
+  taskPlaceholder,
+  scenarioLabel,
+}: StepTaskProps) {
   const [task, setTask] = useState("");
   const [maxRounds, setMaxRounds] = useState(3);
   const [unlimited, setUnlimited] = useState(false);
@@ -34,13 +44,17 @@ export function StepTask({ mode, agents, onLaunch, onBack, isLaunching }: StepTa
             Опишите задачу
           </h2>
           <p className="text-[13px] text-muted-foreground/60 mb-7">
-            Над чем должна работать команда <span className="font-medium text-foreground">{MODE_LABELS[mode]}</span>?
+            Над чем должна работать команда{" "}
+            <span className="font-medium text-foreground">
+              {scenarioLabel ?? MODE_LABELS[mode]}
+            </span>
+            ?
           </p>
 
           <textarea
             value={task}
             onChange={(e) => setTask(e.target.value)}
-            placeholder="Введите задачу или вопрос..."
+            placeholder={taskPlaceholder ?? "Введите задачу или вопрос..."}
             rows={5}
             className="w-full rounded-xl border border-border bg-muted/20 px-4 py-3.5 text-sm text-foreground placeholder:text-muted-foreground/50 resize-none focus:outline-none focus:ring-2 focus:ring-ring/30 focus:border-ring transition-colors leading-relaxed"
             autoFocus
@@ -96,6 +110,9 @@ export function StepTask({ mode, agents, onLaunch, onBack, isLaunching }: StepTa
             <div className="flex items-center gap-2 text-[13px] mb-3">
               <span className="text-muted-foreground">Режим</span>
               <Badge variant="secondary" className="font-medium">{MODE_LABELS[mode]}</Badge>
+              {scenarioLabel && (
+                <Badge variant="outline" className="font-medium">{scenarioLabel}</Badge>
+              )}
             </div>
             <div className="flex flex-col gap-2 text-[13px]">
               <span className="text-muted-foreground">Агенты</span>
@@ -107,7 +124,7 @@ export function StepTask({ mode, agents, onLaunch, onBack, isLaunching }: StepTa
                   {(a.tools?.length ?? 0) > 0 && (
                     <span className="flex items-center gap-1 text-[10px] text-muted-foreground/60">
                       <Wrench size={9} />
-                      {(a.tools ?? []).map(t => TOOL_LABELS[t] ?? t).join(", ")}
+                      {(a.tools ?? []).join(", ")}
                     </span>
                   )}
                 </div>

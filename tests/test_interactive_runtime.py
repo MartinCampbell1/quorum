@@ -4,7 +4,13 @@ import asyncio
 import time
 
 import orchestrator.modes.creator_critic as creator_critic
-from orchestrator.engine import inject_instruction, request_pause, request_resume, run
+from orchestrator.engine import (
+    fork_from_checkpoint,
+    inject_instruction,
+    request_pause,
+    request_resume,
+    run,
+)
 from orchestrator.models import AgentConfig, store
 
 
@@ -62,5 +68,50 @@ def test_creator_critic_supports_pause_resume_and_instruction_injection(monkeypa
         assert any(event["type"] == "agent_message" for event in completed["events"])
         assert any(event["type"] == "run_completed" for event in completed["events"])
         assert "Pay extra attention to recent Bitcoin news and volatility." in prompts[-1][1]
+
+    asyncio.run(scenario())
+
+
+def test_fork_from_checkpoint_creates_independent_branch(monkeypatch):
+    prompts: list[tuple[str, str]] = []
+
+    def fake_call_agent_cfg(agent: dict, prompt: str) -> str:
+        prompts.append((agent["role"], prompt))
+        if agent["role"] == "creator":
+            return "Draft analysis"
+        return "APPROVED"
+
+    monkeypatch.setattr(creator_critic, "call_agent_cfg", fake_call_agent_cfg)
+
+    async def scenario() -> None:
+        session_id = await run(
+            mode="creator_critic",
+            task="Review the BTC trading plan",
+            agents=[
+                AgentConfig(role="creator", provider="claude", tools=[]),
+                AgentConfig(role="critic", provider="claude", tools=[]),
+            ],
+            config={"max_iterations": 2},
+        )
+
+        assert request_pause(session_id) is True
+        paused = await _wait_for_status(session_id, "paused")
+
+        new_session_id = fork_from_checkpoint(
+            session_id,
+            checkpoint_id=paused["current_checkpoint_id"],
+            content="Branch and focus on downside risk.",
+        )
+        assert new_session_id
+        assert new_session_id != session_id
+
+        branched = await _wait_for_status(new_session_id, "completed")
+        assert branched["forked_from"] == session_id
+        assert branched["forked_checkpoint_id"] == paused["current_checkpoint_id"]
+        assert any(event["type"] == "branch_started" for event in branched["events"])
+        assert any("Branch and focus on downside risk." in prompt for _, prompt in prompts)
+
+        original = store.get(session_id)
+        assert original["status"] == "paused"
 
     asyncio.run(scenario())

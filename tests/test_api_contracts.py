@@ -85,6 +85,16 @@ def test_tools_endpoint_returns_builtin_catalog():
     assert {"code_exec", "shell_exec"}.issubset({item["key"] for item in payload})
 
 
+def test_scenarios_endpoint_returns_personal_catalog():
+    response = client.get("/orchestrate/scenarios")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert {"repo_audit", "pattern_mining", "news_context", "strategy_review"} == {
+        item["id"] for item in payload
+    }
+
+
 def test_custom_tools_are_honestly_disabled():
     response = client.post(
         "/orchestrate/tools/custom",
@@ -99,6 +109,20 @@ def test_custom_tools_are_honestly_disabled():
 
     assert response.status_code == 501
     assert "not supported" in response.json()["detail"]
+
+
+def test_run_rejects_scenario_mode_mismatch():
+    response = client.post(
+        "/orchestrate/run",
+        json={
+            "scenario_id": "repo_audit",
+            "mode": "board",
+            "task": "Inspect the repo",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "bound to mode 'dictator'" in response.json()["detail"]
 
 
 def test_live_messages_endpoint_reports_read_only_session():
@@ -143,6 +167,26 @@ def test_session_events_endpoint_streams_backlog_once():
         if line.startswith("data: ")
     ]
     assert [payload["type"] for payload in payloads] == ["run_started", "checkpoint_created"]
+
+
+def test_checkpoint_restart_requires_non_running_session():
+    session_id = store.create(
+        "dictator",
+        "Draft a plan",
+        [
+            AgentConfig(role="director", provider="claude", tools=[]),
+            AgentConfig(role="worker", provider="codex", tools=[]),
+        ],
+        {},
+    )
+
+    response = client.post(
+        f"/orchestrate/session/{session_id}/control",
+        json={"action": "restart_from_checkpoint"},
+    )
+
+    assert response.status_code == 409
+    assert "must be paused or finished" in response.json()["detail"]
 
 
 def test_run_accepts_configured_tool_for_claude():

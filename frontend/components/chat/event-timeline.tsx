@@ -36,6 +36,11 @@ const EVENT_STYLES: Record<
     accent: "text-sky-700 dark:text-sky-300",
     tone: "border-sky-500/20 bg-sky-500/5",
   },
+  branch_started: {
+    icon: Flag,
+    accent: "text-indigo-700 dark:text-indigo-300",
+    tone: "border-indigo-500/20 bg-indigo-500/5",
+  },
   checkpoint_created: {
     icon: Waypoints,
     accent: "text-violet-700 dark:text-violet-300",

@@ -58,6 +58,7 @@ export interface PromptTemplate {
 export interface RunRequest {
   mode: string;
   task: string;
+  scenario_id?: string | null;
   agents?: AgentConfig[];
   config?: Record<string, unknown>;
 }
@@ -83,6 +84,7 @@ export interface SessionEvent {
   pending_instructions?: number;
   applied_count?: number;
   mode?: string;
+  forked_from?: string;
 }
 
 export interface Session {
@@ -94,6 +96,9 @@ export interface Session {
   result: string | null;
   status: "running" | "pause_requested" | "paused" | "cancel_requested" | "cancelled" | "completed" | "failed";
   config: Record<string, unknown>;
+  active_scenario?: string | null;
+  forked_from?: string | null;
+  forked_checkpoint_id?: string | null;
   capabilities?: Record<string, boolean>;
   created_at: number;
   elapsed_sec: number | null;
@@ -104,6 +109,7 @@ export interface Session {
     next_node?: string | null;
     status: string;
     result_preview?: string;
+    graph_checkpoint_id?: string | null;
   }>;
   events?: SessionEvent[];
   pending_instructions?: number;
@@ -120,5 +126,18 @@ export interface SessionSummary {
 
 export interface ModeInfo {
   description: string;
+  default_agents: AgentConfig[];
+}
+
+export interface ScenarioDefinition {
+  id: string;
+  name: string;
+  mode: string;
+  headline: string;
+  description: string;
+  recommended_for: string;
+  task_placeholder: string;
+  tags: string[];
+  default_config: Record<string, number>;
   default_agents: AgentConfig[];
 }

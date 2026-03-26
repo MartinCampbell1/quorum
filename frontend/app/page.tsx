@@ -52,7 +52,7 @@ export default function Home() {
         ) : showWizard ? (
           <Wizard onSessionCreated={(id) => { setActiveSessionId(id); setShowWizard(false); }} />
         ) : activeSessionId ? (
-          <ChatView sessionId={activeSessionId} />
+          <ChatView sessionId={activeSessionId} onForkSession={handleSelectSession} />
         ) : (
           <div className="flex h-full items-center justify-center">
             <div className="text-center">
