@@ -18,9 +18,9 @@ const navItems: { id: View; icon: typeof MessageSquare; label: string }[] = [
 
 export function IconBar({ activeView, onViewChange }: IconBarProps) {
   return (
-    <div className="flex h-full w-16 flex-col items-center border-r border-white/[0.05] bg-black py-4">
-      <div className="mb-6 flex h-9 w-9 items-center justify-center rounded-xl bg-accent shadow-[0_0_12px_rgba(37,99,235,0.3)]">
-        <span className="font-mono text-sm font-bold text-white">Q</span>
+    <div className="flex h-full w-16 flex-col items-center border-r border-white/[0.06] bg-[#0f0f0f] py-4">
+      <div className="mb-6 flex h-9 w-9 items-center justify-center rounded-xl bg-white/10">
+        <span className="font-mono text-sm font-semibold text-[#f5f5f7]">Q</span>
       </div>
       <nav className="flex flex-col gap-2">
         {navItems.map(({ id, icon: Icon, label }) => (
@@ -30,8 +30,8 @@ export function IconBar({ activeView, onViewChange }: IconBarProps) {
             aria-label={label}
             className={`flex h-10 w-10 items-center justify-center rounded-xl transition-all duration-200 cursor-pointer ${
               activeView === id
-                ? "text-accent [filter:drop-shadow(0_0_8px_rgba(37,99,235,0.4))]"
-                : "text-text-muted hover:text-text-secondary"
+                ? "text-[#f5f5f7]"
+                : "text-white/25 hover:text-white/55"
             }`}
           >
             <Icon size={18} strokeWidth={1.5} />
