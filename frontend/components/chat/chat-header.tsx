@@ -66,8 +66,8 @@ export function ChatHeader({ session, onRefresh }: ChatHeaderProps) {
             </div>
           )}
           <div className="min-w-0">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-sky-700 dark:text-sky-300">
-              Control Center
+            <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#445d99] dark:text-sky-300">
+              Session Monitor
             </p>
             <p className="mt-1 truncate text-sm font-semibold text-slate-950 dark:text-slate-50">
               {session.task}

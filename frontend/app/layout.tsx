@@ -1,19 +1,7 @@
 import type { Metadata } from "next";
-import { Geist, JetBrains_Mono } from "next/font/google";
+import type { CSSProperties, ReactNode } from "react";
 import { ThemeProvider } from "next-themes";
 import "./globals.css";
-
-const geist = Geist({
-  subsets: ["latin"],
-  variable: "--font-sans",
-});
-
-const jetBrainsMono = JetBrains_Mono({
-  subsets: ["latin"],
-  weight: ["400", "500"],
-  variable: "--font-mono",
-  display: "swap",
-});
 
 export const metadata: Metadata = {
   title: "Quorum",
@@ -23,11 +11,19 @@ export const metadata: Metadata = {
 export default function RootLayout({
   children,
 }: {
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className={`${geist.variable} ${jetBrainsMono.variable} font-sans antialiased`}>
+      <body
+        className="font-sans antialiased"
+        style={
+          {
+            "--font-sans": '"Inter", "Geist", "SF Pro Display", system-ui, sans-serif',
+            "--font-mono": '"JetBrains Mono", "SFMono-Regular", "SF Mono", ui-monospace, monospace',
+          } as CSSProperties
+        }
+      >
         <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false}>
           {children}
         </ThemeProvider>

@@ -145,9 +145,12 @@ TOOL_TYPES = {
         "category": "mcp",
         "icon": "🔌",
         "fields": [
-            {"name": "command", "label": "Команда запуска", "type": "text", "required": True, "placeholder": "npx -y @modelcontextprotocol/server-github"},
+            {"name": "transport", "label": "Transport", "type": "select", "required": True, "options": ["stdio", "http"], "placeholder": ""},
+            {"name": "command", "label": "Команда запуска", "type": "text", "required": False, "placeholder": "npx -y @modelcontextprotocol/server-github"},
             {"name": "args", "label": "Аргументы (через пробел)", "type": "text", "required": False, "placeholder": ""},
             {"name": "env", "label": "Переменные окружения (JSON)", "type": "textarea", "required": False, "placeholder": "{\"GITHUB_TOKEN\": \"ghp_...\"}"},
+            {"name": "url", "label": "HTTP URL", "type": "text", "required": False, "placeholder": "https://stitch.googleapis.com/mcp"},
+            {"name": "headers", "label": "HTTP headers (JSON)", "type": "textarea", "required": False, "placeholder": "{\"X-Goog-Api-Key\": \"...\"}"},
         ],
         "mcp_server": "__custom_mcp__",
         "mcp_tool": "__all__",

@@ -22,14 +22,14 @@ export function IconBar({ activeView, onViewChange }: IconBarProps) {
   const { theme, setTheme } = useTheme();
 
   return (
-    <div className="flex h-full w-[88px] flex-col items-center gap-2 border-r border-slate-800/90 bg-slate-950 px-3 py-4 text-slate-100 shadow-[18px_0_40px_-28px_rgba(15,23,42,0.95)]">
-      <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-slate-700/80 bg-[linear-gradient(180deg,rgba(15,23,42,0.96),rgba(30,41,59,0.96))] text-sm font-semibold tracking-tight text-white shadow-[0_16px_34px_-24px_rgba(148,163,184,0.8)]">
-        Q
+    <div className="flex h-full w-[66px] flex-col items-center gap-3 border-r border-[#e2e8f0]/75 bg-white px-2 py-4 text-[#09090b] dark:border-slate-800 dark:bg-slate-950/80 dark:text-slate-100">
+      <div className="flex h-10 w-10 items-center justify-center rounded-2xl text-sm font-semibold tracking-tight text-[#09090b] dark:text-white">
+        A
       </div>
-      <span className="text-[10px] font-semibold uppercase tracking-[0.24em] text-slate-400">
-        Quorum
+      <span className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[#445d99] dark:text-slate-400">
+        AO
       </span>
-      <div className="mb-1 h-px w-10 bg-slate-800" />
+      <div className="mb-1 h-px w-8 bg-[#e2e8f0] dark:bg-slate-800" />
       {navItems.map(({ id, icon: Icon, label }) => (
         <Button
           key={id}
@@ -38,8 +38,8 @@ export function IconBar({ activeView, onViewChange }: IconBarProps) {
           className={cn(
             "h-auto w-full flex-col gap-1.5 rounded-2xl border px-2 py-3 transition-all duration-200",
             activeView === id
-              ? "border-slate-700 bg-slate-900 text-white shadow-[0_14px_26px_-20px_rgba(255,255,255,0.35)]"
-              : "border-transparent text-slate-400 hover:border-slate-800 hover:bg-slate-900/80 hover:text-slate-100"
+              ? "border-[#09090b] bg-[#09090b] text-white"
+              : "border-transparent text-[#445d99] hover:bg-[#f2f3ff] hover:text-[#09090b] dark:text-slate-400 dark:hover:bg-slate-900/80 dark:hover:text-slate-100"
           )}
           onClick={() => onViewChange(id)}
           aria-label={label}
@@ -48,11 +48,11 @@ export function IconBar({ activeView, onViewChange }: IconBarProps) {
           <span className="text-[10px] font-medium leading-none">{label}</span>
         </Button>
       ))}
-      <div className="mt-auto w-full rounded-2xl border border-slate-800 bg-slate-900/70 p-2">
+      <div className="mt-auto w-full rounded-2xl border border-[#e2e8f0] bg-[#faf8ff] p-1.5 dark:border-slate-800 dark:bg-slate-900/70">
         <Button
           variant="ghost"
           size="icon"
-          className="relative h-auto w-full flex-col gap-1.5 rounded-xl px-2 py-2.5 text-slate-300 hover:bg-slate-800/80 hover:text-white"
+          className="relative h-auto w-full flex-col gap-1.5 rounded-xl px-2 py-2.5 text-[#445d99] hover:bg-[#f2f3ff] hover:text-[#09090b] dark:text-slate-300 dark:hover:bg-slate-800/80 dark:hover:text-white"
           onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
           aria-label="Toggle theme"
         >
