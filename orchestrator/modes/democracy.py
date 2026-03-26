@@ -7,7 +7,7 @@ from typing import Annotated
 from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
 
-from orchestrator.modes.base import call_agent, make_message
+from orchestrator.modes.base import call_agent, call_agent_cfg, make_message, strip_markdown_fence
 
 
 class DemocracyState(TypedDict):
@@ -36,9 +36,9 @@ def collect_votes(state: DemocracyState) -> dict:
             f"Respond with JSON: {{\"position\": \"your clear position\", \"reasoning\": \"why\"}}\n"
             f"Return ONLY valid JSON."
         )
-        response = call_agent(agent["provider"], prompt, agent.get("system_prompt", ""))
+        response = call_agent_cfg(agent, prompt)
         try:
-            vote = json.loads(response.strip().strip("```json").strip("```"))
+            vote = json.loads(strip_markdown_fence(response))
         except json.JSONDecodeError:
             vote = {"position": response[:200], "reasoning": ""}
         vote["agent_id"] = agent["role"]
@@ -56,9 +56,10 @@ def tally_votes(state: DemocracyState) -> dict:
         f'{{"has_majority": true, "majority_position": "the winning position", "summary": "brief summary"}}\n'
         f"Return ONLY valid JSON."
     )
+    # TODO: make arbitrator provider configurable via state config
     response = call_agent("minimax", prompt)
     try:
-        tally = json.loads(response.strip().strip("```json").strip("```"))
+        tally = json.loads(strip_markdown_fence(response))
     except json.JSONDecodeError:
         tally = {"has_majority": True, "majority_position": state["votes"][0]["position"], "summary": response}
     messages = [make_message("system", f"Tally: {tally.get('summary', '')}", f"tally_round_{state['round']}")]
@@ -77,6 +78,7 @@ def route_after_tally(state: DemocracyState) -> str:
 
 def force_decision(state: DemocracyState) -> dict:
     votes_text = "\n".join(f"- {v['agent_id']}: {v['position']}" for v in state["votes"])
+    # TODO: make arbitrator provider configurable via state config
     response = call_agent(
         "minimax",
         f"No majority was reached after {state['round']} rounds.\n\nVotes:\n{votes_text}\n\n"

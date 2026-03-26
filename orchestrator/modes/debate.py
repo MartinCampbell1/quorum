@@ -7,7 +7,7 @@ from typing import Annotated
 from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
 
-from orchestrator.modes.base import call_agent, make_message
+from orchestrator.modes.base import call_agent_cfg, make_message
 
 
 class DebateState(TypedDict):
@@ -36,7 +36,7 @@ def proponent_argues(state: DebateState) -> dict:
         f"Make your strongest argument. Be specific and evidence-based. "
         f"If this is round 2+, rebut the opponent's previous points."
     )
-    response = call_agent(pro["provider"], prompt, pro.get("system_prompt", ""))
+    response = call_agent_cfg(pro, prompt)
     return {
         "messages": [make_message(pro["role"], response, f"round_{rnd + 1}_pro")],
         "rounds": [*state["rounds"], {"round": rnd + 1, "pro_arg": response, "con_arg": ""}],
@@ -60,7 +60,7 @@ def opponent_argues(state: DebateState) -> dict:
         f"Proponent's argument this round:\n{pro_arg}\n\n"
         f"Counter-argue. Be specific. Attack weak points."
     )
-    response = call_agent(opp["provider"], prompt, opp.get("system_prompt", ""))
+    response = call_agent_cfg(opp, prompt)
     updated_rounds = list(state["rounds"])
     updated_rounds[-1] = {**updated_rounds[-1], "con_arg": response}
     return {
@@ -83,7 +83,7 @@ def judge_decides(state: DebateState) -> dict:
         f"2. The strongest argument from each side\n3. Your final recommendation\n\n"
         f"If you need one more round of debate, say NEED_MORE_ROUNDS."
     )
-    response = call_agent(judge["provider"], prompt, judge.get("system_prompt", ""))
+    response = call_agent_cfg(judge, prompt)
     return {
         "verdict": response, "result": response,
         "messages": [make_message(judge["role"], response, "verdict")],

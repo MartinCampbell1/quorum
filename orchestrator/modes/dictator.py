@@ -8,7 +8,7 @@ from typing import Annotated
 from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
 
-from orchestrator.modes.base import call_agent, make_message
+from orchestrator.modes.base import call_agent, call_agent_cfg, make_message, strip_markdown_fence
 
 
 class DictatorState(TypedDict):
@@ -16,7 +16,7 @@ class DictatorState(TypedDict):
     agents: list[dict]
     messages: Annotated[list[dict], operator.add]
     subtasks: list[dict]
-    worker_results: Annotated[list[dict], operator.add]
+    worker_results: list[dict]
     iteration: int
     max_iterations: int
     result: str
@@ -37,10 +37,10 @@ def director_plan(state: DictatorState) -> dict:
         f"Return ONLY valid JSON, no markdown."
     )
 
-    response = call_agent(director["provider"], prompt, director.get("system_prompt", ""))
+    response = call_agent_cfg(director, prompt)
 
     try:
-        subtasks = json.loads(response.strip().strip("```json").strip("```"))
+        subtasks = json.loads(strip_markdown_fence(response))
     except json.JSONDecodeError:
         subtasks = [{"description": state["task"], "worker_index": i}
                     for i in range(len(workers))]
@@ -66,7 +66,7 @@ def workers_execute(state: DictatorState) -> dict:
             f"Context — overall task: {state['task']}"
         )
 
-        response = call_agent(worker["provider"], prompt, worker.get("system_prompt", ""))
+        response = call_agent_cfg(worker, prompt)
         results.append({"subtask": st["description"], "worker": worker["role"], "result": response})
         messages.append(make_message(worker["role"], response, "executing"))
 
@@ -90,7 +90,7 @@ def director_synthesize(state: DictatorState) -> dict:
         f"If results are insufficient, say NEEDS_MORE_WORK and explain what's missing."
     )
 
-    response = call_agent(director["provider"], prompt, director.get("system_prompt", ""))
+    response = call_agent_cfg(director, prompt)
 
     return {
         "result": response,

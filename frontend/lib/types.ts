@@ -2,6 +2,23 @@ export interface AgentConfig {
   role: string;
   provider: "claude" | "gemini" | "codex" | "minimax";
   system_prompt: string;
+  tools?: string[];
+}
+
+export interface ToolDefinition {
+  key: string;
+  name: string;
+  description: string;
+  category: string;
+}
+
+export interface CustomToolConfig {
+  key: string;
+  name: string;
+  description: string;
+  category?: string;
+  tool_type: "http_api" | "ssh" | "shell_command";
+  config: Record<string, string>;
 }
 
 export interface RunRequest {

@@ -16,41 +16,41 @@ from orchestrator.modes.tournament import build_tournament_graph
 
 DEFAULT_AGENTS = {
     "dictator": [
-        AgentConfig(role="director", provider="claude"),
-        AgentConfig(role="worker_1", provider="codex"),
-        AgentConfig(role="worker_2", provider="gemini"),
+        AgentConfig(role="director", provider="claude", tools=["web_search", "perplexity"]),
+        AgentConfig(role="worker_1", provider="codex", tools=["code_exec", "shell_exec", "web_search"]),
+        AgentConfig(role="worker_2", provider="gemini", tools=["web_search", "perplexity", "http_request"]),
     ],
     "board": [
-        AgentConfig(role="director_1", provider="claude"),
-        AgentConfig(role="director_2", provider="codex"),
-        AgentConfig(role="director_3", provider="gemini"),
+        AgentConfig(role="director_1", provider="claude", tools=["web_search", "perplexity"]),
+        AgentConfig(role="director_2", provider="codex", tools=["code_exec", "shell_exec"]),
+        AgentConfig(role="director_3", provider="gemini", tools=["web_search", "perplexity"]),
     ],
     "democracy": [
-        AgentConfig(role="voter_claude", provider="claude"),
-        AgentConfig(role="voter_gemini", provider="gemini"),
-        AgentConfig(role="voter_codex", provider="codex"),
+        AgentConfig(role="voter_claude", provider="claude", tools=["web_search", "perplexity"]),
+        AgentConfig(role="voter_gemini", provider="gemini", tools=["web_search", "perplexity"]),
+        AgentConfig(role="voter_codex", provider="codex", tools=["code_exec", "web_search"]),
     ],
     "debate": [
-        AgentConfig(role="proponent", provider="claude"),
-        AgentConfig(role="opponent", provider="codex"),
-        AgentConfig(role="judge", provider="gemini"),
+        AgentConfig(role="proponent", provider="claude", tools=["web_search", "perplexity"]),
+        AgentConfig(role="opponent", provider="codex", tools=["web_search", "perplexity"]),
+        AgentConfig(role="judge", provider="gemini", tools=["perplexity"]),
     ],
     "map_reduce": [
-        AgentConfig(role="planner", provider="claude"),
-        AgentConfig(role="worker_1", provider="codex"),
-        AgentConfig(role="worker_2", provider="gemini"),
-        AgentConfig(role="synthesizer", provider="claude"),
+        AgentConfig(role="planner", provider="claude", tools=["web_search", "perplexity"]),
+        AgentConfig(role="worker_1", provider="codex", tools=["code_exec", "shell_exec", "web_search"]),
+        AgentConfig(role="worker_2", provider="gemini", tools=["web_search", "http_request", "perplexity"]),
+        AgentConfig(role="synthesizer", provider="claude", tools=["perplexity"]),
     ],
     "creator_critic": [
-        AgentConfig(role="creator", provider="codex"),
-        AgentConfig(role="critic", provider="claude"),
+        AgentConfig(role="creator", provider="codex", tools=["code_exec", "web_search", "shell_exec"]),
+        AgentConfig(role="critic", provider="claude", tools=["web_search", "perplexity"]),
     ],
     "tournament": [
-        AgentConfig(role="contestant_1", provider="claude"),
-        AgentConfig(role="contestant_2", provider="codex"),
-        AgentConfig(role="contestant_3", provider="gemini"),
-        AgentConfig(role="contestant_4", provider="codex"),
-        AgentConfig(role="judge", provider="claude"),
+        AgentConfig(role="contestant_1", provider="claude", tools=["web_search", "code_exec"]),
+        AgentConfig(role="contestant_2", provider="codex", tools=["code_exec", "shell_exec"]),
+        AgentConfig(role="contestant_3", provider="gemini", tools=["web_search", "perplexity"]),
+        AgentConfig(role="contestant_4", provider="codex", tools=["code_exec", "http_request"]),
+        AgentConfig(role="judge", provider="claude", tools=["perplexity"]),
     ],
 }
 
@@ -110,17 +110,17 @@ def _build_graph(mode: str):
     return builder()
 
 
-async def run(mode: str, task: str, agents: list[AgentConfig] = None, config: dict = None) -> str:
+async def run(mode: str, task: str, agents: list[AgentConfig] | None = None, config: dict | None = None) -> str:
     config = config or {}
     agents = agents or DEFAULT_AGENTS.get(mode, [])
     session_id = store.create(mode, task, agents, config)
 
-    def _execute_sync():
+    async def _execute():
         t0 = time.time()
         try:
             graph = _build_graph(mode)
             initial_state = _build_initial_state(mode, task, agents, config)
-            final_state = graph.invoke(initial_state)
+            final_state = await asyncio.to_thread(graph.invoke, initial_state)
             store.update(session_id,
                 status="completed",
                 result=final_state.get("result", ""),
@@ -134,8 +134,5 @@ async def run(mode: str, task: str, agents: list[AgentConfig] = None, config: di
                 elapsed_sec=round(time.time() - t0, 2),
             )
 
-    # Run in thread to avoid blocking the asyncio event loop
-    # (graph.invoke → httpx sync → gateway needs the event loop free to respond)
-    import threading
-    threading.Thread(target=_execute_sync, daemon=True).start()
+    asyncio.create_task(_execute())
     return session_id

@@ -26,6 +26,7 @@ Multi-Agent Gateway v3 - FastAPI + Profile Rotation + Orchestrator
 import asyncio
 import json
 import os
+import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -285,24 +286,83 @@ async def run_cli(
     )
 
 
-def build_cmd(provider: str, prompt: str, model: str = None) -> list[str]:
+# =========================================================================
+#  MCP SERVER CONFIG
+# =========================================================================
+
+# Tool key → MCP server mapping
+MCP_SERVER_MAP = {
+    "web_search": "search-server",
+    "perplexity": "search-server",
+    "code_exec": "exec-server",
+    "shell_exec": "exec-server",
+    "http_request": "exec-server",
+}
+
+MCP_SERVER_DEFINITIONS = {
+    "search-server": {
+        "command": "python3",
+        "args": [str(Path(__file__).parent / "mcp_servers" / "search_server.py")],
+    },
+    "exec-server": {
+        "command": "python3",
+        "args": [str(Path(__file__).parent / "mcp_servers" / "exec_server.py")],
+    },
+}
+
+
+def build_mcp_config(tool_keys: list[str]) -> str | None:
+    """Generate a temporary MCP config JSON file for the given tool keys.
+    Returns the file path, or None if no tools need MCP servers."""
+    if not tool_keys:
+        return None
+
+    # Determine which MCP servers are needed
+    needed_servers = set()
+    for key in tool_keys:
+        server_name = MCP_SERVER_MAP.get(key)
+        if server_name:
+            needed_servers.add(server_name)
+
+    if not needed_servers:
+        return None
+
+    # Build MCP config JSON
+    config = {"mcpServers": {}}
+    for server_name in needed_servers:
+        defn = MCP_SERVER_DEFINITIONS.get(server_name)
+        if defn:
+            config["mcpServers"][server_name] = defn
+
+    # Write to temp file
+    f = tempfile.NamedTemporaryFile(mode="w", suffix=".json", prefix="mcp_", delete=False)
+    json.dump(config, f)
+    f.close()
+    return f.name
+
+
+def build_cmd(provider: str, prompt: str, model: str = None, mcp_config_path: str = None) -> list[str]:
     """Собрать команду для CLI."""
     if provider == "claude":
         cmd = [CLAUDE_BIN, "-p", prompt, "--output-format", "json"]
         if model:
             cmd.extend(["--model", model])
+        if mcp_config_path:
+            cmd.extend(["--mcp-config", mcp_config_path])
         return cmd
 
     elif provider == "gemini":
         cmd = [GEMINI_BIN, "-p", prompt]
         if model:
             cmd.extend(["--model", model])
+        # TODO: Gemini MCP config via --allowed-mcp-server-names or settings
         return cmd
 
     elif provider == "codex":
         cmd = [CODEX_BIN, "exec", "--skip-git-repo-check", prompt]
         if model:
             cmd.extend(["--model", model])
+        # TODO: Codex MCP config via env/settings
         return cmd
 
     raise ValueError(f"Unknown provider: {provider}")
@@ -334,6 +394,7 @@ async def call_agent(
     model: str = None,
     system_prompt: str = None,
     timeout: int = DEFAULT_TIMEOUT,
+    mcp_tools: list[str] = None,
 ) -> dict:
     """
     Вызвать агента с автоматической ротацией аккаунтов.
@@ -346,102 +407,111 @@ async def call_agent(
     if system_prompt:
         prompt = f"[System]: {system_prompt}\n\n{prompt}"
 
-    cmd = build_cmd(provider, prompt, model)
-    pool = pools.get(provider)
-    t0 = time.time()
-    retries = 0
+    mcp_config_path = build_mcp_config(mcp_tools) if mcp_tools else None
+    try:
+        cmd = build_cmd(provider, prompt, model, mcp_config_path)
+        pool = pools.get(provider)
+        t0 = time.time()
+        retries = 0
 
-    # Если нет профилей - вызов с дефолтным env
-    if not pool or not pool.profiles:
-        try:
-            stdout, stderr, rc = await run_cli(cmd, workdir, timeout)
+        # Если нет профилей - вызов с дефолтным env
+        if not pool or not pool.profiles:
+            try:
+                stdout, stderr, rc = await run_cli(cmd, workdir, timeout)
+                output = parse_output(provider, stdout)
+                return {
+                    "agent": provider,
+                    "profile_used": "default",
+                    "output": output,
+                    "elapsed_sec": round(time.time() - t0, 2),
+                    "success": rc == 0,
+                    "error": stderr.strip() if rc != 0 else None,
+                    "retries": 0,
+                }
+            except Exception as e:
+                return {
+                    "agent": provider,
+                    "profile_used": "default",
+                    "output": "",
+                    "elapsed_sec": round(time.time() - t0, 2),
+                    "success": False,
+                    "error": str(e),
+                    "retries": 0,
+                }
+
+        # С ротацией
+        max_attempts = len(pool.profiles)
+
+        for attempt in range(max_attempts):
+            profile = await pool.get_next()
+
+            if profile is None:
+                statuses = pool.status()
+                soonest = min((s["cooldown_remaining_sec"] for s in statuses), default=0)
+                return {
+                    "agent": provider,
+                    "profile_used": None,
+                    "output": "",
+                    "elapsed_sec": round(time.time() - t0, 2),
+                    "success": False,
+                    "error": f"All {len(pool.profiles)} accounts rate-limited. "
+                             f"Soonest recovery: {soonest}s",
+                    "retries": retries,
+                    "pool_status": statuses,
+                }
+
+            env = build_env(profile)
+
+            try:
+                stdout, stderr, rc = await run_cli(cmd, workdir, timeout, env)
+            except Exception as e:
+                await pool.mark_rate_limited(profile)
+                retries += 1
+                print(f"[ROTATE] {provider}/{profile.name} error: {e}")
+                continue
+
+            combined = stdout + " " + stderr
+
+            if is_rate_limited(combined):
+                await pool.mark_rate_limited(profile)
+                retries += 1
+                print(f"[ROTATE] {provider}/{profile.name} rate-limited, switching...")
+                continue
+
+            # Успех
+            await pool.mark_success(profile)
             output = parse_output(provider, stdout)
+
+            # Debug: log if output is empty
+            if not output and stdout.strip() == "" and stderr.strip():
+                print(f"[DEBUG] {provider}/{profile.name} stdout empty, stderr: {stderr[:300]}")
+
             return {
                 "agent": provider,
-                "profile_used": "default",
+                "profile_used": profile.name,
                 "output": output,
                 "elapsed_sec": round(time.time() - t0, 2),
-                "success": rc == 0,
-                "error": stderr.strip() if rc != 0 else None,
-                "retries": 0,
-            }
-        except Exception as e:
-            return {
-                "agent": provider,
-                "profile_used": "default",
-                "output": "",
-                "elapsed_sec": round(time.time() - t0, 2),
-                "success": False,
-                "error": str(e),
-                "retries": 0,
-            }
-
-    # С ротацией
-    max_attempts = len(pool.profiles)
-
-    for attempt in range(max_attempts):
-        profile = await pool.get_next()
-
-        if profile is None:
-            statuses = pool.status()
-            soonest = min((s["cooldown_remaining_sec"] for s in statuses), default=0)
-            return {
-                "agent": provider,
-                "profile_used": None,
-                "output": "",
-                "elapsed_sec": round(time.time() - t0, 2),
-                "success": False,
-                "error": f"All {len(pool.profiles)} accounts rate-limited. "
-                         f"Soonest recovery: {soonest}s",
+                "success": rc == 0 and bool(output),
+                "error": stderr.strip()[:500] if rc != 0 or not output else None,
                 "retries": retries,
-                "pool_status": statuses,
             }
-
-        env = build_env(profile)
-
-        try:
-            stdout, stderr, rc = await run_cli(cmd, workdir, timeout, env)
-        except Exception as e:
-            await pool.mark_rate_limited(profile)
-            retries += 1
-            print(f"[ROTATE] {provider}/{profile.name} error: {e}")
-            continue
-
-        combined = stdout + " " + stderr
-
-        if is_rate_limited(combined):
-            await pool.mark_rate_limited(profile)
-            retries += 1
-            print(f"[ROTATE] {provider}/{profile.name} rate-limited, switching...")
-            continue
-
-        # Успех
-        await pool.mark_success(profile)
-        output = parse_output(provider, stdout)
-
-        # Debug: log if output is empty
-        if not output and stdout.strip() == "" and stderr.strip():
-            print(f"[DEBUG] {provider}/{profile.name} stdout empty, stderr: {stderr[:300]}")
 
         return {
             "agent": provider,
-            "profile_used": profile.name,
-            "output": output,
+            "profile_used": None,
+            "output": "",
             "elapsed_sec": round(time.time() - t0, 2),
-            "success": rc == 0 and bool(output),
-            "error": stderr.strip()[:500] if rc != 0 or not output else None,
+            "success": False,
+            "error": f"Exhausted all {max_attempts} profiles",
             "retries": retries,
         }
-
-    return {
-        "agent": provider,
-        "profile_used": None,
-        "output": "",
-        "elapsed_sec": round(time.time() - t0, 2),
-        "success": False,
-        "error": f"Exhausted all {max_attempts} profiles",
-        "retries": retries,
-    }
+    finally:
+        # Clean up temp MCP config
+        if mcp_config_path:
+            try:
+                os.unlink(mcp_config_path)
+            except OSError:
+                pass
 
 
 # =========================================================================
@@ -483,6 +553,7 @@ class AgentRequest(BaseModel):
     model: Optional[str] = None
     system_prompt: Optional[str] = None
     timeout: Optional[int] = DEFAULT_TIMEOUT
+    mcp_tools: Optional[list[str]] = None
 
 
 class MultiRequest(BaseModel):
@@ -510,24 +581,28 @@ class ConsensusRequest(BaseModel):
 @app.post("/claude")
 async def ep_claude(req: AgentRequest):
     return await call_agent("claude", req.prompt, req.workdir, req.model,
-                            req.system_prompt, req.timeout or DEFAULT_TIMEOUT)
+                            req.system_prompt, req.timeout or DEFAULT_TIMEOUT,
+                            mcp_tools=req.mcp_tools)
 
 @app.post("/gemini")
 async def ep_gemini(req: AgentRequest):
     return await call_agent("gemini", req.prompt, req.workdir, req.model,
-                            req.system_prompt, req.timeout or DEFAULT_TIMEOUT)
+                            req.system_prompt, req.timeout or DEFAULT_TIMEOUT,
+                            mcp_tools=req.mcp_tools)
 
 @app.post("/codex")
 async def ep_codex(req: AgentRequest):
     return await call_agent("codex", req.prompt, req.workdir, req.model,
-                            req.system_prompt, req.timeout or DEFAULT_TIMEOUT)
+                            req.system_prompt, req.timeout or DEFAULT_TIMEOUT,
+                            mcp_tools=req.mcp_tools)
 
 @app.post("/ask")
 async def ep_ask(req: AgentRequest):
     if not req.agent:
         raise HTTPException(400, "Specify 'agent': 'claude' | 'gemini' | 'codex'")
     return await call_agent(req.agent, req.prompt, req.workdir, req.model,
-                            req.system_prompt, req.timeout or DEFAULT_TIMEOUT)
+                            req.system_prompt, req.timeout or DEFAULT_TIMEOUT,
+                            mcp_tools=req.mcp_tools)
 
 
 # ---- Endpoint: Fan-out to multiple agents ----

@@ -3,8 +3,8 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Rocket } from "lucide-react";
-import { MODE_LABELS } from "@/lib/constants";
+import { Rocket, Wrench } from "lucide-react";
+import { MODE_LABELS, TOOL_LABELS } from "@/lib/constants";
 import type { AgentConfig } from "@/lib/types";
 import { Stepper } from "./stepper";
 
@@ -97,12 +97,20 @@ export function StepTask({ mode, agents, onLaunch, onBack, isLaunching }: StepTa
               <span className="text-muted-foreground">Режим</span>
               <Badge variant="secondary" className="font-medium">{MODE_LABELS[mode]}</Badge>
             </div>
-            <div className="flex flex-wrap items-center gap-1.5 text-[13px]">
-              <span className="text-muted-foreground mr-1">Агенты</span>
-              {agents.map((a, i) => (
-                <Badge key={i} variant="outline" className="font-mono text-[10px] font-normal">
-                  {a.role}
-                </Badge>
+            <div className="flex flex-col gap-2 text-[13px]">
+              <span className="text-muted-foreground">Агенты</span>
+              {agents.map((a) => (
+                <div key={a.role} className="flex items-center gap-2 pl-2">
+                  <Badge variant="outline" className="font-mono text-[10px] font-normal">
+                    {a.role}
+                  </Badge>
+                  {(a.tools?.length ?? 0) > 0 && (
+                    <span className="flex items-center gap-1 text-[10px] text-muted-foreground/60">
+                      <Wrench size={9} />
+                      {(a.tools ?? []).map(t => TOOL_LABELS[t] ?? t).join(", ")}
+                    </span>
+                  )}
+                </div>
               ))}
             </div>
           </div>
