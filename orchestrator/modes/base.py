@@ -1,15 +1,20 @@
 """Base class for orchestration modes and agent factory."""
 
+import asyncio
 import re
 import time
+from pathlib import Path
 from typing import Optional
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
 import sys
-sys.path.insert(0, "/Users/example/multi-agent")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 from langchain_gateway import GatewayClaude, GatewayGemini, GatewayCodex, GatewayMiniMax
+from orchestrator.tools.router import route_tool_visibility
 
 
 def make_llm(provider: str, mcp_tools: list[str] | None = None) -> BaseChatModel:
@@ -39,10 +44,22 @@ def call_agent(provider: str, prompt: str, system_prompt: str = "", tools: list[
 
 def call_agent_cfg(agent: dict, prompt: str) -> str:
     """Call an agent using an agent config dict (with provider, system_prompt, tools keys)."""
+    tools = list(agent.get("tools") or [])
+    if tools:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            tools = asyncio.run(
+                route_tool_visibility(
+                    task=prompt,
+                    role=agent.get("role", ""),
+                    available_tool_keys=tools,
+                )
+            )
     return call_agent(
         agent["provider"], prompt,
         agent.get("system_prompt", ""),
-        tools=agent.get("tools"),
+        tools=tools,
     )
 
 

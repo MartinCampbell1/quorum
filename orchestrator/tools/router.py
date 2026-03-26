@@ -37,10 +37,14 @@ async def route_tool_visibility(
     if len(available_tool_keys) <= 3:
         return available_tool_keys
 
+    api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not api_key:
+        return available_tool_keys
+
     try:
         router_llm = ChatOpenAI(
             model="minimax/minimax-m2.7",
-            api_key=os.environ.get("OPENROUTER_API_KEY", ""),
+            api_key=api_key,
             base_url="https://openrouter.ai/api/v1",
             temperature=0,
         )

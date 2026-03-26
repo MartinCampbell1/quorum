@@ -10,8 +10,6 @@ import { PROVIDER_LABELS, ALL_TOOL_KEYS, TOOL_LABELS, TOOL_DESCRIPTIONS } from "
 import { cn } from "@/lib/utils";
 import type { AgentConfig } from "@/lib/types";
 import { Stepper } from "./stepper";
-import { CustomToolForm } from "./custom-tool-form";
-import { addCustomTool } from "@/lib/api";
 
 interface StepAgentsProps {
   agents: AgentConfig[];
@@ -24,7 +22,6 @@ const providers = ["claude", "gemini", "codex", "minimax"] as const;
 
 export function StepAgents({ agents, onChange, onNext, onBack }: StepAgentsProps) {
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
-  const [showCustomToolFormIdx, setShowCustomToolFormIdx] = useState<number | null>(null);
 
   function updateAgent(index: number, updates: Partial<AgentConfig>) {
     const next = agents.map((a, i) => (i === index ? { ...a, ...updates } : a));
@@ -130,31 +127,9 @@ export function StepAgents({ agents, onChange, onNext, onBack }: StepAgentsProps
                         descriptions={TOOL_DESCRIPTIONS}
                       />
 
-                      {/* Custom tool button / form */}
-                      {showCustomToolFormIdx === i ? (
-                        <div className="mt-3">
-                          <CustomToolForm
-                            onAdd={async (tool) => {
-                              try {
-                                await addCustomTool(tool);
-                                updateAgent(i, { tools: [...(agent.tools ?? []), tool.key] });
-                                setShowCustomToolFormIdx(null);
-                              } catch (err) {
-                                console.error("Failed to add custom tool:", err);
-                              }
-                            }}
-                            onCancel={() => setShowCustomToolFormIdx(null)}
-                          />
-                        </div>
-                      ) : (
-                        <button
-                          onClick={() => setShowCustomToolFormIdx(i)}
-                          className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-                        >
-                          <Plus size={12} />
-                          Добавить свой инструмент
-                        </button>
-                      )}
+                      <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground/60">
+                        Кастомные инструменты пока не подключены к backend в этой сборке. Активны только встроенные инструменты выше.
+                      </p>
 
                       {/* System prompt section */}
                       <label className="text-[10px] uppercase tracking-widest text-muted-foreground/60 mb-1.5 mt-4 block font-medium">

@@ -49,7 +49,7 @@ DEFAULT_AGENTS = {
         AgentConfig(role="contestant_1", provider="claude", tools=["web_search", "code_exec"]),
         AgentConfig(role="contestant_2", provider="codex", tools=["code_exec", "shell_exec"]),
         AgentConfig(role="contestant_3", provider="gemini", tools=["web_search", "perplexity"]),
-        AgentConfig(role="contestant_4", provider="codex", tools=["code_exec", "http_request"]),
+        AgentConfig(role="contestant_4", provider="gemini", tools=["web_search", "http_request"]),
         AgentConfig(role="judge", provider="claude", tools=["perplexity"]),
     ],
 }

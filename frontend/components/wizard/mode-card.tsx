@@ -24,21 +24,11 @@ const MODE_COLORS: Record<string, { bg: string; fg: string; ring: string }> = {
   tournament:    { bg: "bg-amber-50 dark:bg-amber-950/30",    fg: "text-amber-700",   ring: "ring-amber-200 dark:ring-amber-800" },
 };
 
-const MODE_DESCRIPTIONS: Record<string, string> = {
-  dictator: "Один директор делегирует задачи воркерам, собирает и синтезирует результаты",
-  board: "Совет из 3 директоров обсуждает и голосует, затем делегирует воркерам",
-  democracy: "Все агенты голосуют равноправно, побеждает большинство, ничья — переголосование",
-  debate: "Пропонент против оппонента спорят в раундах, судья определяет победителя",
-  map_reduce: "Разделить задачу на части, обработать параллельно, синтезировать результат",
-  creator_critic: "Создатель делает работу, критик проверяет — итерации до одобрения",
-  tournament: "Все агенты соревнуются, турнирная сетка с выбыванием, судья выбирает чемпиона",
-};
-
 export function ModeCard({ modeKey, info, isSelected, isRecommended, onClick, index }: ModeCardProps) {
   const Icon = MODE_ICONS[modeKey];
   const agentCount = info.default_agents.length;
   const color = MODE_COLORS[modeKey] ?? MODE_COLORS.dictator;
-  const description = MODE_DESCRIPTIONS[modeKey] ?? info.description;
+  const description = info.description;
 
   return (
     <button

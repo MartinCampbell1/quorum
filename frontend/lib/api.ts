@@ -1,4 +1,5 @@
 import type { Session, SessionSummary, ModeInfo, RunRequest, ToolDefinition, CustomToolConfig } from "./types";
+import { BUILTIN_TOOL_DEFINITIONS } from "./constants";
 
 const BASE = "http://localhost:8800";
 
@@ -21,24 +22,23 @@ export async function getModes(): Promise<Record<string, ModeInfo>> {
 }
 
 export async function getTools(): Promise<ToolDefinition[]> {
-  return request("/orchestrate/tools");
+  return BUILTIN_TOOL_DEFINITIONS;
 }
 
 export async function addCustomTool(
-  config: CustomToolConfig
+  _config: CustomToolConfig
 ): Promise<CustomToolConfig> {
-  return request("/orchestrate/tools/custom", {
-    method: "POST",
-    body: JSON.stringify(config),
-  });
+  void _config;
+  throw new Error("Custom tools are not supported in this build.");
 }
 
 export async function getCustomTools(): Promise<CustomToolConfig[]> {
-  return request("/orchestrate/tools/custom");
+  return [];
 }
 
-export async function removeCustomTool(key: string): Promise<void> {
-  await request(`/orchestrate/tools/custom/${key}`, { method: "DELETE" });
+export async function removeCustomTool(_key: string): Promise<void> {
+  void _key;
+  throw new Error("Custom tools are not supported in this build.");
 }
 
 export async function getToolLogs(
@@ -65,11 +65,10 @@ export async function runSession(
 }
 
 export async function sendMessage(
-  sessionId: string,
-  content: string
+  _sessionId: string,
+  _content: string
 ): Promise<void> {
-  await request(`/orchestrate/session/${sessionId}/message`, {
-    method: "POST",
-    body: JSON.stringify({ content }),
-  });
+  void _sessionId;
+  void _content;
+  throw new Error("Live user messages are not supported in this build.");
 }
