@@ -213,6 +213,25 @@ class GatewayCodex(GatewayChatModel):
 
 
 # =========================================================================
+#  MiniMax via OpenRouter (API, not CLI)
+# =========================================================================
+
+from langchain_openai import ChatOpenAI
+
+
+class GatewayMiniMax(ChatOpenAI):
+    """MiniMax m2.7 via OpenRouter. For lightweight tasks: summaries, formatting, voting."""
+
+    def __init__(self, **kwargs):
+        super().__init__(
+            model=kwargs.pop("model", "minimax/minimax-m2.7"),
+            api_key=kwargs.pop("api_key", "sk-or-v1-[REDACTED]"),
+            base_url=kwargs.pop("base_url", "https://openrouter.ai/api/v1"),
+            **kwargs,
+        )
+
+
+# =========================================================================
 #  Быстрый тест
 # =========================================================================
 
