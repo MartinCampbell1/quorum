@@ -18,6 +18,8 @@ export function Wizard({ onSessionCreated }: WizardProps) {
   const [selectedScenarioId, setSelectedScenarioId] = useState<string | null>(null);
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [isLaunching, setIsLaunching] = useState(false);
+  const [workspacePresetIds, setWorkspacePresetIds] = useState<string[]>([]);
+  const [workspacePaths, setWorkspacePaths] = useState<string[]>([]);
 
   function cloneAgents(source: AgentConfig[]): AgentConfig[] {
     return source.map((agent) => ({
@@ -62,6 +64,9 @@ export function Wizard({ onSessionCreated }: WizardProps) {
         scenario_id: scenario.id,
         agents,
         config,
+        workspace_preset_ids: workspacePresetIds,
+        workspace_paths: workspacePaths,
+        attached_tool_ids: Array.from(new Set(agents.flatMap((agent) => agent.tools ?? []))),
       });
       onSessionCreated(result.session_id);
     } catch (err) {
@@ -111,6 +116,10 @@ export function Wizard({ onSessionCreated }: WizardProps) {
       isLaunching={isLaunching}
       taskPlaceholder={selectedScenario?.task_placeholder}
       scenarioLabel={selectedScenario?.name}
+      workspacePresetIds={workspacePresetIds}
+      workspacePaths={workspacePaths}
+      onWorkspacePresetIdsChange={setWorkspacePresetIds}
+      onWorkspacePathsChange={setWorkspacePaths}
     />,
   ];
 

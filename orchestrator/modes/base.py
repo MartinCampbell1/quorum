@@ -3,6 +3,7 @@
 import asyncio
 import re
 import time
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -17,23 +18,59 @@ from langchain_gateway import GatewayClaude, GatewayGemini, GatewayCodex, Gatewa
 from orchestrator.tools.router import route_tool_visibility
 
 
-def make_llm(provider: str, mcp_tools: list[str] | None = None) -> BaseChatModel:
+def _route_tool_visibility_sync(task: str, role: str, available_tool_keys: list[str]) -> list[str]:
+    result: list[str] = []
+
+    def runner() -> None:
+        nonlocal result
+        result = asyncio.run(
+            route_tool_visibility(
+                task=task,
+                role=role,
+                available_tool_keys=available_tool_keys,
+            )
+        )
+
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    thread.join()
+    return result or available_tool_keys
+
+
+def make_llm(
+    provider: str,
+    mcp_tools: list[str] | None = None,
+    workdir: str | None = None,
+    workspace_paths: list[str] | None = None,
+) -> BaseChatModel:
     """Create a LangChain model for the given provider."""
+    kwargs = {
+        "mcp_tools": mcp_tools,
+        "workdir": workdir or str(PROJECT_ROOT),
+        "workspace_paths": workspace_paths or [],
+    }
     if provider == "claude":
-        return GatewayClaude(mcp_tools=mcp_tools)
+        return GatewayClaude(**kwargs)
     elif provider == "gemini":
-        return GatewayGemini(mcp_tools=mcp_tools)
+        return GatewayGemini(**kwargs)
     elif provider == "codex":
-        return GatewayCodex(mcp_tools=mcp_tools)
+        return GatewayCodex(**kwargs)
     elif provider == "minimax":
         return GatewayMiniMax()
     else:
         raise ValueError(f"Unknown provider: {provider}")
 
 
-def call_agent(provider: str, prompt: str, system_prompt: str = "", tools: list[str] | None = None) -> str:
+def call_agent(
+    provider: str,
+    prompt: str,
+    system_prompt: str = "",
+    tools: list[str] | None = None,
+    workdir: str | None = None,
+    workspace_paths: list[str] | None = None,
+) -> str:
     """Call an agent and return the text response."""
-    llm = make_llm(provider, mcp_tools=tools)
+    llm = make_llm(provider, mcp_tools=tools, workdir=workdir, workspace_paths=workspace_paths)
     messages = []
     if system_prompt:
         messages.append(SystemMessage(content=system_prompt))
@@ -49,17 +86,15 @@ def call_agent_cfg(agent: dict, prompt: str) -> str:
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            tools = asyncio.run(
-                route_tool_visibility(
-                    task=prompt,
-                    role=agent.get("role", ""),
-                    available_tool_keys=tools,
-                )
-            )
+            tools = _route_tool_visibility_sync(prompt, agent.get("role", ""), tools)
+        else:
+            tools = _route_tool_visibility_sync(prompt, agent.get("role", ""), tools)
     return call_agent(
         agent["provider"], prompt,
         agent.get("system_prompt", ""),
         tools=tools,
+        workdir=agent.get("workdir") or str(PROJECT_ROOT),
+        workspace_paths=list(agent.get("workspace_paths") or []),
     )
 
 

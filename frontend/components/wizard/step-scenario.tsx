@@ -1,19 +1,50 @@
 "use client";
 
-import { ArrowRight } from "lucide-react";
-
 import { Button } from "@/components/ui/button";
-import { MODE_ICONS, MODE_LABELS } from "@/lib/constants";
+import { MODE_LABELS } from "@/lib/constants";
 import type { ScenarioDefinition } from "@/lib/types";
 
 import { ScenarioCard } from "./scenario-card";
-import { Stepper } from "./stepper";
 
 interface StepScenarioProps {
   scenarios: ScenarioDefinition[];
   selectedId: string | null;
   onSelect: (scenarioId: string) => void;
   onNext: () => void;
+}
+
+const DISPLAY_MODES = [
+  {
+    mode: "dictator",
+    description: "Изящная типографика и ясная иерархия ролей для режима диктатора.",
+  },
+  {
+    mode: "board",
+    description: "Покадровое обсуждение между несколькими директорами и общим итогом.",
+  },
+  {
+    mode: "democracy",
+    description: "Похожий визуальный язык для голосования, majority и будущего tally view.",
+  },
+  {
+    mode: "debate",
+    description: "Точное противопоставление двух сторон и аккуратная фиксация вердикта.",
+  },
+  {
+    mode: "map_reduce",
+    description: "Разделение задачи по блокам и сведение результатов в единый вывод.",
+  },
+  {
+    mode: "creator_critic",
+    description: "Дуэт автора и критика с несколькими итерациями и прозрачной обратной связью.",
+  },
+];
+
+function findScenarioByMode(
+  scenarios: ScenarioDefinition[],
+  mode: string
+): ScenarioDefinition | null {
+  return scenarios.find((scenario) => scenario.mode === mode) ?? null;
 }
 
 export function StepScenario({
@@ -23,60 +54,53 @@ export function StepScenario({
   onNext,
 }: StepScenarioProps) {
   const selectedScenario = scenarios.find((scenario) => scenario.id === selectedId) ?? null;
-  const SelectedModeIcon = selectedScenario ? MODE_ICONS[selectedScenario.mode] : null;
 
   return (
-    <div className="flex h-full flex-col bg-[#faf8ff] dark:bg-transparent">
+    <div className="flex h-full flex-col bg-white">
       <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-5xl px-8 pb-6 pt-8">
-          <Stepper currentStep={0} />
+        <div className="px-12 py-6">
+          <h1 className="mb-10 text-[2.15rem] font-medium uppercase tracking-[0.04em] text-[#09090b]">
+            MODE SELECTION
+          </h1>
 
-          <div className="mb-8">
-            <h1 className="text-[2.05rem] font-semibold uppercase tracking-[0.06em] text-[#09090b] dark:text-white">
-              Mode Selection
-            </h1>
-            <p className="mt-3 max-w-2xl text-[14px] leading-7 text-[#445d99] dark:text-slate-300">
-              Выбери сценарий под задачу. Внутренний orchestration mode и состав агентов останутся под капотом.
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
-            {scenarios.map((scenario, index) => (
-              <ScenarioCard
-                key={scenario.id}
-                scenario={scenario}
-                isSelected={selectedId === scenario.id}
-                isRecommended={index === 0}
-                onClick={() => onSelect(scenario.id)}
-                index={index}
-              />
-            ))}
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
+            {DISPLAY_MODES.map(({ mode, description }) => {
+              const scenario = findScenarioByMode(scenarios, mode);
+              return (
+                <ScenarioCard
+                  key={mode}
+                  mode={mode}
+                  title={MODE_LABELS[mode] ?? mode}
+                  description={description}
+                  isSelected={selectedScenario?.id === scenario?.id && !!scenario}
+                  isDisabled={!scenario}
+                  onClick={() => {
+                    if (scenario) {
+                      onSelect(scenario.id);
+                    }
+                  }}
+                />
+              );
+            })}
           </div>
         </div>
       </div>
 
-      <div className="border-t border-[#e2e8f0]/70 bg-white/88 dark:border-slate-800/80 dark:bg-slate-950/45">
-        <div className="mx-auto flex max-w-5xl items-center justify-between px-8 py-3.5">
-          <div className="flex items-center gap-3">
-            {selectedScenario ? (
-              <>
-                {SelectedModeIcon ? <SelectedModeIcon className="h-4 w-4 text-foreground" /> : null}
-                <div>
-                  <span className="text-sm font-semibold text-foreground">{selectedScenario.name}</span>
-                  <span className="ml-2 text-xs text-muted-foreground">Шаг 1 из 3</span>
-                  <p className="mt-0.5 text-[11px] text-muted-foreground">
-                    Под капотом будет использован режим {MODE_LABELS[selectedScenario.mode]}.
-                  </p>
-                </div>
-              </>
-            ) : (
-              <span className="text-sm text-muted-foreground">Выберите сценарий для продолжения</span>
-            )}
+      <div className="flex h-[86px] items-center justify-between border-t border-[#e6e8ee] bg-white px-7">
+        <div>
+          <div className="text-[16px] font-semibold text-[#09090b]">
+            {selectedScenario ? MODE_LABELS[selectedScenario.mode] : "Выберите режим"}
           </div>
-          <Button onClick={onNext} disabled={!selectedScenario} size="lg" className="rounded-[14px] bg-[#09090b] px-6 text-white hover:bg-[#09090b]/92 dark:bg-white dark:text-[#09090b] dark:hover:bg-white/90">
-            Далее <ArrowRight className="ml-1.5 h-4 w-4" />
-          </Button>
+          <div className="mt-1 text-[14px] text-[#4b5563]">Шаг 1 из 3</div>
         </div>
+        <Button
+          type="button"
+          onClick={onNext}
+          disabled={!selectedScenario}
+          className="h-[46px] rounded-[12px] bg-black px-8 text-[15px] font-medium text-white hover:bg-black/90 disabled:bg-black/25"
+        >
+          Далее
+        </Button>
       </div>
     </div>
   );

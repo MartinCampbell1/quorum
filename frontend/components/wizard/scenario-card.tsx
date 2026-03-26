@@ -1,68 +1,64 @@
 "use client";
 
-import { Check } from "lucide-react";
-
 import { MODE_ICONS } from "@/lib/constants";
 import { cn } from "@/lib/utils";
-import type { ScenarioDefinition } from "@/lib/types";
 
 interface ScenarioCardProps {
-  scenario: ScenarioDefinition;
+  mode: string;
+  title: string;
+  description: string;
   isSelected: boolean;
-  isRecommended?: boolean;
+  isDisabled?: boolean;
   onClick: () => void;
-  index: number;
 }
 
 export function ScenarioCard({
-  scenario,
+  mode,
+  title,
+  description,
   isSelected,
-  isRecommended,
+  isDisabled = false,
   onClick,
-  index,
 }: ScenarioCardProps) {
-  const Icon = MODE_ICONS[scenario.mode];
+  const Icon = MODE_ICONS[mode];
 
   return (
     <button
+      type="button"
       onClick={onClick}
+      disabled={isDisabled}
       className={cn(
-        "group relative w-full overflow-hidden rounded-[18px] border p-8 text-center transition-all duration-200",
+        "relative flex min-h-[218px] w-full flex-col items-center justify-center rounded-[18px] border px-8 py-10 text-center transition-all",
         isSelected
-          ? "border-[#09090b] bg-[#09090b] text-white shadow-none dark:border-slate-100 dark:bg-slate-100 dark:text-slate-950"
-          : "border-[#e2e8f0] bg-white text-[#09090b] shadow-[0_4px_6px_-1px_rgba(17,48,105,0.04),0_2px_4px_-1px_rgba(17,48,105,0.02)] hover:border-[#98b1f2]/60 hover:bg-[#fdfdff] dark:border-slate-800 dark:bg-slate-950/60"
+          ? "border-[#09090b] bg-[#09090b] text-white"
+          : "border-[#d7dce8] bg-white text-[#09090b] shadow-[0_10px_24px_-16px_rgba(17,48,105,0.18)]",
+        isDisabled && "cursor-not-allowed opacity-55"
       )}
-      style={{ animation: `fade-up 0.22s ease-out ${index * 32}ms both` }}
     >
-      <div className="relative">
-        <div className="flex justify-end">
-          {isSelected ? (
-            <div className="flex h-7 w-7 items-center justify-center rounded-full bg-white text-[#09090b] dark:bg-slate-950 dark:text-white">
-              <Check className="h-4 w-4" strokeWidth={2.5} />
-            </div>
-          ) : isRecommended ? (
-            <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#445d99] dark:text-slate-300">
-              Top
-            </span>
-          ) : <span className="h-7 w-7" />}
-        </div>
-
-        <div className="mt-3 flex justify-center">
-          <div className={cn(
-            "flex h-[72px] w-[72px] items-center justify-center rounded-[18px]",
-            isSelected ? "bg-white/6 dark:bg-slate-950/10" : "bg-[#faf8ff] dark:bg-slate-900/70"
-          )}>
-            {Icon && <Icon className={cn("h-11 w-11", isSelected ? "text-white dark:text-slate-950" : "text-[#09090b] dark:text-white")} />}
-          </div>
-        </div>
-
-        <p className={cn("mt-7 text-[2rem] font-semibold leading-none tracking-[-0.04em]", isSelected ? "text-white dark:text-slate-950" : "text-[#09090b] dark:text-white")}>
-          {scenario.name}
-        </p>
-        <p className={cn("mx-auto mt-4 max-w-xs text-[15px] leading-7", isSelected ? "text-white/72 dark:text-slate-900/70" : "text-[#445d99] dark:text-slate-300")}>
-          {scenario.headline || scenario.description}
-        </p>
+      <div
+        className={cn(
+          "mb-8 flex h-[76px] w-[76px] items-center justify-center rounded-[18px]",
+          isSelected ? "bg-white/7" : "bg-white"
+        )}
+      >
+        {Icon ? (
+          <Icon
+            className={cn(
+              "h-[44px] w-[44px] stroke-[1.7]",
+              isSelected ? "text-white" : "text-[#09090b]"
+            )}
+          />
+        ) : null}
       </div>
+      <h3 className="text-[20px] font-semibold tracking-[-0.03em]">{title}</h3>
+      <p
+        className={cn(
+          "mt-3 max-w-[260px] text-[15px] leading-[1.45]",
+          isSelected ? "text-white/82" : "text-[#444b59]"
+        )}
+      >
+        {description}
+      </p>
     </button>
   );
 }

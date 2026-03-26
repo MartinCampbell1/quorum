@@ -38,6 +38,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from orchestrator.models import capability_for_tool
+from orchestrator.tool_configs import ToolConfig, normalize_tool_id, tool_config_store
+
 
 # =========================================================================
 #  CONFIG - поправь под себя если нужно
@@ -338,6 +341,23 @@ MCP_SERVER_DEFINITIONS = {
     },
 }
 
+REGISTERED_MCP_SERVERS = {
+    "search-server": {
+        "command": "python3",
+        "args": [str(Path(__file__).parent / "mcp_servers" / "search_server.py")],
+    },
+    "exec-server": {
+        "command": "python3",
+        "args": [str(Path(__file__).parent / "mcp_servers" / "exec_server.py")],
+    },
+    "configured-tools": {
+        "command": "python3",
+        "args": [str(Path(__file__).parent / "mcp_servers" / "configured_tools_server.py")],
+    },
+}
+
+BOOTSTRAPPED_MCP_SERVERS: set[tuple[str, str, str]] = set()
+
 
 def _write_temp_json(payload: dict, prefix: str) -> str:
     """Write a JSON payload to a temp file and return the path."""
@@ -349,6 +369,103 @@ def _write_temp_json(payload: dict, prefix: str) -> str:
         os.unlink(path)
         raise
     return path
+
+
+def _bridge_tool_definition(tool_id: str) -> dict | None:
+    canonical = normalize_tool_id(tool_id)
+    configured = tool_config_store.get(canonical)
+    if configured and configured.enabled:
+        return configured.model_dump()
+
+    builtin_bridge_tools = {
+        "perplexity": {"name": "Perplexity AI", "tool_type": "perplexity", "icon": "🧠", "config": {}},
+        "code_exec": {"name": "Python", "tool_type": "code_exec", "icon": "🐍", "config": {}},
+        "shell_exec": {"name": "Shell", "tool_type": "shell", "icon": "⚡", "config": {}},
+        "http_request": {"name": "HTTP Request", "tool_type": "http_request", "icon": "🔗", "config": {}},
+    }
+    definition = builtin_bridge_tools.get(canonical)
+    if not definition:
+        return None
+    return {
+        "id": canonical,
+        "enabled": True,
+        **definition,
+    }
+
+
+def build_bridge_payload(provider: str, tool_keys: list[str]) -> str | None:
+    """Create payload for the stable configured-tools bridge server."""
+    payload_tools: list[dict] = []
+    seen: set[str] = set()
+    for raw_key in tool_keys:
+        tool_id = normalize_tool_id(raw_key)
+        if capability_for_tool(provider, tool_id) != "bridged":
+            continue
+        if tool_id in seen:
+            continue
+        definition = _bridge_tool_definition(tool_id)
+        if not definition:
+            continue
+        payload_tools.append(definition)
+        seen.add(tool_id)
+    if not payload_tools:
+        return None
+    return _write_temp_json({"tools": payload_tools}, "configured_tools_")
+
+
+def _bootstrap_cache_key(provider: str, env: dict, server_name: str) -> tuple[str, str, str]:
+    profile_root = env.get("CODEX_HOME") or env.get("HOME") or REAL_HOME
+    return provider, profile_root, server_name
+
+
+async def ensure_registered_mcp_servers(
+    provider: str,
+    env: dict,
+    server_names: list[str],
+) -> None:
+    """Ensure stable MCP servers are registered for Gemini/Codex profiles."""
+    if provider not in {"gemini", "codex"}:
+        return
+
+    for server_name in server_names:
+        definition = REGISTERED_MCP_SERVERS.get(server_name)
+        if not definition:
+            continue
+        cache_key = _bootstrap_cache_key(provider, env, server_name)
+        if cache_key in BOOTSTRAPPED_MCP_SERVERS:
+            continue
+
+        if provider == "gemini":
+            cmd = [
+                GEMINI_BIN,
+                "mcp",
+                "add",
+                "--scope",
+                "user",
+                server_name,
+                definition["command"],
+                *definition["args"],
+            ]
+        else:
+            cmd = [
+                CODEX_BIN,
+                "mcp",
+                "add",
+                server_name,
+                "--",
+                definition["command"],
+                *definition["args"],
+            ]
+
+        stdout, stderr, rc = await run_cli(cmd, DEFAULT_WORKDIR, 20, env)
+        combined = f"{stdout}\n{stderr}".lower()
+        if rc == 0 or "already" in combined or "exists" in combined:
+            BOOTSTRAPPED_MCP_SERVERS.add(cache_key)
+            continue
+        raise HTTPException(
+            500,
+            f"Failed to register MCP server '{server_name}' for {provider}: {(stderr or stdout).strip()[:300]}",
+        )
 
 
 def build_mcp_config(tool_keys: list[str]) -> str | None:
@@ -460,12 +577,16 @@ def build_cmd(
     mcp_config_path: str = None,
     allowed_mcp_servers: list[str] | None = None,
     selected_tools: list[str] | None = None,
+    workspace_paths: list[str] | None = None,
 ) -> list[str]:
     """Собрать команду для CLI."""
+    workspace_paths = [path for path in (workspace_paths or []) if path]
     if provider == "claude":
         cmd = [CLAUDE_BIN, "-p", prompt, "--output-format", "json"]
         if model:
             cmd.extend(["--model", model])
+        if workspace_paths:
+            cmd.extend(["--add-dir", *workspace_paths])
         if mcp_config_path:
             cmd.extend(["--mcp-config", mcp_config_path, "--strict-mcp-config", "--tools", ""])
         return cmd
@@ -476,6 +597,8 @@ def build_cmd(
             cmd.extend(["--model", model])
         if allowed_mcp_servers:
             cmd.extend(["--allowed-mcp-server-names", *allowed_mcp_servers])
+        for workspace_path in workspace_paths:
+            cmd.extend(["--include-directories", workspace_path])
         return cmd
 
     elif provider == "codex":
@@ -484,6 +607,8 @@ def build_cmd(
             cmd.extend(["--model", model])
         if selected_tools and "web_search" in selected_tools:
             cmd.append("--search")
+        for workspace_path in workspace_paths:
+            cmd.extend(["--add-dir", workspace_path])
         return cmd
 
     raise ValueError(f"Unknown provider: {provider}")
@@ -516,6 +641,7 @@ async def call_agent(
     system_prompt: str = None,
     timeout: int = DEFAULT_TIMEOUT,
     mcp_tools: list[str] = None,
+    workspace_paths: list[str] | None = None,
 ) -> dict:
     """
     Вызвать агента с автоматической ротацией аккаунтов.
@@ -528,8 +654,12 @@ async def call_agent(
     if system_prompt:
         prompt = f"[System]: {system_prompt}\n\n{prompt}"
 
-    allowed_mcp_servers = resolve_mcp_servers(mcp_tools)
-    mcp_config_path = build_mcp_config(mcp_tools) if mcp_tools else None
+    selected_tools = [normalize_tool_id(tool) for tool in (mcp_tools or []) if str(tool).strip()]
+    native_tools = [tool for tool in selected_tools if capability_for_tool(provider, tool) == "native"]
+    bridged_tools = [tool for tool in selected_tools if capability_for_tool(provider, tool) == "bridged"]
+    allowed_mcp_servers = resolve_mcp_servers(native_tools)
+    bridge_payload_path = build_bridge_payload(provider, bridged_tools) if bridged_tools else None
+    mcp_config_path = build_mcp_config(native_tools) if provider == "claude" and native_tools else None
     try:
         cmd = build_cmd(
             provider,
@@ -537,7 +667,8 @@ async def call_agent(
             model,
             mcp_config_path,
             allowed_mcp_servers=allowed_mcp_servers,
-            selected_tools=mcp_tools,
+            selected_tools=selected_tools,
+            workspace_paths=workspace_paths,
         )
         pool = pools.get(provider)
         t0 = time.time()
@@ -546,7 +677,12 @@ async def call_agent(
         # Если нет профилей - вызов с дефолтным env
         if not pool or not pool.profiles:
             try:
-                stdout, stderr, rc = await run_cli(cmd, workdir, timeout)
+                env = default_env()
+                if bridge_payload_path:
+                    env["CONFIGURED_TOOLS_PAYLOAD"] = bridge_payload_path
+                bootstrap_servers = list(dict.fromkeys(allowed_mcp_servers + (["configured-tools"] if bridge_payload_path and provider in {"gemini", "codex"} else [])))
+                await ensure_registered_mcp_servers(provider, env, bootstrap_servers)
+                stdout, stderr, rc = await run_cli(cmd, workdir, timeout, env)
                 output = parse_output(provider, stdout)
                 return {
                     "agent": provider,
@@ -590,6 +726,15 @@ async def call_agent(
                 }
 
             env = build_env(profile)
+            if bridge_payload_path:
+                env["CONFIGURED_TOOLS_PAYLOAD"] = bridge_payload_path
+            bootstrap_servers = list(
+                dict.fromkeys(
+                    allowed_mcp_servers
+                    + (["configured-tools"] if bridge_payload_path and provider in {"gemini", "codex"} else [])
+                )
+            )
+            await ensure_registered_mcp_servers(provider, env, bootstrap_servers)
 
             try:
                 stdout, stderr, rc = await run_cli(cmd, workdir, timeout, env)
@@ -641,6 +786,11 @@ async def call_agent(
                 os.unlink(mcp_config_path)
             except OSError:
                 pass
+        if bridge_payload_path:
+            try:
+                os.unlink(bridge_payload_path)
+            except OSError:
+                pass
 
 
 # =========================================================================
@@ -683,6 +833,7 @@ class AgentRequest(BaseModel):
     system_prompt: Optional[str] = None
     timeout: Optional[int] = DEFAULT_TIMEOUT
     mcp_tools: Optional[list[str]] = None
+    workspace_paths: Optional[list[str]] = None
 
 
 class MultiRequest(BaseModel):
@@ -711,19 +862,19 @@ class ConsensusRequest(BaseModel):
 async def ep_claude(req: AgentRequest):
     return await call_agent("claude", req.prompt, req.workdir, req.model,
                             req.system_prompt, req.timeout or DEFAULT_TIMEOUT,
-                            mcp_tools=req.mcp_tools)
+                            mcp_tools=req.mcp_tools, workspace_paths=req.workspace_paths)
 
 @app.post("/gemini")
 async def ep_gemini(req: AgentRequest):
     return await call_agent("gemini", req.prompt, req.workdir, req.model,
                             req.system_prompt, req.timeout or DEFAULT_TIMEOUT,
-                            mcp_tools=req.mcp_tools)
+                            mcp_tools=req.mcp_tools, workspace_paths=req.workspace_paths)
 
 @app.post("/codex")
 async def ep_codex(req: AgentRequest):
     return await call_agent("codex", req.prompt, req.workdir, req.model,
                             req.system_prompt, req.timeout or DEFAULT_TIMEOUT,
-                            mcp_tools=req.mcp_tools)
+                            mcp_tools=req.mcp_tools, workspace_paths=req.workspace_paths)
 
 @app.post("/ask")
 async def ep_ask(req: AgentRequest):
@@ -731,7 +882,7 @@ async def ep_ask(req: AgentRequest):
         raise HTTPException(400, "Specify 'agent': 'claude' | 'gemini' | 'codex'")
     return await call_agent(req.agent, req.prompt, req.workdir, req.model,
                             req.system_prompt, req.timeout or DEFAULT_TIMEOUT,
-                            mcp_tools=req.mcp_tools)
+                            mcp_tools=req.mcp_tools, workspace_paths=req.workspace_paths)
 
 
 # ---- Endpoint: Fan-out to multiple agents ----

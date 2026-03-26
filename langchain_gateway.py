@@ -54,6 +54,7 @@ class GatewayChatModel(BaseChatModel):
     gateway_url: str = "http://localhost:8800"
     agent: str = "claude"                # claude | gemini | codex
     workdir: Optional[str] = None
+    workspace_paths: Optional[list[str]] = None
     model_override: Optional[str] = None
     timeout: int = 300
     mcp_tools: Optional[list[str]] = None
@@ -94,6 +95,7 @@ class GatewayChatModel(BaseChatModel):
                     "model": self.model_override,
                     "timeout": self.timeout,
                     "mcp_tools": self.mcp_tools,
+                    "workspace_paths": self.workspace_paths,
                 },
             )
             resp.raise_for_status()
@@ -142,6 +144,7 @@ class GatewayChatModel(BaseChatModel):
                     "model": self.model_override,
                     "timeout": self.timeout,
                     "mcp_tools": self.mcp_tools,
+                    "workspace_paths": self.workspace_paths,
                 },
             )
             resp.raise_for_status()

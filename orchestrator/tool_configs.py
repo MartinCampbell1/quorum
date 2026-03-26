@@ -16,6 +16,8 @@ class ToolConfig(BaseModel):
     icon: str = ""             # emoji or icon key
     config: dict = Field(default_factory=dict)
     enabled: bool = True       # can be disabled without deleting
+    validation_status: str = "unknown"
+    last_validation_result: dict = Field(default_factory=dict)
 
 
 LEGACY_TOOL_ID_ALIASES = {

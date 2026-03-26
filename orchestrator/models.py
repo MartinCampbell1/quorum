@@ -1,49 +1,93 @@
-"""Data models for orchestration sessions."""
+"""Data models, runtime capabilities, and persistent session storage."""
+
+from __future__ import annotations
 
 import copy
+import json
+import operator
+import os
+import sqlite3
 import threading
 import time
 import uuid
-from typing import Annotated, Optional
+from pathlib import Path
+from typing import Annotated, Literal, Optional
 
-import operator
 from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
 from orchestrator.tool_configs import (
+    TOOL_TYPES,
     normalize_tool_id,
     supported_providers_for_tool_type,
     tool_config_store,
 )
 
 
+CapabilityLevel = Literal["native", "bridged", "unavailable"]
+ProviderName = Literal["claude", "gemini", "codex", "minimax"]
+
+
 # ---- API Request/Response models (Pydantic) ----
 
 class ToolDefinition(BaseModel):
     """Tool available for agents."""
+
     key: str
     name: str
     description: str
     category: str
+    tool_type: str
 
 
 AVAILABLE_TOOLS: list[ToolDefinition] = [
-    # Search (MCP search-server)
-    ToolDefinition(key="web_search", name="Веб-поиск", description="Поиск в интернете через Brave Search API", category="search"),
-    ToolDefinition(key="perplexity", name="Perplexity AI", description="AI-поиск с цитатами через Perplexity Sonar", category="search"),
-    # Execution (MCP exec-server)
-    ToolDefinition(key="code_exec", name="Python", description="Выполнение Python кода (вычисления, обработка данных)", category="exec"),
-    ToolDefinition(key="shell_exec", name="Shell", description="Выполнение shell команд (файлы, git, система)", category="exec"),
-    ToolDefinition(key="http_request", name="HTTP запрос", description="HTTP запросы к любым API (GET/POST/PUT/DELETE)", category="exec"),
+    ToolDefinition(
+        key="web_search",
+        name="Веб-поиск",
+        description="Поиск в интернете через MCP search-server",
+        category="search",
+        tool_type="web_search",
+    ),
+    ToolDefinition(
+        key="perplexity",
+        name="Perplexity AI",
+        description="AI-поиск с цитатами через MCP search-server",
+        category="search",
+        tool_type="perplexity",
+    ),
+    ToolDefinition(
+        key="code_exec",
+        name="Python",
+        description="Выполнение Python кода",
+        category="exec",
+        tool_type="code_exec",
+    ),
+    ToolDefinition(
+        key="shell_exec",
+        name="Shell",
+        description="Выполнение shell-команд",
+        category="exec",
+        tool_type="shell",
+    ),
+    ToolDefinition(
+        key="http_request",
+        name="HTTP запрос",
+        description="HTTP-запросы через MCP exec-server",
+        category="exec",
+        tool_type="http_api",
+    ),
 ]
 
-TOOLS_BY_KEY: dict[str, ToolDefinition] = {t.key: t for t in AVAILABLE_TOOLS}
-SUPPORTED_PROVIDERS = {"claude", "gemini", "codex", "minimax"}
+TOOLS_BY_KEY: dict[str, ToolDefinition] = {tool.key: tool for tool in AVAILABLE_TOOLS}
+SUPPORTED_PROVIDERS: set[str] = {"claude", "gemini", "codex", "minimax"}
+
 SESSION_CAPABILITIES = {
     "live_messages": True,
-    "custom_tools": False,
+    "custom_tools": True,
     "pause_resume": True,
     "checkpoints": True,
+    "workspace_presets": True,
+    "branching": True,
 }
 
 MODE_AGENT_REQUIREMENTS: dict[str, dict[str, object]] = {
@@ -56,17 +100,100 @@ MODE_AGENT_REQUIREMENTS: dict[str, dict[str, object]] = {
     "tournament": {"min": 3, "label": "at least 2 contestants + judge"},
 }
 
-PROVIDER_TOOL_ALLOWLIST: dict[str, set[str]] = {
-    "claude": set(TOOLS_BY_KEY),
-    "gemini": {"web_search", "perplexity", "http_request"},
-    # Codex currently relies on native CLI capabilities for these classes of work.
-    "codex": {"code_exec", "shell_exec", "web_search"},
-    "minimax": set(),
+BUILTIN_TOOL_CAPABILITIES: dict[str, dict[str, CapabilityLevel]] = {
+    "web_search": {
+        "claude": "native",
+        "gemini": "native",
+        "codex": "native",
+        "minimax": "unavailable",
+    },
+    "perplexity": {
+        "claude": "native",
+        "gemini": "native",
+        "codex": "bridged",
+        "minimax": "unavailable",
+    },
+    "code_exec": {
+        "claude": "native",
+        "gemini": "native",
+        "codex": "bridged",
+        "minimax": "unavailable",
+    },
+    "shell_exec": {
+        "claude": "native",
+        "gemini": "native",
+        "codex": "bridged",
+        "minimax": "unavailable",
+    },
+    "http_request": {
+        "claude": "native",
+        "gemini": "native",
+        "codex": "bridged",
+        "minimax": "unavailable",
+    },
+}
+
+CONFIGURED_TOOL_CAPABILITIES: dict[str, dict[str, CapabilityLevel]] = {
+    "code_exec": {
+        "claude": "native",
+        "gemini": "native",
+        "codex": "bridged",
+        "minimax": "unavailable",
+    },
+    "shell": {
+        "claude": "native",
+        "gemini": "native",
+        "codex": "bridged",
+        "minimax": "unavailable",
+    },
+    "brave_search": {
+        "claude": "native",
+        "gemini": "bridged",
+        "codex": "bridged",
+        "minimax": "unavailable",
+    },
+    "perplexity": {
+        "claude": "native",
+        "gemini": "bridged",
+        "codex": "bridged",
+        "minimax": "unavailable",
+    },
+    "http_api": {
+        "claude": "native",
+        "gemini": "bridged",
+        "codex": "bridged",
+        "minimax": "unavailable",
+    },
+    "custom_api": {
+        "claude": "native",
+        "gemini": "bridged",
+        "codex": "bridged",
+        "minimax": "unavailable",
+    },
+    "ssh": {
+        "claude": "native",
+        "gemini": "bridged",
+        "codex": "bridged",
+        "minimax": "unavailable",
+    },
+    "neo4j": {
+        "claude": "native",
+        "gemini": "bridged",
+        "codex": "bridged",
+        "minimax": "unavailable",
+    },
+    "mcp_server": {
+        "claude": "native",
+        "gemini": "unavailable",
+        "codex": "unavailable",
+        "minimax": "unavailable",
+    },
 }
 
 
 class AgentConfig(BaseModel):
     """Agent configuration from API request."""
+
     role: str
     provider: str
     system_prompt: str = ""
@@ -75,27 +202,44 @@ class AgentConfig(BaseModel):
 
 class RunRequest(BaseModel):
     """POST /orchestrate/run request body."""
+
     mode: str
     task: str
     scenario_id: Optional[str] = None
     agents: list[AgentConfig] = Field(default_factory=list)
     config: dict = Field(default_factory=dict)
+    workspace_preset_ids: list[str] = Field(default_factory=list)
+    workspace_paths: list[str] = Field(default_factory=list)
+    attached_tool_ids: list[str] = Field(default_factory=list)
 
 
 class MessageRequest(BaseModel):
     """POST /orchestrate/session/{id}/message request body."""
+
     content: str
 
 
 class ControlRequest(BaseModel):
     """POST /orchestrate/session/{id}/control request body."""
+
     action: str
     content: str = ""
     checkpoint_id: str = ""
 
 
+class WorkspacePreset(BaseModel):
+    """Saved multi-root workspace preset."""
+
+    id: str
+    name: str
+    paths: list[str] = Field(default_factory=list)
+    description: Optional[str] = None
+    created_at: float = Field(default_factory=time.time)
+
+
 class SessionResponse(BaseModel):
     """GET /orchestrate/session/{id} response."""
+
     id: str
     mode: str
     task: str
@@ -115,14 +259,18 @@ class SessionResponse(BaseModel):
     events: list[dict] = Field(default_factory=list)
     pending_instructions: int = 0
     active_node: Optional[str] = None
+    workspace_preset_ids: list[str] = Field(default_factory=list)
+    workspace_paths: list[str] = Field(default_factory=list)
+    attached_tool_ids: list[str] = Field(default_factory=list)
+    provider_capabilities_snapshot: dict = Field(default_factory=dict)
+    branch_children: list[dict] = Field(default_factory=list)
 
 
 # ---- LangGraph State (TypedDict for graph nodes) ----
 
-# NOTE: OrchestratorState is a base reference. Each mode defines its own TypedDict.
-# Future: add `error: str = ""` field to each mode state for error propagation.
 class OrchestratorState(TypedDict):
     """Base state shared by all orchestration modes."""
+
     session_id: str
     mode: str
     task: str
@@ -133,164 +281,103 @@ class OrchestratorState(TypedDict):
     config: dict
     user_messages: Annotated[list[str], operator.add]
     created_at: float
+    workspace_paths: list[str]
+    attached_tool_ids: list[str]
 
 
-# ---- Session store (in-memory) ----
-
-class SessionStore:
-    """Simple in-memory session storage. Keeps last 100 sessions."""
-
-    def __init__(self, max_sessions: int = 100):
-        self._sessions: dict[str, dict] = {}
-        self._max = max_sessions
-        self._lock = threading.Lock()
-
-    def create(
-        self,
-        mode: str,
-        task: str,
-        agents: list[AgentConfig],
-        config: dict,
-        scenario_id: Optional[str] = None,
-        forked_from: Optional[str] = None,
-        forked_checkpoint_id: Optional[str] = None,
-    ) -> str:
-        sid = f"sess_{uuid.uuid4().hex[:12]}"
-        with self._lock:
-            self._sessions[sid] = {
-                "id": sid,
-                "mode": mode,
-                "task": task,
-                "agents": [a.model_dump() for a in agents],
-                "messages": [],
-                "result": None,
-                "status": "running",
-                "config": copy.deepcopy(config),
-                "active_scenario": scenario_id,
-                "forked_from": forked_from,
-                "forked_checkpoint_id": forked_checkpoint_id,
-                "capabilities": dict(SESSION_CAPABILITIES),
-                "created_at": time.time(),
-                "elapsed_sec": None,
-                "current_checkpoint_id": None,
-                "checkpoints": [],
-                "events": [],
-                "next_event_seq": 1,
-                "pending_instruction_queue": [],
-                "pending_instructions": 0,
-                "active_node": None,
-            }
-            if len(self._sessions) > self._max:
-                oldest = min(self._sessions, key=lambda k: self._sessions[k]["created_at"])
-                del self._sessions[oldest]
-        return sid
-
-    def get(self, sid: str) -> Optional[dict]:
-        with self._lock:
-            session = self._sessions.get(sid)
-            if not session:
-                return None
-            payload = copy.deepcopy(session)
-            payload.pop("pending_instruction_queue", None)
-            payload.pop("next_event_seq", None)
-            return payload
-
-    def update(self, sid: str, **kwargs):
-        with self._lock:
-            if sid in self._sessions:
-                self._sessions[sid].update(kwargs)
-
-    def append_messages(self, sid: str, msgs: list[dict]):
-        with self._lock:
-            if sid in self._sessions:
-                self._sessions[sid]["messages"].extend(msgs)
-
-    def add_checkpoint(self, sid: str, checkpoint: dict):
-        with self._lock:
-            if sid in self._sessions:
-                self._sessions[sid]["checkpoints"].append(copy.deepcopy(checkpoint))
-                self._sessions[sid]["current_checkpoint_id"] = checkpoint.get("id")
-
-    def append_event(
-        self,
-        sid: str,
-        event_type: str,
-        title: str,
-        detail: str = "",
-        **extra: object,
-    ) -> Optional[dict]:
-        with self._lock:
-            session = self._sessions.get(sid)
-            if not session:
-                return None
-            event = {
-                "id": session["next_event_seq"],
-                "timestamp": time.time(),
-                "type": event_type,
-                "title": title,
-                "detail": detail,
-                **extra,
-            }
-            session["events"].append(event)
-            session["next_event_seq"] += 1
-            return copy.deepcopy(event)
-
-    def list_events(self, sid: str, since: int = 0) -> list[dict]:
-        with self._lock:
-            session = self._sessions.get(sid)
-            if not session:
-                return []
-            return [
-                copy.deepcopy(event)
-                for event in session["events"]
-                if int(event.get("id", 0)) > since
-            ]
-
-    def queue_instruction(self, sid: str, content: str) -> int:
-        with self._lock:
-            if sid not in self._sessions:
-                return 0
-            queue = self._sessions[sid]["pending_instruction_queue"]
-            queue.append(content)
-            self._sessions[sid]["pending_instructions"] = len(queue)
-            return len(queue)
-
-    def pop_pending_instructions(self, sid: str) -> list[str]:
-        with self._lock:
-            if sid not in self._sessions:
-                return []
-            queue = list(self._sessions[sid]["pending_instruction_queue"])
-            self._sessions[sid]["pending_instruction_queue"] = []
-            self._sessions[sid]["pending_instructions"] = 0
-            return queue
-
-    def list_recent(self, limit: int = 50) -> list[dict]:
-        with self._lock:
-            sessions = sorted(self._sessions.values(), key=lambda s: s["created_at"], reverse=True)
-            return [{"id": s["id"], "mode": s["mode"], "task": s["task"][:100],
-                     "status": s["status"], "created_at": s["created_at"]} for s in sessions[:limit]]
+def _canonical_provider(provider: str) -> str:
+    return provider.strip().lower()
 
 
-# Global store instance
-store = SessionStore()
+def _tool_metadata(tool_id: str) -> tuple[str | None, str | None]:
+    canonical = normalize_tool_id(tool_id)
+    builtin = TOOLS_BY_KEY.get(canonical)
+    if builtin:
+        return builtin.tool_type, builtin.name
+    configured = tool_config_store.get(canonical)
+    if configured:
+        return configured.tool_type, configured.name
+    return None, None
+
+
+def capability_for_tool(provider: str, tool_id: str) -> CapabilityLevel:
+    """Return native/bridged/unavailable for a provider-tool combination."""
+
+    provider_key = _canonical_provider(provider)
+    canonical_tool_id = normalize_tool_id(tool_id)
+    builtin = BUILTIN_TOOL_CAPABILITIES.get(canonical_tool_id)
+    if builtin:
+        return builtin.get(provider_key, "unavailable")
+    configured = tool_config_store.get(canonical_tool_id)
+    if not configured or not configured.enabled:
+        return "unavailable"
+    return CONFIGURED_TOOL_CAPABILITIES.get(configured.tool_type, {}).get(provider_key, "unavailable")
+
+
+def build_provider_capabilities_snapshot(agents: list[AgentConfig]) -> dict:
+    """Create a frozen session snapshot of provider/tool capabilities."""
+
+    snapshot: dict[str, dict] = {}
+    for agent in agents:
+        snapshot[agent.role] = {
+            "provider": agent.provider,
+            "tools": {
+                normalize_tool_id(tool): {
+                    "capability": capability_for_tool(agent.provider, tool),
+                    "tool_type": _tool_metadata(tool)[0],
+                    "name": _tool_metadata(tool)[1] or normalize_tool_id(tool),
+                }
+                for tool in agent.tools
+            },
+        }
+    return snapshot
+
+
+def capability_matrix_for_enabled_tools() -> dict[str, dict[str, CapabilityLevel]]:
+    """Return provider capability levels for all enabled tool ids."""
+
+    matrix: dict[str, dict[str, CapabilityLevel]] = {}
+    for builtin in AVAILABLE_TOOLS:
+        matrix[builtin.key] = {
+            provider: capability_for_tool(provider, builtin.key)
+            for provider in sorted(SUPPORTED_PROVIDERS)
+        }
+    for tool in tool_config_store.list_enabled():
+        matrix[tool.id] = {
+            provider: capability_for_tool(provider, tool.id)
+            for provider in sorted(SUPPORTED_PROVIDERS)
+        }
+    return matrix
 
 
 def normalize_agent_configs(agents: list[AgentConfig]) -> list[AgentConfig]:
     """Normalize tool ids so the UI and runtime use the same canonical keys."""
+
     normalized_agents: list[AgentConfig] = []
     for agent in agents:
         normalized_agents.append(
             agent.model_copy(
-                update={
-                    "tools": [normalize_tool_id(tool) for tool in agent.tools],
-                }
+                update={"tools": [normalize_tool_id(tool) for tool in agent.tools]},
             )
         )
     return normalized_agents
 
 
+def collect_attached_tool_ids(
+    agents: list[AgentConfig],
+    requested_tool_ids: list[str] | None = None,
+) -> list[str]:
+    """Merge explicitly attached tool ids with agent-level tool usage."""
+
+    attached = {normalize_tool_id(tool_id) for tool_id in requested_tool_ids or [] if str(tool_id).strip()}
+    for agent in agents:
+        attached.update(normalize_tool_id(tool_id) for tool_id in agent.tools)
+    return sorted(attached)
+
+
 def validate_agents_for_mode(mode: str, agents: list[AgentConfig]) -> list[str]:
     """Validate topology, provider, and tool compatibility before execution."""
+
     errors: list[str] = []
     requirement = MODE_AGENT_REQUIREMENTS.get(mode, {})
     count = len(agents)
@@ -306,43 +393,635 @@ def validate_agents_for_mode(mode: str, agents: list[AgentConfig]) -> list[str]:
     roles = [agent.role.strip() for agent in agents if agent.role.strip()]
     duplicate_roles = sorted({role for role in roles if roles.count(role) > 1})
     if duplicate_roles:
-        dup_list = ", ".join(duplicate_roles)
-        errors.append(f"Agent roles must be unique; duplicate roles: {dup_list}.")
+        errors.append(f"Agent roles must be unique; duplicate roles: {', '.join(duplicate_roles)}.")
 
     for index, agent in enumerate(agents):
-        if agent.provider not in SUPPORTED_PROVIDERS:
+        provider = _canonical_provider(agent.provider)
+        if provider not in SUPPORTED_PROVIDERS:
             errors.append(
                 f"Agent {index + 1} ('{agent.role}') uses unsupported provider '{agent.provider}'."
             )
             continue
 
         invalid_tools: list[str] = []
-        disallowed_tools: list[str] = []
-        for tool in agent.tools:
-            if tool in TOOLS_BY_KEY:
-                if tool not in PROVIDER_TOOL_ALLOWLIST.get(agent.provider, set()):
-                    disallowed_tools.append(tool)
-                continue
+        unavailable_tools: list[str] = []
+        bridged_tools: list[str] = []
+        for raw_tool in agent.tools:
+            tool_id = normalize_tool_id(raw_tool)
+            tool_type, _ = _tool_metadata(tool_id)
+            if tool_id not in TOOLS_BY_KEY:
+                configured_tool = tool_config_store.get(tool_id)
+                if not configured_tool or not configured_tool.enabled:
+                    invalid_tools.append(tool_id)
+                    continue
+                allowed_providers = supported_providers_for_tool_type(configured_tool.tool_type)
+                if provider not in allowed_providers and capability_for_tool(provider, tool_id) == "unavailable":
+                    unavailable_tools.append(tool_id)
+                    continue
+            capability = capability_for_tool(provider, tool_id)
+            if capability == "unavailable":
+                unavailable_tools.append(tool_id)
+            elif capability == "bridged":
+                bridged_tools.append(tool_id)
 
-            configured_tool = tool_config_store.get(tool)
-            if not configured_tool or not configured_tool.enabled:
-                invalid_tools.append(tool)
-                continue
-
-            allowed_providers = supported_providers_for_tool_type(configured_tool.tool_type)
-            if agent.provider not in allowed_providers:
-                disallowed_tools.append(tool)
+            if tool_type is None:
+                invalid_tools.append(tool_id)
 
         if invalid_tools:
             errors.append(
-                f"Agent {index + 1} ('{agent.role}') uses unknown tools: {', '.join(sorted(invalid_tools))}."
+                f"Agent {index + 1} ('{agent.role}') uses unknown tools: {', '.join(sorted(set(invalid_tools)))}."
             )
             continue
 
-        if disallowed_tools:
+        if unavailable_tools:
             errors.append(
-                f"Agent {index + 1} ('{agent.role}') cannot use {agent.provider} with tools: "
-                f"{', '.join(sorted(disallowed_tools))}."
+                f"Agent {index + 1} ('{agent.role}') cannot use {provider} with tools: "
+                f"{', '.join(sorted(set(unavailable_tools)))}."
+            )
+
+        if provider == "minimax" and bridged_tools:
+            errors.append(
+                f"Agent {index + 1} ('{agent.role}') cannot bridge tools through minimax: "
+                f"{', '.join(sorted(set(bridged_tools)))}."
             )
 
     return errors
+
+
+def resolve_workspace_paths(
+    preset_ids: list[str] | None = None,
+    extra_paths: list[str] | None = None,
+) -> tuple[list[str], list[str]]:
+    """Expand saved preset ids plus one-off paths into a deduplicated path list."""
+
+    resolved_preset_ids: list[str] = []
+    paths: list[str] = []
+    seen: set[str] = set()
+
+    for preset_id in preset_ids or []:
+        preset = store.get_workspace(preset_id)
+        if not preset:
+            continue
+        resolved_preset_ids.append(preset.id)
+        for raw_path in preset.paths:
+            normalized = str(Path(raw_path).expanduser().resolve())
+            if normalized not in seen:
+                seen.add(normalized)
+                paths.append(normalized)
+
+    for raw_path in extra_paths or []:
+        if not str(raw_path).strip():
+            continue
+        normalized = str(Path(raw_path).expanduser().resolve())
+        if normalized not in seen:
+            seen.add(normalized)
+            paths.append(normalized)
+
+    return resolved_preset_ids, paths
+
+
+_RUN_JSON_COLUMNS = {
+    "agents",
+    "messages",
+    "config",
+    "capabilities",
+    "pending_instruction_queue",
+    "workspace_preset_ids",
+    "workspace_paths",
+    "attached_tool_ids",
+    "provider_capabilities_snapshot",
+}
+
+
+class SessionStore:
+    """SQLite-backed session and workspace storage."""
+
+    def __init__(self, max_sessions: int = 100, db_path: str | None = None):
+        self._max = max_sessions
+        self._lock = threading.RLock()
+        raw_db_path = db_path or os.getenv("MULTI_AGENT_STATE_DB")
+        self._db_path = Path(raw_db_path) if raw_db_path else Path.home() / ".multi-agent" / "state.db"
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_db()
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _init_db(self) -> None:
+        with self._connect() as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS runs (
+                    id TEXT PRIMARY KEY,
+                    mode TEXT NOT NULL,
+                    task TEXT NOT NULL,
+                    agents_json TEXT NOT NULL,
+                    messages_json TEXT NOT NULL,
+                    result TEXT,
+                    status TEXT NOT NULL,
+                    config_json TEXT NOT NULL,
+                    active_scenario TEXT,
+                    forked_from TEXT,
+                    forked_checkpoint_id TEXT,
+                    capabilities_json TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    elapsed_sec REAL,
+                    current_checkpoint_id TEXT,
+                    next_event_seq INTEGER NOT NULL DEFAULT 1,
+                    pending_instruction_queue_json TEXT NOT NULL,
+                    pending_instructions INTEGER NOT NULL DEFAULT 0,
+                    active_node TEXT,
+                    workspace_preset_ids_json TEXT NOT NULL,
+                    workspace_paths_json TEXT NOT NULL,
+                    attached_tool_ids_json TEXT NOT NULL,
+                    provider_capabilities_snapshot_json TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS events (
+                    session_id TEXT NOT NULL,
+                    event_id INTEGER NOT NULL,
+                    timestamp REAL NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY (session_id, event_id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS checkpoints (
+                    session_id TEXT NOT NULL,
+                    checkpoint_id TEXT NOT NULL,
+                    ordinal INTEGER NOT NULL,
+                    timestamp REAL NOT NULL,
+                    next_node TEXT,
+                    status TEXT NOT NULL,
+                    result_preview TEXT,
+                    graph_checkpoint_id TEXT,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY (session_id, checkpoint_id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workspace_presets (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    paths_json TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_created_at ON runs(created_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_events_session_seq ON events(session_id, event_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_checkpoints_session_ord ON checkpoints(session_id, ordinal)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_forked_from ON runs(forked_from)")
+
+    @staticmethod
+    def _encode(value: object) -> str:
+        return json.dumps(value, ensure_ascii=False)
+
+    @staticmethod
+    def _decode(value: str | None, default: object) -> object:
+        if value is None:
+            return copy.deepcopy(default)
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return copy.deepcopy(default)
+
+    def _trim_sessions(self, conn: sqlite3.Connection) -> None:
+        rows = conn.execute(
+            "SELECT id FROM runs ORDER BY created_at DESC LIMIT -1 OFFSET ?",
+            (self._max,),
+        ).fetchall()
+        stale_ids = [row["id"] for row in rows]
+        if not stale_ids:
+            return
+        conn.executemany("DELETE FROM events WHERE session_id = ?", [(sid,) for sid in stale_ids])
+        conn.executemany("DELETE FROM checkpoints WHERE session_id = ?", [(sid,) for sid in stale_ids])
+        conn.executemany("DELETE FROM runs WHERE id = ?", [(sid,) for sid in stale_ids])
+
+    def create(
+        self,
+        mode: str,
+        task: str,
+        agents: list[AgentConfig],
+        config: dict,
+        scenario_id: Optional[str] = None,
+        forked_from: Optional[str] = None,
+        forked_checkpoint_id: Optional[str] = None,
+        workspace_preset_ids: list[str] | None = None,
+        workspace_paths: list[str] | None = None,
+        attached_tool_ids: list[str] | None = None,
+        provider_capabilities_snapshot: dict | None = None,
+    ) -> str:
+        sid = f"sess_{uuid.uuid4().hex[:12]}"
+        payload = {
+            "id": sid,
+            "mode": mode,
+            "task": task,
+            "agents": [agent.model_dump() for agent in agents],
+            "messages": [],
+            "result": None,
+            "status": "running",
+            "config": copy.deepcopy(config),
+            "active_scenario": scenario_id,
+            "forked_from": forked_from,
+            "forked_checkpoint_id": forked_checkpoint_id,
+            "capabilities": dict(SESSION_CAPABILITIES),
+            "created_at": time.time(),
+            "elapsed_sec": None,
+            "current_checkpoint_id": None,
+            "next_event_seq": 1,
+            "pending_instruction_queue": [],
+            "pending_instructions": 0,
+            "active_node": None,
+            "workspace_preset_ids": list(workspace_preset_ids or []),
+            "workspace_paths": list(workspace_paths or []),
+            "attached_tool_ids": list(attached_tool_ids or []),
+            "provider_capabilities_snapshot": copy.deepcopy(provider_capabilities_snapshot or {}),
+        }
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO runs (
+                    id, mode, task, agents_json, messages_json, result, status, config_json,
+                    active_scenario, forked_from, forked_checkpoint_id, capabilities_json,
+                    created_at, elapsed_sec, current_checkpoint_id, next_event_seq,
+                    pending_instruction_queue_json, pending_instructions, active_node,
+                    workspace_preset_ids_json, workspace_paths_json, attached_tool_ids_json,
+                    provider_capabilities_snapshot_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    sid,
+                    mode,
+                    task,
+                    self._encode(payload["agents"]),
+                    self._encode(payload["messages"]),
+                    payload["result"],
+                    payload["status"],
+                    self._encode(payload["config"]),
+                    payload["active_scenario"],
+                    payload["forked_from"],
+                    payload["forked_checkpoint_id"],
+                    self._encode(payload["capabilities"]),
+                    payload["created_at"],
+                    payload["elapsed_sec"],
+                    payload["current_checkpoint_id"],
+                    payload["next_event_seq"],
+                    self._encode(payload["pending_instruction_queue"]),
+                    payload["pending_instructions"],
+                    payload["active_node"],
+                    self._encode(payload["workspace_preset_ids"]),
+                    self._encode(payload["workspace_paths"]),
+                    self._encode(payload["attached_tool_ids"]),
+                    self._encode(payload["provider_capabilities_snapshot"]),
+                ),
+            )
+            self._trim_sessions(conn)
+        return sid
+
+    def _row_to_session(self, row: sqlite3.Row, conn: sqlite3.Connection) -> dict:
+        sid = row["id"]
+        checkpoints = [
+            self._decode(cp["payload_json"], {})
+            for cp in conn.execute(
+                "SELECT payload_json FROM checkpoints WHERE session_id = ? ORDER BY ordinal ASC",
+                (sid,),
+            ).fetchall()
+        ]
+        events = [
+            self._decode(event["payload_json"], {})
+            for event in conn.execute(
+                "SELECT payload_json FROM events WHERE session_id = ? ORDER BY event_id ASC",
+                (sid,),
+            ).fetchall()
+        ]
+        branch_children = [
+            {
+                "id": child["id"],
+                "mode": child["mode"],
+                "status": child["status"],
+                "created_at": child["created_at"],
+                "forked_checkpoint_id": child["forked_checkpoint_id"],
+            }
+            for child in conn.execute(
+                """
+                SELECT id, mode, status, created_at, forked_checkpoint_id
+                FROM runs
+                WHERE forked_from = ?
+                ORDER BY created_at ASC
+                """,
+                (sid,),
+            ).fetchall()
+        ]
+        return {
+            "id": sid,
+            "mode": row["mode"],
+            "task": row["task"],
+            "agents": self._decode(row["agents_json"], []),
+            "messages": self._decode(row["messages_json"], []),
+            "result": row["result"],
+            "status": row["status"],
+            "config": self._decode(row["config_json"], {}),
+            "active_scenario": row["active_scenario"],
+            "forked_from": row["forked_from"],
+            "forked_checkpoint_id": row["forked_checkpoint_id"],
+            "capabilities": self._decode(row["capabilities_json"], dict(SESSION_CAPABILITIES)),
+            "created_at": row["created_at"],
+            "elapsed_sec": row["elapsed_sec"],
+            "current_checkpoint_id": row["current_checkpoint_id"],
+            "checkpoints": checkpoints,
+            "events": events,
+            "pending_instructions": row["pending_instructions"],
+            "active_node": row["active_node"],
+            "workspace_preset_ids": self._decode(row["workspace_preset_ids_json"], []),
+            "workspace_paths": self._decode(row["workspace_paths_json"], []),
+            "attached_tool_ids": self._decode(row["attached_tool_ids_json"], []),
+            "provider_capabilities_snapshot": self._decode(
+                row["provider_capabilities_snapshot_json"], {}
+            ),
+            "branch_children": branch_children,
+        }
+
+    def get(self, sid: str) -> Optional[dict]:
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT * FROM runs WHERE id = ?", (sid,)).fetchone()
+            if not row:
+                return None
+            return self._row_to_session(row, conn)
+
+    def update(self, sid: str, **kwargs) -> None:
+        if not kwargs:
+            return
+        field_map = {
+            "agents": "agents_json",
+            "messages": "messages_json",
+            "config": "config_json",
+            "capabilities": "capabilities_json",
+            "active_scenario": "active_scenario",
+            "forked_from": "forked_from",
+            "forked_checkpoint_id": "forked_checkpoint_id",
+            "result": "result",
+            "status": "status",
+            "elapsed_sec": "elapsed_sec",
+            "current_checkpoint_id": "current_checkpoint_id",
+            "pending_instruction_queue": "pending_instruction_queue_json",
+            "pending_instructions": "pending_instructions",
+            "active_node": "active_node",
+            "workspace_preset_ids": "workspace_preset_ids_json",
+            "workspace_paths": "workspace_paths_json",
+            "attached_tool_ids": "attached_tool_ids_json",
+            "provider_capabilities_snapshot": "provider_capabilities_snapshot_json",
+        }
+        assignments: list[str] = []
+        values: list[object] = []
+        for key, value in kwargs.items():
+            column = field_map.get(key)
+            if not column:
+                continue
+            assignments.append(f"{column} = ?")
+            if key in _RUN_JSON_COLUMNS:
+                values.append(self._encode(value))
+            else:
+                values.append(value)
+        if not assignments:
+            return
+        values.append(sid)
+        with self._lock, self._connect() as conn:
+            conn.execute(f"UPDATE runs SET {', '.join(assignments)} WHERE id = ?", values)
+
+    def append_messages(self, sid: str, msgs: list[dict]) -> None:
+        if not msgs:
+            return
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT messages_json FROM runs WHERE id = ?",
+                (sid,),
+            ).fetchone()
+            if not row:
+                return
+            current = self._decode(row["messages_json"], [])
+            current.extend(copy.deepcopy(msgs))
+            conn.execute(
+                "UPDATE runs SET messages_json = ? WHERE id = ?",
+                (self._encode(current), sid),
+            )
+
+    def add_checkpoint(self, sid: str, checkpoint: dict) -> None:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(ordinal), 0) AS last_ordinal FROM checkpoints WHERE session_id = ?",
+                (sid,),
+            ).fetchone()
+            ordinal = int(row["last_ordinal"]) + 1
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO checkpoints (
+                    session_id, checkpoint_id, ordinal, timestamp, next_node, status,
+                    result_preview, graph_checkpoint_id, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    sid,
+                    checkpoint.get("id"),
+                    ordinal,
+                    checkpoint.get("timestamp", time.time()),
+                    checkpoint.get("next_node"),
+                    checkpoint.get("status", "ready"),
+                    checkpoint.get("result_preview"),
+                    checkpoint.get("graph_checkpoint_id"),
+                    self._encode(copy.deepcopy(checkpoint)),
+                ),
+            )
+            conn.execute(
+                "UPDATE runs SET current_checkpoint_id = ? WHERE id = ?",
+                (checkpoint.get("id"), sid),
+            )
+
+    def append_event(
+        self,
+        sid: str,
+        event_type: str,
+        title: str,
+        detail: str = "",
+        **extra: object,
+    ) -> Optional[dict]:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT next_event_seq FROM runs WHERE id = ?",
+                (sid,),
+            ).fetchone()
+            if not row:
+                return None
+            event_id = int(row["next_event_seq"])
+            event = {
+                "id": event_id,
+                "timestamp": time.time(),
+                "type": event_type,
+                "title": title,
+                "detail": detail,
+                **extra,
+            }
+            conn.execute(
+                "INSERT INTO events (session_id, event_id, timestamp, payload_json) VALUES (?, ?, ?, ?)",
+                (sid, event_id, event["timestamp"], self._encode(event)),
+            )
+            conn.execute(
+                "UPDATE runs SET next_event_seq = ? WHERE id = ?",
+                (event_id + 1, sid),
+            )
+            return copy.deepcopy(event)
+
+    def list_events(self, sid: str, since: int = 0) -> list[dict]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT payload_json
+                FROM events
+                WHERE session_id = ? AND event_id > ?
+                ORDER BY event_id ASC
+                """,
+                (sid, since),
+            ).fetchall()
+            return [self._decode(row["payload_json"], {}) for row in rows]
+
+    def queue_instruction(self, sid: str, content: str) -> int:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT pending_instruction_queue_json FROM runs WHERE id = ?",
+                (sid,),
+            ).fetchone()
+            if not row:
+                return 0
+            queue = self._decode(row["pending_instruction_queue_json"], [])
+            queue.append(content)
+            conn.execute(
+                """
+                UPDATE runs
+                SET pending_instruction_queue_json = ?, pending_instructions = ?
+                WHERE id = ?
+                """,
+                (self._encode(queue), len(queue), sid),
+            )
+            return len(queue)
+
+    def pop_pending_instructions(self, sid: str) -> list[str]:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT pending_instruction_queue_json FROM runs WHERE id = ?",
+                (sid,),
+            ).fetchone()
+            if not row:
+                return []
+            queue = self._decode(row["pending_instruction_queue_json"], [])
+            conn.execute(
+                """
+                UPDATE runs
+                SET pending_instruction_queue_json = ?, pending_instructions = 0
+                WHERE id = ?
+                """,
+                (self._encode([]), sid),
+            )
+            return queue
+
+    def list_recent(self, limit: int = 50) -> list[dict]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, mode, task, status, created_at, active_scenario, forked_from
+                FROM runs
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            return [
+                {
+                    "id": row["id"],
+                    "mode": row["mode"],
+                    "task": row["task"][:100],
+                    "status": row["status"],
+                    "created_at": row["created_at"],
+                    "active_scenario": row["active_scenario"],
+                    "forked_from": row["forked_from"],
+                }
+                for row in rows
+            ]
+
+    def list_workspaces(self) -> list[WorkspacePreset]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM workspace_presets ORDER BY created_at ASC",
+            ).fetchall()
+            return [
+                WorkspacePreset(
+                    id=row["id"],
+                    name=row["name"],
+                    description=row["description"],
+                    paths=self._decode(row["paths_json"], []),
+                    created_at=row["created_at"],
+                )
+                for row in rows
+            ]
+
+    def get_workspace(self, workspace_id: str) -> WorkspacePreset | None:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM workspace_presets WHERE id = ?",
+                (workspace_id,),
+            ).fetchone()
+            if not row:
+                return None
+            return WorkspacePreset(
+                id=row["id"],
+                name=row["name"],
+                description=row["description"],
+                paths=self._decode(row["paths_json"], []),
+                created_at=row["created_at"],
+            )
+
+    def add_workspace(self, preset: WorkspacePreset) -> WorkspacePreset:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO workspace_presets (id, name, description, paths_json, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    preset.id,
+                    preset.name,
+                    preset.description,
+                    self._encode(preset.paths),
+                    preset.created_at,
+                ),
+            )
+        return preset
+
+    def update_workspace(self, workspace_id: str, updates: dict) -> WorkspacePreset | None:
+        current = self.get_workspace(workspace_id)
+        if not current:
+            return None
+        updated = current.model_copy(update=updates)
+        return self.add_workspace(updated)
+
+    def delete_workspace(self, workspace_id: str) -> bool:
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM workspace_presets WHERE id = ?",
+                (workspace_id,),
+            )
+            return cursor.rowcount > 0
+
+
+# Global store instance
+store = SessionStore()

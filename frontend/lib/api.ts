@@ -9,6 +9,7 @@ import type {
   SessionSummary,
   ToolDefinition,
   ToolTypeDefinition,
+  WorkspacePreset,
 } from "./types";
 
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8800";
@@ -142,4 +143,42 @@ export async function deleteConfiguredTool(id: string): Promise<void> {
 
 export async function getPromptTemplates(): Promise<Record<string, PromptTemplate>> {
   return request("/orchestrate/settings/prompts");
+}
+
+export async function getProviderCapabilities(): Promise<{
+  providers: string[];
+  tools: Record<string, Record<string, "native" | "bridged" | "unavailable">>;
+}> {
+  return request("/orchestrate/settings/providers/capabilities");
+}
+
+export async function validateConfiguredTool(id: string): Promise<ConfiguredTool> {
+  return request(`/orchestrate/settings/tools/${id}/validate`, {
+    method: "POST",
+  });
+}
+
+export async function getWorkspacePresets(): Promise<WorkspacePreset[]> {
+  return request("/orchestrate/settings/workspaces");
+}
+
+export async function addWorkspacePreset(preset: WorkspacePreset): Promise<WorkspacePreset> {
+  return request("/orchestrate/settings/workspaces", {
+    method: "POST",
+    body: JSON.stringify(preset),
+  });
+}
+
+export async function updateWorkspacePreset(
+  id: string,
+  updates: Partial<WorkspacePreset>
+): Promise<WorkspacePreset> {
+  return request(`/orchestrate/settings/workspaces/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(updates),
+  });
+}
+
+export async function deleteWorkspacePreset(id: string): Promise<void> {
+  await request(`/orchestrate/settings/workspaces/${id}`, { method: "DELETE" });
 }

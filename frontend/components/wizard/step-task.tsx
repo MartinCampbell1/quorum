@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Rocket, Wrench } from "lucide-react";
+import { FolderTree, Rocket, Wrench } from "lucide-react";
 import { MODE_LABELS } from "@/lib/constants";
-import type { AgentConfig } from "@/lib/types";
+import { getWorkspacePresets } from "@/lib/api";
+import type { AgentConfig, WorkspacePreset } from "@/lib/types";
 import { Stepper } from "./stepper";
 
 interface StepTaskProps {
@@ -16,6 +17,10 @@ interface StepTaskProps {
   isLaunching: boolean;
   taskPlaceholder?: string;
   scenarioLabel?: string;
+  workspacePresetIds: string[];
+  workspacePaths: string[];
+  onWorkspacePresetIdsChange: (ids: string[]) => void;
+  onWorkspacePathsChange: (paths: string[]) => void;
 }
 
 export function StepTask({
@@ -26,13 +31,51 @@ export function StepTask({
   isLaunching,
   taskPlaceholder,
   scenarioLabel,
+  workspacePresetIds,
+  workspacePaths,
+  onWorkspacePresetIdsChange,
+  onWorkspacePathsChange,
 }: StepTaskProps) {
   const [task, setTask] = useState("");
   const [maxRounds, setMaxRounds] = useState(3);
   const [unlimited, setUnlimited] = useState(false);
+  const [workspacePresets, setWorkspacePresets] = useState<WorkspacePreset[]>([]);
+  const [extraPathDraft, setExtraPathDraft] = useState("");
 
   const needsRounds = ["debate", "democracy", "board"].includes(mode);
   const needsIterations = ["dictator", "creator_critic"].includes(mode);
+  const selectedPresetNames = useMemo(
+    () =>
+      workspacePresets
+        .filter((preset) => workspacePresetIds.includes(preset.id))
+        .map((preset) => preset.name),
+    [workspacePresets, workspacePresetIds]
+  );
+
+  useEffect(() => {
+    getWorkspacePresets().then(setWorkspacePresets).catch(() => {});
+  }, []);
+
+  function togglePreset(id: string) {
+    if (workspacePresetIds.includes(id)) {
+      onWorkspacePresetIdsChange(workspacePresetIds.filter((item) => item !== id));
+      return;
+    }
+    onWorkspacePresetIdsChange([...workspacePresetIds, id]);
+  }
+
+  function addWorkspacePath() {
+    const value = extraPathDraft.trim();
+    if (!value) return;
+    if (!workspacePaths.includes(value)) {
+      onWorkspacePathsChange([...workspacePaths, value]);
+    }
+    setExtraPathDraft("");
+  }
+
+  function removeWorkspacePath(path: string) {
+    onWorkspacePathsChange(workspacePaths.filter((item) => item !== path));
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -102,6 +145,84 @@ export function StepTask({
             </div>
           )}
 
+          <div className="mt-6 rounded-xl border border-border/60 bg-muted/20 p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <FolderTree className="h-4 w-4 text-muted-foreground" />
+              <label className="text-[13px] font-medium text-foreground">
+                Дополнительные рабочие директории
+              </label>
+            </div>
+            <p className="mb-3 text-[11px] leading-relaxed text-muted-foreground/70">
+              Подключи сохранённые workspace presets и добавь одноразовые директории для текущего запуска.
+            </p>
+
+            {workspacePresets.length > 0 ? (
+              <div className="mb-4 flex flex-wrap gap-2">
+                {workspacePresets.map((preset) => {
+                  const active = workspacePresetIds.includes(preset.id);
+                  return (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      onClick={() => togglePreset(preset.id)}
+                      className={`rounded-full border px-3 py-1.5 text-[11px] transition-colors ${
+                        active
+                          ? "border-black bg-black text-white"
+                          : "border-border bg-white text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {preset.name}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="mb-4 text-[11px] text-muted-foreground/60">
+                Workspace presets пока не настроены. Добавь их в Settings.
+              </p>
+            )}
+
+            <div className="flex gap-2">
+              <input
+                value={extraPathDraft}
+                onChange={(e) => setExtraPathDraft(e.target.value)}
+                placeholder="/Users/martin/projects/trading-data"
+                className="flex-1 rounded-lg border border-border bg-white px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring/25"
+              />
+              <Button type="button" variant="outline" size="sm" onClick={addWorkspacePath}>
+                Добавить путь
+              </Button>
+            </div>
+
+            {(selectedPresetNames.length > 0 || workspacePaths.length > 0) && (
+              <div className="mt-4 space-y-2">
+                {selectedPresetNames.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {selectedPresetNames.map((name) => (
+                      <Badge key={name} variant="secondary" className="text-[10px]">
+                        preset: {name}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+                {workspacePaths.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {workspacePaths.map((path) => (
+                      <button
+                        key={path}
+                        type="button"
+                        onClick={() => removeWorkspacePath(path)}
+                        className="rounded-full border border-border bg-white px-3 py-1.5 text-[10px] text-muted-foreground hover:text-foreground"
+                      >
+                        {path}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* Summary */}
           <div className="mt-8 rounded-xl border border-border/60 bg-muted/20 p-5">
             <div className="text-[10px] uppercase tracking-[0.15em] text-muted-foreground/50 font-semibold mb-4">
@@ -130,6 +251,21 @@ export function StepTask({
                 </div>
               ))}
             </div>
+            {(selectedPresetNames.length > 0 || workspacePaths.length > 0) && (
+              <div className="mt-4 flex flex-col gap-2 text-[13px]">
+                <span className="text-muted-foreground">Workspaces</span>
+                {selectedPresetNames.map((name) => (
+                  <div key={name} className="pl-2 text-[11px] text-muted-foreground/80">
+                    preset: {name}
+                  </div>
+                ))}
+                {workspacePaths.map((path) => (
+                  <div key={path} className="pl-2 text-[11px] text-muted-foreground/80">
+                    path: {path}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>

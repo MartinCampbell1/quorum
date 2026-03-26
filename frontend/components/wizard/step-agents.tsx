@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { SelectorChips } from "@/components/ui/selector-chips";
 import { PROVIDER_LABELS } from "@/lib/constants";
 import { cn } from "@/lib/utils";
-import type { AgentConfig } from "@/lib/types";
+import type { AgentConfig, ToolDefinition } from "@/lib/types";
 import { getTools, getPromptTemplates } from "@/lib/api";
 import { Stepper } from "./stepper";
 
@@ -23,16 +23,17 @@ const providers = ["claude", "gemini", "codex", "minimax"] as const;
 
 export function StepAgents({ agents, onChange, onNext, onBack }: StepAgentsProps) {
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
-  const [availableTools, setAvailableTools] = useState<{ key: string; name: string; icon?: string }[]>([]);
+  const [availableTools, setAvailableTools] = useState<ToolDefinition[]>([]);
   const [promptTemplates, setPromptTemplates] = useState<Record<string, { name: string; description: string; prompt: string }>>({});
 
   useEffect(() => {
-    getTools().then((tools: any[]) => setAvailableTools(tools)).catch(() => {});
+    getTools().then((tools) => setAvailableTools(tools)).catch(() => {});
     getPromptTemplates().then((templates) => setPromptTemplates(templates as Record<string, { name: string; description: string; prompt: string }>)).catch(() => {});
   }, []);
 
   const toolKeys = availableTools.map((t) => t.key);
   const toolLabels = Object.fromEntries(availableTools.map((t) => [t.key, `${t.icon ?? ""} ${t.name}`.trim()]));
+  const toolsByKey = Object.fromEntries(availableTools.map((tool) => [tool.key, tool]));
 
   function updateAgent(index: number, updates: Partial<AgentConfig>) {
     const next = agents.map((a, i) => (i === index ? { ...a, ...updates } : a));
@@ -53,6 +54,12 @@ export function StepAgents({ agents, onChange, onNext, onBack }: StepAgentsProps
   function removeAgent(index: number) {
     if (agents.length <= 2) return;
     onChange(agents.filter((_, i) => i !== index));
+  }
+
+  function capabilityTone(capability: "native" | "bridged" | "unavailable" | undefined) {
+    if (capability === "native") return "border-emerald-200 bg-emerald-50 text-emerald-700";
+    if (capability === "bridged") return "border-amber-200 bg-amber-50 text-amber-700";
+    return "border-slate-200 bg-white text-slate-500";
   }
 
   return (
@@ -131,12 +138,33 @@ export function StepAgents({ agents, onChange, onNext, onBack }: StepAgentsProps
                         Инструменты
                       </label>
                       {toolKeys.length > 0 ? (
-                        <SelectorChips
-                          options={toolKeys}
-                          value={agent.tools ?? []}
-                          onChange={(selected) => updateAgent(i, { tools: selected })}
-                          labels={toolLabels}
-                        />
+                        <>
+                          <SelectorChips
+                            options={toolKeys}
+                            value={agent.tools ?? []}
+                            onChange={(selected) => updateAgent(i, { tools: selected })}
+                            labels={toolLabels}
+                          />
+                          {(agent.tools?.length ?? 0) > 0 && (
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {(agent.tools ?? []).map((toolKey) => {
+                                const tool = toolsByKey[toolKey];
+                                const capability = tool?.compatibility?.[agent.provider];
+                                return (
+                                  <span
+                                    key={`${agent.role}-${toolKey}`}
+                                    className={cn(
+                                      "rounded-full border px-2.5 py-1 text-[10px] font-medium capitalize",
+                                      capabilityTone(capability)
+                                    )}
+                                  >
+                                    {(tool?.name ?? toolKey)}: {capability ?? "unknown"}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </>
                       ) : (
                         <p className="text-[11px] leading-relaxed text-muted-foreground/60">
                           Нет настроенных инструментов. Добавьте их в Настройках.

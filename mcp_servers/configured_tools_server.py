@@ -21,13 +21,17 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from mcp_servers.logging_utils import sanitize_log_arguments, sanitize_result_preview
-from orchestrator.tools.builtin.http_request import _validate_url
+from orchestrator.tools.builtin.code_exec import CodeExecTool
+from orchestrator.tools.builtin.http_request import HttpRequestTool, _validate_url
+from orchestrator.tools.builtin.shell_exec import ShellExecTool
 
 LOG_DIR = Path(__file__).parent.parent / ".tool_logs"
 LOG_DIR.mkdir(exist_ok=True)
 
 
-def _load_tools(config_path: str) -> dict[str, dict[str, Any]]:
+def _load_tools(config_path: str | None) -> dict[str, dict[str, Any]]:
+    if not config_path:
+        return {}
     with open(config_path) as handle:
         payload = json.load(handle)
     return {
@@ -36,9 +40,12 @@ def _load_tools(config_path: str) -> dict[str, dict[str, Any]]:
         if item.get("enabled", True)
     }
 
-
-TOOLS = _load_tools(sys.argv[1]) if len(sys.argv) > 1 else {}
+_CONFIG_PATH = sys.argv[1] if len(sys.argv) > 1 else os.getenv("CONFIGURED_TOOLS_PAYLOAD", "")
+TOOLS = _load_tools(_CONFIG_PATH)
 server = Server("configured-tools")
+code_exec = CodeExecTool()
+shell_exec = ShellExecTool()
+http_request = HttpRequestTool()
 
 
 def log_tool_call(tool_name: str, arguments: dict, result: str, elapsed: float) -> None:
@@ -86,6 +93,17 @@ def _schema_for(tool_cfg: dict[str, Any]) -> dict[str, Any]:
                 "headers": {"type": "string", "description": "JSON headers merged into the configured defaults"},
             },
         }
+    if tool_type == "http_request":
+        return {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "Full URL to request"},
+                "method": {"type": "string", "description": "HTTP method"},
+                "body": {"type": "string", "description": "Request body or JSON string"},
+                "headers": {"type": "string", "description": "JSON headers object"},
+            },
+            "required": ["url"],
+        }
     if tool_type == "ssh":
         return {
             "type": "object",
@@ -103,6 +121,23 @@ def _schema_for(tool_cfg: dict[str, Any]) -> dict[str, Any]:
             },
             "required": ["cypher"],
         }
+    if tool_type == "code_exec":
+        return {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "Python code to execute"},
+            },
+            "required": ["code"],
+        }
+    if tool_type == "shell":
+        return {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "Shell command to execute"},
+                "workdir": {"type": "string", "description": "Working directory under /tmp"},
+            },
+            "required": ["command"],
+        }
     return {"type": "object", "properties": {}}
 
 
@@ -117,6 +152,8 @@ def _description_for(tool_cfg: dict[str, Any]) -> str:
     if tool_type in {"http_api", "custom_api"}:
         extra = cfg.get("description") or "Use the configured API safely through its base URL."
         return f"{name}: {extra} Base URL: {cfg.get('base_url', '')}"
+    if tool_type == "http_request":
+        return f"{name}: make an HTTP request to a full URL with SSRF protection."
     if tool_type == "ssh":
         host = cfg.get("host", "unknown-host")
         user = cfg.get("user", "user")
@@ -124,6 +161,10 @@ def _description_for(tool_cfg: dict[str, Any]) -> str:
         return f"{name}: execute remote commands on {user}@{host}:{port} over SSH."
     if tool_type == "neo4j":
         return f"{name}: run Cypher queries against Neo4j at {cfg.get('bolt_url', '')}."
+    if tool_type == "code_exec":
+        return f"{name}: execute Python code in an isolated subprocess."
+    if tool_type == "shell":
+        return f"{name}: execute shell commands in a restricted /tmp workspace."
     return name
 
 
@@ -261,6 +302,19 @@ async def _call_http_api(tool_cfg: dict[str, Any], arguments: dict[str, Any]) ->
     return f"[{tool_cfg['id']}] {method} {url} -> {response.status_code}\n{text}"
 
 
+async def _call_http_request(tool_cfg: dict[str, Any], arguments: dict[str, Any]) -> str:
+    url = str(arguments.get("url", "")).strip()
+    if not url:
+        return f"[{tool_cfg['id']}] Error: 'url' is required"
+    result = await http_request.execute(
+        url=url,
+        method=str(arguments.get("method", "GET") or "GET"),
+        body=str(arguments.get("body", "") or ""),
+        headers=str(arguments.get("headers", "") or ""),
+    )
+    return result.replace("[http_request]", f"[{tool_cfg['id']}]")
+
+
 async def _call_ssh(tool_cfg: dict[str, Any], arguments: dict[str, Any]) -> str:
     cfg = tool_cfg.get("config", {})
     command = str(arguments.get("command", "")).strip()
@@ -358,6 +412,23 @@ async def _call_neo4j(tool_cfg: dict[str, Any], arguments: dict[str, Any]) -> st
         return f"[{tool_cfg['id']}] Error: {exc}"
 
 
+async def _call_code_exec(tool_cfg: dict[str, Any], arguments: dict[str, Any]) -> str:
+    code = str(arguments.get("code", "")).strip()
+    if not code:
+        return f"[{tool_cfg['id']}] Error: 'code' is required"
+    result = await code_exec.execute(code=code)
+    return result.replace("[code_exec]", f"[{tool_cfg['id']}]")
+
+
+async def _call_shell(tool_cfg: dict[str, Any], arguments: dict[str, Any]) -> str:
+    command = str(arguments.get("command", "")).strip()
+    if not command:
+        return f"[{tool_cfg['id']}] Error: 'command' is required"
+    workdir = str(arguments.get("workdir", "/tmp") or "/tmp")
+    result = await shell_exec.execute(command=command, workdir=workdir)
+    return result.replace("[shell]", f"[{tool_cfg['id']}]")
+
+
 async def _dispatch(tool_cfg: dict[str, Any], arguments: dict[str, Any]) -> str:
     tool_type = tool_cfg["tool_type"]
     if tool_type == "brave_search":
@@ -366,10 +437,16 @@ async def _dispatch(tool_cfg: dict[str, Any], arguments: dict[str, Any]) -> str:
         return await _call_perplexity(tool_cfg, arguments)
     if tool_type in {"http_api", "custom_api"}:
         return await _call_http_api(tool_cfg, arguments)
+    if tool_type == "http_request":
+        return await _call_http_request(tool_cfg, arguments)
     if tool_type == "ssh":
         return await _call_ssh(tool_cfg, arguments)
     if tool_type == "neo4j":
         return await _call_neo4j(tool_cfg, arguments)
+    if tool_type == "code_exec":
+        return await _call_code_exec(tool_cfg, arguments)
+    if tool_type == "shell":
+        return await _call_shell(tool_cfg, arguments)
     return f"[{tool_cfg['id']}] Error: unsupported tool type '{tool_type}'"
 
 

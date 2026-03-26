@@ -4,6 +4,72 @@ Branch: `codex/personal-mvp-refine`
 
 ## What changed
 
+- Replaced the in-memory session store with SQLite-backed persistence at `~/.multi-agent/state.db`.
+  - runs, checkpoints, events, branch relationships, pending instruction counts, and workspace presets now survive backend restart
+  - session payloads now include:
+    - `workspace_preset_ids`
+    - `workspace_paths`
+    - `attached_tool_ids`
+    - `provider_capabilities_snapshot`
+    - `branch_children`
+- Added a first-class provider/tool capability matrix:
+  - capability levels are now `native`, `bridged`, `unavailable`
+  - `/orchestrate/run` validation now accepts truthful bridged combinations instead of blanket-Claude-only rules
+  - new backend endpoint: `GET /orchestrate/settings/providers/capabilities`
+- Added workspace preset APIs:
+  - `GET /orchestrate/settings/workspaces`
+  - `POST /orchestrate/settings/workspaces`
+  - `PUT /orchestrate/settings/workspaces/{id}`
+  - `DELETE /orchestrate/settings/workspaces/{id}`
+- Added tool profile validation:
+  - new endpoint: `POST /orchestrate/settings/tools/{id}/validate`
+  - stores `validation_status` and `last_validation_result` alongside the tool profile
+  - validates:
+    - `mcp_server` stdio/http handshakes using the MCP client library
+    - `neo4j` connectivity
+    - `ssh` local client availability
+    - `http/custom_api` config sanity
+- Extended the stable bridge runtime for `Gemini` and `Codex`:
+  - `gateway.py` now distinguishes `native` vs `bridged` tools per provider
+  - bridge payloads are written per run and injected through `CONFIGURED_TOOLS_PAYLOAD`
+  - stable MCP bootstrap support was added for:
+    - `search-server`
+    - `exec-server`
+    - `configured-tools`
+  - `configured_tools_server.py` now supports bridge adapters for:
+    - built-in `code_exec`
+    - built-in `shell_exec`
+    - built-in `http_request`
+    - plus the existing configured search/API/SSH/Neo4j tools
+- Added workspace attachment to the actual CLI runtime:
+  - `Claude` uses `--add-dir`
+  - `Gemini` uses `--include-directories`
+  - `Codex` uses `--add-dir`
+  - workspace paths now travel from wizard -> API -> engine -> gateway -> provider CLI
+- Updated the wizard and settings UI to match the new runtime contracts:
+  - launch step now supports:
+    - selecting saved workspace presets
+    - adding one-off extra paths
+  - agent tool chips now show `native` / `bridged` per provider
+  - settings tool rows now show:
+    - provider compatibility chips
+    - validation action/status
+    - last validation log/error summary
+  - settings now has a dedicated `Workspace Presets` section
+- Added historical checkpoint UI in the premium session monitor:
+  - new checkpoint panel with:
+    - checkpoint selection
+    - branch creation from any historical checkpoint
+    - parent/child branch ancestry
+  - branch badges now appear in session list/header
+- Replaced the generic monitor center panel with mode-aware views:
+  - `board`
+  - `democracy`
+  - `debate`
+  - `creator_critic`
+  - `map_reduce`
+  - a generic fallback remains for the other monitor states
+
 - Validated the recent Settings/tools work and fixed the broken runtime contract between:
   - `frontend Settings/Wizard`
   - `orchestrator/api.py`
@@ -90,19 +156,17 @@ Note:
 
 ## Important current limitation
 
-- Configured/custom tools are now honest and executable for `Claude` runs through per-run MCP config.
-- Configured/custom tools are **not** fully implemented yet for:
-  - `Gemini`
-  - `Codex`
-- The current validation intentionally blocks unsupported configured tool/provider combinations instead of pretending they work.
+- External arbitrary `mcp_server` profiles are still `Claude native` only.
+- `Gemini` and `Codex` now have a truthful bridge path for configured/custom tools, but not every external MCP server can be bridged safely.
+- Tool-call-level event tracing (`tool_call_started` / `tool_call_finished`) is still not emitted from the runtime yet.
 
 ## Still not done
 
-- Real per-run MCP injection for `Gemini` and `Codex`
-- True “any MCP server on any provider” support
-- Choosing an arbitrary historical checkpoint from the UI (backend supports checkpoint branching, current UI forks the active checkpoint)
-- Rich mode-specific visualizations beyond the general timeline rail
-- True session-topology visualization like the approved premium monitor reference (the current session screen is stylistically aligned, but it does not yet render a real topology graph)
+- Full screenshot regression automation / locked baselines
+- True “any MCP server on any provider” parity
+- Tool-call event streaming and deeper execution trace semantics
+- A more explicit topology canvas for the session monitor right/center split
+- Workspace preset editing UX beyond create/delete
 
 ## Notes for the next agent
 
