@@ -1,5 +1,5 @@
 import { ModeCard } from "./mode-card";
-import { Button } from "@/components/common/button";
+import { ArrowRight } from "lucide-react";
 import type { ModeInfo } from "@/lib/types";
 
 interface StepModeProps {
@@ -10,36 +10,82 @@ interface StepModeProps {
 }
 
 export function StepMode({ modes, selected, onSelect, onNext }: StepModeProps) {
+  const entries = Object.entries(modes);
+
   return (
     <div className="flex flex-col h-full">
-      <div className="flex-1 overflow-y-auto px-16 pt-12 pb-8">
-        <h2 className="text-[32px] font-semibold tracking-tight text-[#f5f5f7]">
-          Choose orchestration mode
-        </h2>
-        <p className="text-[15px] text-white/45 mt-2 mb-12">
-          How should the agents collaborate on your task?
-        </p>
-        <div className="grid grid-cols-2 gap-4 max-w-[840px] lg:grid-cols-3">
-          {Object.entries(modes).map(([key, info], idx) => (
-            <div key={key} className={idx === 0 ? "col-span-2 lg:col-span-2" : ""}>
-              <ModeCard
-                modeKey={key}
-                info={info}
-                isSelected={selected === key}
-                onClick={() => onSelect(key)}
-                index={idx}
-              />
-            </div>
-          ))}
+      <div className="flex-1 overflow-y-auto">
+        <div className="max-w-[760px] mx-auto px-8 pt-12 pb-8">
+          {/* Header */}
+          <div className="mb-10" style={{ animation: "fade-up 0.5s ease-out both" }}>
+            <p className="text-[11px] font-mono font-medium uppercase tracking-[0.15em] mb-3" style={{ color: "#cfa872" }}>
+              Step 1 of 3
+            </p>
+            <h2
+              className="text-[28px] font-bold tracking-tight leading-tight"
+              style={{ color: "#e8e5dc" }}
+            >
+              How should agents
+              <br />
+              <span style={{ color: "#cfa872" }}>collaborate?</span>
+            </h2>
+            <p className="mt-3 text-[14px]" style={{ color: "#777" }}>
+              Each mode defines a different decision-making structure.
+            </p>
+          </div>
+
+          {/* Cards grid */}
+          <div className="grid grid-cols-2 gap-3">
+            {entries.map(([key, info], idx) => {
+              const isLast = idx === entries.length - 1 && entries.length % 2 === 1;
+              return (
+                <div key={key} className={isLast ? "col-span-2 max-w-[calc(50%-6px)]" : ""}>
+                  <ModeCard
+                    modeKey={key}
+                    info={info}
+                    isSelected={selected === key}
+                    onClick={() => onSelect(key)}
+                    index={idx}
+                  />
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
-      <div className="border-t border-white/[0.06] px-16 py-5 flex justify-end">
+
+      {/* Footer */}
+      <div
+        className="px-8 py-4 flex items-center justify-between"
+        style={{
+          borderTop: "1px solid #1a1a1a",
+          background: "linear-gradient(to top, #0c0c0c, #0c0c0cee)",
+          backdropFilter: "blur(8px)",
+        }}
+      >
+        <p className="text-[12px] font-mono" style={{ color: "#444" }}>
+          {selected ? `${selected} selected` : "Select a mode to continue"}
+        </p>
         <button
           onClick={onNext}
           disabled={!selected}
-          className="rounded-[10px] bg-white/90 px-7 py-2.5 text-[14px] font-semibold text-black/85 hover:bg-white transition-colors disabled:opacity-15 disabled:cursor-not-allowed cursor-pointer"
+          className="group flex items-center gap-2 cursor-pointer transition-all duration-200 disabled:cursor-not-allowed"
+          style={{
+            background: selected
+              ? "linear-gradient(135deg, #cfa872, #b8935f)"
+              : "#1a1a1a",
+            color: selected ? "#0c0c0c" : "#444",
+            fontWeight: 600,
+            fontSize: "13px",
+            padding: "10px 24px",
+            borderRadius: "8px",
+            border: selected ? "none" : "1px solid #252525",
+            opacity: selected ? 1 : 0.6,
+            boxShadow: selected ? "0 4px 16px rgba(207,168,114,0.25)" : "none",
+          }}
         >
-          Next
+          Continue
+          <ArrowRight size={14} className="transition-transform group-hover:translate-x-0.5" />
         </button>
       </div>
     </div>

@@ -36,7 +36,7 @@ export default function Home() {
         onSelectSession={handleSelectSession}
         onNewSession={handleNewSession}
       />
-      <main className="main-area flex-1 flex flex-col min-w-0 relative">
+      <main className="flex-1 flex flex-col min-w-0 relative" style={{ background: "#0c0c0c" }}>
         {showWizard ? (
           <Wizard onSessionCreated={handleSessionCreated} />
         ) : activeSessionId ? (
