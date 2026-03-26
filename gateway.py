@@ -334,21 +334,49 @@ MCP_SERVER_DEFINITIONS = {
 
 def build_mcp_config(tool_keys: list[str]) -> str | None:
     """Generate a temporary MCP config JSON file for the given tool keys.
-    Returns the file path, or None if no tools need MCP servers."""
+    Returns the file path, or None if no tools need MCP servers.
+
+    Handles both built-in MCP servers and custom MCP servers from tool_configs.
+    """
     if not tool_keys:
         return None
 
-    needed_servers = resolve_mcp_servers(tool_keys)
-
-    if not needed_servers:
-        return None
-
-    # Build MCP config JSON
     config = {"mcpServers": {}}
-    for server_name in needed_servers:
+
+    # 1. Resolve built-in MCP servers
+    for server_name in resolve_mcp_servers(tool_keys):
         defn = MCP_SERVER_DEFINITIONS.get(server_name)
         if defn:
             config["mcpServers"][server_name] = defn
+
+    # 2. Resolve custom MCP servers from tool_configs
+    try:
+        from orchestrator.tool_configs import tool_config_store
+        for tool_id in tool_keys:
+            tc = tool_config_store.get(tool_id)
+            if tc and tc.tool_type == "mcp_server" and tc.enabled:
+                command = tc.config.get("command", "").strip()
+                if not command:
+                    continue
+                parts = command.split()
+                env_str = tc.config.get("env", "")
+                env_vars = {}
+                if env_str:
+                    try:
+                        env_vars = json.loads(env_str)
+                    except json.JSONDecodeError:
+                        pass
+                args_str = tc.config.get("args", "").strip()
+                extra_args = args_str.split() if args_str else []
+                server_def = {"command": parts[0], "args": parts[1:] + extra_args}
+                if env_vars:
+                    server_def["env"] = env_vars
+                config["mcpServers"][tc.id] = server_def
+    except ImportError:
+        pass
+
+    if not config["mcpServers"]:
+        return None
 
     # Write with proper error handling
     fd, path = tempfile.mkstemp(suffix=".json", prefix="mcp_")

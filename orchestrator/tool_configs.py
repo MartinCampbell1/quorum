@@ -80,7 +80,7 @@ TOOL_TYPES = {
         "name": "Python",
         "category": "execution",
         "icon": "🐍",
-        "fields": [],  # No config needed — built-in
+        "fields": [],
         "mcp_server": "exec-server",
         "mcp_tool": "code_exec",
     },
@@ -88,9 +88,37 @@ TOOL_TYPES = {
         "name": "Shell",
         "category": "execution",
         "icon": "⚡",
-        "fields": [],  # No config needed — built-in
+        "fields": [],
         "mcp_server": "exec-server",
         "mcp_tool": "shell_exec",
+    },
+    # --- Custom / extensible types ---
+    "custom_api": {
+        "name": "Custom API",
+        "category": "custom",
+        "icon": "🔧",
+        "fields": [
+            {"key": "base_url", "label": "Base URL", "type": "text", "required": True, "placeholder": "https://api.example.com/v1"},
+            {"key": "method", "label": "HTTP метод", "type": "select", "required": False, "options": ["GET", "POST", "PUT", "DELETE"], "placeholder": ""},
+            {"key": "auth_header", "label": "Authorization", "type": "password", "required": False, "placeholder": "Bearer sk-..."},
+            {"key": "content_type", "label": "Content-Type", "type": "text", "required": False, "placeholder": "application/json"},
+            {"key": "body_template", "label": "Шаблон тела запроса", "type": "textarea", "required": False, "placeholder": '{"query": "{input}"}'},
+            {"key": "description", "label": "Описание для агента", "type": "textarea", "required": False, "placeholder": "Что этот API делает, как его использовать..."},
+        ],
+        "mcp_server": "exec-server",
+        "mcp_tool": "http_request",
+    },
+    "mcp_server": {
+        "name": "MCP Server",
+        "category": "mcp",
+        "icon": "🔌",
+        "fields": [
+            {"key": "command", "label": "Команда запуска", "type": "text", "required": True, "placeholder": "npx -y @modelcontextprotocol/server-github"},
+            {"key": "args", "label": "Аргументы (через пробел)", "type": "text", "required": False, "placeholder": ""},
+            {"key": "env", "label": "Переменные окружения (JSON)", "type": "textarea", "required": False, "placeholder": '{"GITHUB_TOKEN": "ghp_..."}'},
+        ],
+        "mcp_server": "__custom_mcp__",
+        "mcp_tool": "__all__",
     },
 }
 
