@@ -8,8 +8,10 @@ export interface AgentConfig {
 export interface ToolDefinition {
   key: string;
   name: string;
-  description: string;
-  category: string;
+  description?: string;
+  category?: string;
+  icon?: string;
+  tool_type?: string;
 }
 
 export interface CustomToolConfig {
@@ -19,6 +21,38 @@ export interface CustomToolConfig {
   category?: string;
   tool_type: "http_api" | "ssh" | "shell_command";
   config: Record<string, string>;
+}
+
+export interface ToolFieldSchema {
+  name: string;
+  label: string;
+  type: string;
+  required?: boolean;
+  placeholder?: string;
+  options?: string[];
+}
+
+export interface ToolTypeDefinition {
+  name: string;
+  description?: string;
+  category: string;
+  icon: string;
+  fields: ToolFieldSchema[];
+}
+
+export interface ConfiguredTool {
+  id: string;
+  name: string;
+  tool_type: string;
+  icon?: string;
+  enabled: boolean;
+  config: Record<string, string>;
+}
+
+export interface PromptTemplate {
+  name: string;
+  description: string;
+  prompt: string;
 }
 
 export interface RunRequest {

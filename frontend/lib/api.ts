@@ -1,6 +1,16 @@
-import type { Session, SessionSummary, ModeInfo, RunRequest, ToolDefinition, CustomToolConfig } from "./types";
+import type {
+  ConfiguredTool,
+  CustomToolConfig,
+  ModeInfo,
+  PromptTemplate,
+  RunRequest,
+  Session,
+  SessionSummary,
+  ToolDefinition,
+  ToolTypeDefinition,
+} from "./types";
 
-const BASE = "http://localhost:8800";
+const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8800";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
@@ -74,22 +84,25 @@ export async function sendMessage(
 
 // Settings API
 
-export async function getConfiguredTools(): Promise<any[]> {
+export async function getConfiguredTools(): Promise<ConfiguredTool[]> {
   return request("/orchestrate/settings/tools");
 }
 
-export async function getToolTypes(): Promise<Record<string, any>> {
+export async function getToolTypes(): Promise<Record<string, ToolTypeDefinition>> {
   return request("/orchestrate/settings/tools/types");
 }
 
-export async function addConfiguredTool(tool: any): Promise<any> {
+export async function addConfiguredTool(tool: ConfiguredTool): Promise<ConfiguredTool> {
   return request("/orchestrate/settings/tools", {
     method: "POST",
     body: JSON.stringify(tool),
   });
 }
 
-export async function updateConfiguredTool(id: string, updates: any): Promise<any> {
+export async function updateConfiguredTool(
+  id: string,
+  updates: Partial<ConfiguredTool>
+): Promise<ConfiguredTool> {
   return request(`/orchestrate/settings/tools/${id}`, {
     method: "PUT",
     body: JSON.stringify(updates),
@@ -100,6 +113,6 @@ export async function deleteConfiguredTool(id: string): Promise<void> {
   await request(`/orchestrate/settings/tools/${id}`, { method: "DELETE" });
 }
 
-export async function getPromptTemplates(): Promise<Record<string, any>> {
+export async function getPromptTemplates(): Promise<Record<string, PromptTemplate>> {
   return request("/orchestrate/settings/prompts");
 }

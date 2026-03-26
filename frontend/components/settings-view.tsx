@@ -20,37 +20,13 @@ import {
   deleteConfiguredTool,
   getPromptTemplates,
 } from "@/lib/api";
+import type {
+  ConfiguredTool,
+  PromptTemplate,
+  ToolFieldSchema,
+  ToolTypeDefinition,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
-
-interface ToolField {
-  name: string;
-  label: string;
-  type: string;
-  required?: boolean;
-  placeholder?: string;
-}
-
-interface ToolType {
-  name: string;
-  description: string;
-  category: string;
-  icon: string;
-  fields: ToolField[];
-}
-
-interface ConfiguredTool {
-  id: string;
-  name: string;
-  tool_type: string;
-  enabled: boolean;
-  config: Record<string, string>;
-}
-
-interface PromptTemplate {
-  name: string;
-  description: string;
-  prompt: string;
-}
 
 const INPUT_CLASS =
   "w-full rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring/30 transition-colors";
@@ -62,12 +38,71 @@ function slugify(text: string): string {
     .replace(/^_|_$/g, "");
 }
 
-function hasMissingRequired(tool: ConfiguredTool, toolTypes: Record<string, ToolType>): boolean {
+function hasMissingRequired(tool: ConfiguredTool, toolTypes: Record<string, ToolTypeDefinition>): boolean {
   const typeInfo = toolTypes[tool.tool_type];
   if (!typeInfo) return false;
   return typeInfo.fields
     .filter((f) => f.required)
     .some((f) => !tool.config[f.name]?.trim());
+}
+
+function renderFieldControl({
+  field,
+  value,
+  onChange,
+}: {
+  field: ToolFieldSchema;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  if (field.type === "password") {
+    return (
+      <PasswordField
+        value={value}
+        onChange={onChange}
+        placeholder={field.placeholder}
+      />
+    );
+  }
+
+  if (field.type === "textarea") {
+    return (
+      <textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={field.placeholder}
+        rows={4}
+        className={`${INPUT_CLASS} min-h-24 resize-y leading-relaxed`}
+      />
+    );
+  }
+
+  if (field.type === "select") {
+    return (
+      <Select value={value} onValueChange={(nextValue) => onChange(nextValue ?? "")}>
+        <SelectTrigger className="w-full h-9 text-xs">
+          <SelectValue placeholder={field.placeholder || "Выберите..."} />
+        </SelectTrigger>
+        <SelectContent>
+          {(field.options ?? []).map((option) => (
+            <SelectItem key={option} value={option} className="text-xs">
+              {option}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    );
+  }
+
+  return (
+    <input
+      type="text"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={field.placeholder}
+      className={INPUT_CLASS}
+    />
+  );
 }
 
 function PasswordField({
@@ -107,7 +142,7 @@ function ToolAddForm({
   onAdd,
   onCancel,
 }: {
-  toolTypes: Record<string, ToolType>;
+  toolTypes: Record<string, ToolTypeDefinition>;
   onAdd: (tool: { name: string; tool_type: string; config: Record<string, string> }) => void;
   onCancel: () => void;
 }) {
@@ -205,23 +240,11 @@ function ToolAddForm({
                       {field.label}
                       {field.required && <span className="text-destructive ml-0.5">*</span>}
                     </label>
-                    {field.type === "password" ? (
-                      <PasswordField
-                        value={config[field.name] ?? ""}
-                        onChange={(v) => setConfig((prev) => ({ ...prev, [field.name]: v }))}
-                        placeholder={field.placeholder}
-                      />
-                    ) : (
-                      <input
-                        type="text"
-                        value={config[field.name] ?? ""}
-                        onChange={(e) =>
-                          setConfig((prev) => ({ ...prev, [field.name]: e.target.value }))
-                        }
-                        placeholder={field.placeholder}
-                        className={INPUT_CLASS}
-                      />
-                    )}
+                    {renderFieldControl({
+                      field,
+                      value: config[field.name] ?? "",
+                      onChange: (value) => setConfig((prev) => ({ ...prev, [field.name]: value })),
+                    })}
                   </div>
                 ))}
               </div>
@@ -249,7 +272,7 @@ function ToolEditForm({
   onCancel,
 }: {
   tool: ConfiguredTool;
-  toolType: ToolType | undefined;
+  toolType: ToolTypeDefinition | undefined;
   onSave: (updates: { name: string; config: Record<string, string> }) => void;
   onCancel: () => void;
 }) {
@@ -302,23 +325,11 @@ function ToolEditForm({
                   {field.label}
                   {field.required && <span className="text-destructive ml-0.5">*</span>}
                 </label>
-                {field.type === "password" ? (
-                  <PasswordField
-                    value={config[field.name] ?? ""}
-                    onChange={(v) => setConfig((prev) => ({ ...prev, [field.name]: v }))}
-                    placeholder={field.placeholder}
-                  />
-                ) : (
-                  <input
-                    type="text"
-                    value={config[field.name] ?? ""}
-                    onChange={(e) =>
-                      setConfig((prev) => ({ ...prev, [field.name]: e.target.value }))
-                    }
-                    placeholder={field.placeholder}
-                    className={INPUT_CLASS}
-                  />
-                )}
+                {renderFieldControl({
+                  field,
+                  value: config[field.name] ?? "",
+                  onChange: (value) => setConfig((prev) => ({ ...prev, [field.name]: value })),
+                })}
               </div>
             ))}
           </div>
@@ -339,7 +350,7 @@ function ToolEditForm({
 
 export function SettingsView() {
   const [tools, setTools] = useState<ConfiguredTool[]>([]);
-  const [toolTypes, setToolTypes] = useState<Record<string, ToolType>>({});
+  const [toolTypes, setToolTypes] = useState<Record<string, ToolTypeDefinition>>({});
   const [templates, setTemplates] = useState<Record<string, PromptTemplate>>({});
   const [showAddForm, setShowAddForm] = useState(false);
   const [editingToolId, setEditingToolId] = useState<string | null>(null);
