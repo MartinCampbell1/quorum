@@ -33,6 +33,11 @@ Branch: `codex/personal-mvp-refine`
   - paused-state instruction composer in the bottom bar
   - session/history views now reflect paused and cancelling states
 - Added regression coverage for interactive runtime control in `tests/test_interactive_runtime.py`
+- Added live event timeline plumbing:
+  - backend sessions now accumulate typed runtime events in the in-memory store
+  - `GET /orchestrate/session/{id}/events` streams those events over SSE
+  - frontend chat now renders a live timeline rail from `EventSource` without waiting for snapshot polling
+  - event coverage includes session start/completion, checkpoints, user instructions, pause/resume/cancel, and agent messages
 
 ## UX pass
 
@@ -70,7 +75,6 @@ All of the above passed during this pass.
 ## Still not done
 
 - Restart from checkpoint / branch-from-checkpoint
-- Event-stream timeline / SSE session controls
 - Full scenario layer on top of raw modes
 - Real per-run MCP injection for `Gemini` and `Codex`
 - True “any MCP server on any provider” support
@@ -79,4 +83,4 @@ All of the above passed during this pass.
 
 - Do not assume `frontend/components/wizard/step-task.tsx`, `frontend/package.json`, `frontend/package-lock.json`, `.omc/`, or `.next/` belong to this pass. They were already dirty in the worktree.
 - The highest-value next backend slice is provider-aware custom tool support beyond `Claude`.
-- The highest-value next product slice is `restart from checkpoint` + timeline/event-stream UX on top of the new runner.
+- The highest-value next product slice is `restart from checkpoint` plus a scenario layer on top of the new runner.

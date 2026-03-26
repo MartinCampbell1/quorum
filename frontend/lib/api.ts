@@ -10,10 +10,10 @@ import type {
   ToolTypeDefinition,
 } from "./types";
 
-const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8800";
+export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8800";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(`${API_BASE}${path}`, {
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -28,6 +28,15 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 export async function getModes(): Promise<Record<string, ModeInfo>> {
   return request("/orchestrate/modes");
+}
+
+export function getSessionEventsStreamUrl(sessionId: string, since: number = 0): string {
+  const params = new URLSearchParams();
+  if (since > 0) {
+    params.set("since", String(since));
+  }
+  const suffix = params.toString();
+  return `${API_BASE}/orchestrate/session/${sessionId}/events${suffix ? `?${suffix}` : ""}`;
 }
 
 export async function getTools(): Promise<ToolDefinition[]> {

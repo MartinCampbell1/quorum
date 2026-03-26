@@ -107,6 +107,7 @@ class SessionResponse(BaseModel):
     elapsed_sec: Optional[float] = None
     current_checkpoint_id: Optional[str] = None
     checkpoints: list[dict] = Field(default_factory=list)
+    events: list[dict] = Field(default_factory=list)
     pending_instructions: int = 0
     active_node: Optional[str] = None
 
@@ -156,6 +157,8 @@ class SessionStore:
                 "elapsed_sec": None,
                 "current_checkpoint_id": None,
                 "checkpoints": [],
+                "events": [],
+                "next_event_seq": 1,
                 "pending_instruction_queue": [],
                 "pending_instructions": 0,
                 "active_node": None,
@@ -172,6 +175,7 @@ class SessionStore:
                 return None
             payload = copy.deepcopy(session)
             payload.pop("pending_instruction_queue", None)
+            payload.pop("next_event_seq", None)
             return payload
 
     def update(self, sid: str, **kwargs):
@@ -189,6 +193,41 @@ class SessionStore:
             if sid in self._sessions:
                 self._sessions[sid]["checkpoints"].append(copy.deepcopy(checkpoint))
                 self._sessions[sid]["current_checkpoint_id"] = checkpoint.get("id")
+
+    def append_event(
+        self,
+        sid: str,
+        event_type: str,
+        title: str,
+        detail: str = "",
+        **extra: object,
+    ) -> Optional[dict]:
+        with self._lock:
+            session = self._sessions.get(sid)
+            if not session:
+                return None
+            event = {
+                "id": session["next_event_seq"],
+                "timestamp": time.time(),
+                "type": event_type,
+                "title": title,
+                "detail": detail,
+                **extra,
+            }
+            session["events"].append(event)
+            session["next_event_seq"] += 1
+            return copy.deepcopy(event)
+
+    def list_events(self, sid: str, since: int = 0) -> list[dict]:
+        with self._lock:
+            session = self._sessions.get(sid)
+            if not session:
+                return []
+            return [
+                copy.deepcopy(event)
+                for event in session["events"]
+                if int(event.get("id", 0)) > since
+            ]
 
     def queue_instruction(self, sid: str, content: str) -> int:
         with self._lock:

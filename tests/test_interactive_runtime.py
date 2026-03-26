@@ -57,6 +57,10 @@ def test_creator_critic_supports_pause_resume_and_instruction_injection(monkeypa
         assert completed["pending_instructions"] == 0
         assert len(completed["checkpoints"]) >= 2
         assert any(message["agent_id"] == "user" for message in completed["messages"])
+        assert any(event["type"] == "run_started" for event in completed["events"])
+        assert any(event["type"] == "checkpoint_created" for event in completed["events"])
+        assert any(event["type"] == "agent_message" for event in completed["events"])
+        assert any(event["type"] == "run_completed" for event in completed["events"])
         assert "Pay extra attention to recent Bitcoin news and volatility." in prompts[-1][1]
 
     asyncio.run(scenario())
