@@ -1,71 +1,31 @@
 @import "tailwindcss";
 
 @theme inline {
-  --font-sans: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
-  --font-mono: var(--font-mono), ui-monospace, monospace;
-
-  --color-bg-primary: #141414;
-  --color-bg-secondary: #0f0f0f;
-  --color-bg-card: rgba(255, 255, 255, 0.03);
-  --color-border: transparent;
-  --color-border-hover: rgba(255, 255, 255, 0.08);
-  --color-text-primary: #f5f5f7;
-  --color-text-secondary: rgba(255, 255, 255, 0.55);
-  --color-text-muted: rgba(255, 255, 255, 0.35);
-  --color-accent: #f5f5f7;
-  --color-accent-hover: rgba(255, 255, 255, 0.15);
-  --color-cta: rgba(255, 255, 255, 0.1);
-  --color-success: #4ADE80;
-  --color-error: #EF4444;
-
-  --color-agent-claude: #6366f1;
-  --color-agent-codex: #f59e0b;
-  --color-agent-gemini: #8B5CF6;
-  --color-agent-minimax: #6B7280;
-  --color-agent-system: rgba(255, 255, 255, 0.35);
-  --color-agent-user: #22c55e;
+  --font-sans: var(--font-sans), system-ui, sans-serif;
+  --font-mono: var(--font-mono), monospace;
 }
 
-html.light {
-  --color-bg-primary: #FAFAFA;
-  --color-bg-secondary: #F4F4F5;
-  --color-bg-card: #FFFFFF;
-  --color-border: #E4E4E7;
-  --color-border-hover: #A1A1AA;
-  --color-text-primary: #09090B;
-  --color-text-secondary: #52525B;
-  --color-text-muted: #A1A1AA;
-  --color-accent: #09090B;
-  --color-accent-hover: #1D4ED8;
-  --color-cta: #EA580C;
-  --color-success: #16A34A;
-  --color-error: #DC2626;
-}
+* { margin: 0; padding: 0; box-sizing: border-box; }
 
 body {
-  background-color: var(--color-bg-primary);
-  color: var(--color-text-primary);
-}
-
-/* Warm dark background — no cold blue */
-.main-area {
-  background: var(--color-bg-primary);
-}
-
-/* Tight tracking for headers — Apple style */
-h1, h2, h3 {
-  letter-spacing: -0.025em;
+  font-family: var(--font-sans);
+  background: #0c0c0c;
+  color: #e0ddd5;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-/* Staggered card entrance animation */
-@keyframes card-enter {
-  from {
-    opacity: 0;
-    transform: translateY(12px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+::selection {
+  background: rgba(207, 168, 114, 0.3);
+  color: #fff;
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% center; }
+  100% { background-position: 200% center; }
 }

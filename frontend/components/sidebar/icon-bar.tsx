@@ -18,23 +18,44 @@ const navItems: { id: View; icon: typeof MessageSquare; label: string }[] = [
 
 export function IconBar({ activeView, onViewChange }: IconBarProps) {
   return (
-    <div className="flex h-full w-16 flex-col items-center border-r border-white/[0.06] bg-[#0f0f0f] py-4">
-      <div className="mb-6 flex h-9 w-9 items-center justify-center rounded-xl bg-white/10">
-        <span className="font-mono text-sm font-semibold text-[#f5f5f7]">Q</span>
+    <div
+      className="flex h-full w-[56px] flex-col items-center py-4"
+      style={{ background: "#0a0a0a", borderRight: "1px solid #1a1a1a" }}
+    >
+      {/* Logo */}
+      <div className="mb-8 relative">
+        <div
+          className="flex h-9 w-9 items-center justify-center rounded-lg font-mono text-[14px] font-bold"
+          style={{
+            background: "linear-gradient(135deg, #cfa872, #b8935f)",
+            color: "#0c0c0c",
+            boxShadow: "0 2px 12px rgba(207,168,114,0.2)",
+          }}
+        >
+          Q
+        </div>
       </div>
-      <nav className="flex flex-col gap-2">
+
+      {/* Nav */}
+      <nav className="flex flex-col gap-1">
         {navItems.map(({ id, icon: Icon, label }) => (
           <button
             key={id}
             onClick={() => onViewChange(id)}
             aria-label={label}
-            className={`flex h-10 w-10 items-center justify-center rounded-xl transition-all duration-200 cursor-pointer ${
-              activeView === id
-                ? "text-[#f5f5f7]"
-                : "text-white/25 hover:text-white/55"
-            }`}
+            className="relative flex h-10 w-10 items-center justify-center rounded-lg transition-all duration-200 cursor-pointer"
+            style={{
+              color: activeView === id ? "#cfa872" : "#555",
+              background: activeView === id ? "rgba(207,168,114,0.08)" : "transparent",
+            }}
           >
-            <Icon size={18} strokeWidth={1.5} />
+            <Icon size={17} strokeWidth={1.5} />
+            {activeView === id && (
+              <div
+                className="absolute left-0 top-1/2 -translate-y-1/2 w-[2px] h-4 rounded-r"
+                style={{ background: "#cfa872" }}
+              />
+            )}
           </button>
         ))}
       </nav>

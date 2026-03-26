@@ -19,6 +19,14 @@ export function Wizard({ onSessionCreated }: WizardProps) {
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [isLaunching, setIsLaunching] = useState(false);
 
+  // Pre-select first mode
+  const modesLoaded = modes && Object.keys(modes).length > 0;
+  if (modesLoaded && !selectedMode) {
+    const firstMode = Object.keys(modes)[0];
+    setSelectedMode(firstMode);
+    setAgents(modes[firstMode].default_agents);
+  }
+
   function handleModeSelect(mode: string) {
     setSelectedMode(mode);
     if (modes?.[mode]) {
@@ -46,8 +54,11 @@ export function Wizard({ onSessionCreated }: WizardProps) {
 
   if (isLoading || !modes) {
     return (
-      <div className="flex h-full items-center justify-center text-sm text-text-muted">
-        Loading modes...
+      <div className="flex h-full items-center justify-center">
+        <div className="flex items-center gap-3">
+          <div className="w-2 h-2 rounded-full animate-pulse" style={{ background: "#cfa872" }} />
+          <span className="text-[13px] font-mono" style={{ color: "#555" }}>Loading modes...</span>
+        </div>
       </div>
     );
   }
@@ -77,27 +88,8 @@ export function Wizard({ onSessionCreated }: WizardProps) {
     />,
   ];
 
-  const stepLabels = ["Mode", "Agents", "Task"];
-
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center gap-8 border-b border-white/[0.06] px-16 py-0">
-        {stepLabels.map((label, i) => (
-          <button
-            key={i}
-            onClick={() => i < step && setStep(i)}
-            className={`py-4 text-[13px] font-medium transition-colors border-b-2 cursor-pointer ${
-              i === step
-                ? "text-[#f5f5f7] border-[#f5f5f7]"
-                : i < step
-                  ? "text-white/55 border-transparent hover:text-white/70"
-                  : "text-white/30 border-transparent cursor-default"
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
       {steps[step]}
     </div>
   );
