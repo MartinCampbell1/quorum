@@ -50,7 +50,6 @@ export function ChatView({ sessionId }: ChatViewProps) {
         <div ref={bottomRef} />
       </div>
       <InputBar
-        sessionId={sessionId}
         disabled={session.status !== "running"}
       />
     </div>

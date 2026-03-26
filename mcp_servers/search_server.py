@@ -20,8 +20,8 @@ def log_tool_call(server_name: str, tool_name: str, arguments: dict, result: str
     entry = {
         "server": server_name,
         "tool": tool_name,
-        "arguments": arguments,
-        "result_preview": result[:500],
+        "arguments": sanitize_log_arguments(arguments),
+        "result_preview": sanitize_result_preview(result),
         "elapsed_sec": elapsed,
         "timestamp": time.time(),
     }
@@ -33,6 +33,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
+from mcp_servers.logging_utils import sanitize_log_arguments, sanitize_result_preview
 from orchestrator.tools.builtin.perplexity import PerplexityTool
 from orchestrator.tools.builtin.web_search import WebSearchTool
 

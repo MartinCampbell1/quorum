@@ -59,6 +59,27 @@ COOLDOWN_SECONDS = 300  # 5 минут кулдаун после rate limit
 
 # Рабочая директория по умолчанию
 DEFAULT_WORKDIR = REAL_HOME
+DEFAULT_GATEWAY_HOST = os.getenv("GATEWAY_HOST", "127.0.0.1")
+
+
+def _parse_csv_env(name: str, default: list[str]) -> list[str]:
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+DEFAULT_CORS_ORIGINS = _parse_csv_env(
+    "GATEWAY_CORS_ORIGINS",
+    [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
+        "http://localhost:8800",
+        "http://127.0.0.1:8800",
+    ],
+)
 
 # Роли агентов для оркестрации
 PLANNER = "gemini"      # большое контекстное окно, хорош для анализа
@@ -317,12 +338,7 @@ def build_mcp_config(tool_keys: list[str]) -> str | None:
     if not tool_keys:
         return None
 
-    # Determine which MCP servers are needed
-    needed_servers = set()
-    for key in tool_keys:
-        server_name = MCP_SERVER_MAP.get(key)
-        if server_name:
-            needed_servers.add(server_name)
+    needed_servers = resolve_mcp_servers(tool_keys)
 
     if not needed_servers:
         return None
@@ -345,28 +361,47 @@ def build_mcp_config(tool_keys: list[str]) -> str | None:
     return path
 
 
-def build_cmd(provider: str, prompt: str, model: str = None, mcp_config_path: str = None) -> list[str]:
+def resolve_mcp_servers(tool_keys: list[str] | None) -> list[str]:
+    """Map tool keys to the MCP servers needed for this run."""
+    needed_servers = {
+        server_name
+        for key in (tool_keys or [])
+        if (server_name := MCP_SERVER_MAP.get(key))
+    }
+    return sorted(needed_servers)
+
+
+def build_cmd(
+    provider: str,
+    prompt: str,
+    model: str = None,
+    mcp_config_path: str = None,
+    allowed_mcp_servers: list[str] | None = None,
+    selected_tools: list[str] | None = None,
+) -> list[str]:
     """Собрать команду для CLI."""
     if provider == "claude":
         cmd = [CLAUDE_BIN, "-p", prompt, "--output-format", "json"]
         if model:
             cmd.extend(["--model", model])
         if mcp_config_path:
-            cmd.extend(["--mcp-config", mcp_config_path])
+            cmd.extend(["--mcp-config", mcp_config_path, "--strict-mcp-config", "--tools", ""])
         return cmd
 
     elif provider == "gemini":
         cmd = [GEMINI_BIN, "-p", prompt]
         if model:
             cmd.extend(["--model", model])
-        # TODO: Gemini MCP config via --allowed-mcp-server-names or settings
+        if allowed_mcp_servers:
+            cmd.extend(["--allowed-mcp-server-names", *allowed_mcp_servers])
         return cmd
 
     elif provider == "codex":
         cmd = [CODEX_BIN, "exec", "--skip-git-repo-check", prompt]
         if model:
             cmd.extend(["--model", model])
-        # TODO: Codex MCP config via env/settings
+        if selected_tools and "web_search" in selected_tools:
+            cmd.append("--search")
         return cmd
 
     raise ValueError(f"Unknown provider: {provider}")
@@ -411,9 +446,17 @@ async def call_agent(
     if system_prompt:
         prompt = f"[System]: {system_prompt}\n\n{prompt}"
 
+    allowed_mcp_servers = resolve_mcp_servers(mcp_tools)
     mcp_config_path = build_mcp_config(mcp_tools) if mcp_tools else None
     try:
-        cmd = build_cmd(provider, prompt, model, mcp_config_path)
+        cmd = build_cmd(
+            provider,
+            prompt,
+            model,
+            mcp_config_path,
+            allowed_mcp_servers=allowed_mcp_servers,
+            selected_tools=mcp_tools,
+        )
         pool = pools.get(provider)
         t0 = time.time()
         retries = 0
@@ -530,7 +573,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=DEFAULT_CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -809,4 +852,4 @@ app.include_router(orchestrate_router)
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8800)
+    uvicorn.run(app, host=DEFAULT_GATEWAY_HOST, port=8800)

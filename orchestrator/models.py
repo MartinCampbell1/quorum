@@ -1,5 +1,6 @@
 """Data models for orchestration sessions."""
 
+import copy
 import threading
 import time
 import uuid
@@ -31,6 +32,29 @@ AVAILABLE_TOOLS: list[ToolDefinition] = [
 ]
 
 TOOLS_BY_KEY: dict[str, ToolDefinition] = {t.key: t for t in AVAILABLE_TOOLS}
+SUPPORTED_PROVIDERS = {"claude", "gemini", "codex", "minimax"}
+SESSION_CAPABILITIES = {
+    "live_messages": False,
+    "custom_tools": False,
+}
+
+MODE_AGENT_REQUIREMENTS: dict[str, dict[str, object]] = {
+    "dictator": {"min": 2, "label": "1 director + at least 1 worker"},
+    "board": {"min": 3, "label": "3 directors, optional extra workers"},
+    "democracy": {"min": 3, "label": "at least 3 voters"},
+    "debate": {"exact": 3, "label": "proponent, opponent, judge"},
+    "map_reduce": {"min": 3, "label": "planner, at least 1 worker, synthesizer"},
+    "creator_critic": {"exact": 2, "label": "creator and critic"},
+    "tournament": {"min": 3, "label": "at least 2 contestants + judge"},
+}
+
+PROVIDER_TOOL_ALLOWLIST: dict[str, set[str]] = {
+    "claude": set(TOOLS_BY_KEY),
+    "gemini": {"web_search", "perplexity", "http_request"},
+    # Codex currently relies on native CLI capabilities for these classes of work.
+    "codex": {"code_exec", "shell_exec", "web_search"},
+    "minimax": set(),
+}
 
 
 class AgentConfig(BaseModel):
@@ -38,15 +62,15 @@ class AgentConfig(BaseModel):
     role: str
     provider: str
     system_prompt: str = ""
-    tools: list[str] = []
+    tools: list[str] = Field(default_factory=list)
 
 
 class RunRequest(BaseModel):
     """POST /orchestrate/run request body."""
     mode: str
     task: str
-    agents: list[AgentConfig] = []
-    config: dict = {}
+    agents: list[AgentConfig] = Field(default_factory=list)
+    config: dict = Field(default_factory=dict)
 
 
 class MessageRequest(BaseModel):
@@ -63,7 +87,8 @@ class SessionResponse(BaseModel):
     messages: list[dict]
     result: Optional[str] = None
     status: str
-    config: dict = {}
+    config: dict = Field(default_factory=dict)
+    capabilities: dict = Field(default_factory=lambda: dict(SESSION_CAPABILITIES))
     created_at: float
     elapsed_sec: Optional[float] = None
 
@@ -107,7 +132,8 @@ class SessionStore:
                 "messages": [],
                 "result": None,
                 "status": "running",
-                "config": config,
+                "config": copy.deepcopy(config),
+                "capabilities": dict(SESSION_CAPABILITIES),
                 "created_at": time.time(),
                 "elapsed_sec": None,
             }
@@ -119,7 +145,7 @@ class SessionStore:
     def get(self, sid: str) -> Optional[dict]:
         with self._lock:
             session = self._sessions.get(sid)
-            return dict(session) if session else None  # Return copy
+            return copy.deepcopy(session) if session else None
 
     def update(self, sid: str, **kwargs):
         with self._lock:
@@ -140,3 +166,50 @@ class SessionStore:
 
 # Global store instance
 store = SessionStore()
+
+
+def validate_agents_for_mode(mode: str, agents: list[AgentConfig]) -> list[str]:
+    """Validate topology, provider, and tool compatibility before execution."""
+    errors: list[str] = []
+    requirement = MODE_AGENT_REQUIREMENTS.get(mode, {})
+    count = len(agents)
+    minimum = requirement.get("min")
+    exact = requirement.get("exact")
+    label = requirement.get("label", "agent requirements")
+
+    if exact is not None and count != exact:
+        errors.append(f"Mode '{mode}' requires exactly {exact} agents ({label}); got {count}.")
+    elif minimum is not None and count < minimum:
+        errors.append(f"Mode '{mode}' requires at least {minimum} agents ({label}); got {count}.")
+
+    roles = [agent.role.strip() for agent in agents if agent.role.strip()]
+    duplicate_roles = sorted({role for role in roles if roles.count(role) > 1})
+    if duplicate_roles:
+        dup_list = ", ".join(duplicate_roles)
+        errors.append(f"Agent roles must be unique; duplicate roles: {dup_list}.")
+
+    for index, agent in enumerate(agents):
+        if agent.provider not in SUPPORTED_PROVIDERS:
+            errors.append(
+                f"Agent {index + 1} ('{agent.role}') uses unsupported provider '{agent.provider}'."
+            )
+            continue
+
+        invalid_tools = [tool for tool in agent.tools if tool not in TOOLS_BY_KEY]
+        if invalid_tools:
+            errors.append(
+                f"Agent {index + 1} ('{agent.role}') uses unknown tools: {', '.join(sorted(invalid_tools))}."
+            )
+            continue
+
+        disallowed_tools = [
+            tool for tool in agent.tools
+            if tool not in PROVIDER_TOOL_ALLOWLIST.get(agent.provider, set())
+        ]
+        if disallowed_tools:
+            errors.append(
+                f"Agent {index + 1} ('{agent.role}') cannot use {agent.provider} with tools: "
+                f"{', '.join(sorted(disallowed_tools))}."
+            )
+
+    return errors

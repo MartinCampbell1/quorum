@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useModes } from "@/hooks/use-modes";
 import { runSession } from "@/lib/api";
 import { StepMode } from "./step-mode";
@@ -19,18 +19,29 @@ export function Wizard({ onSessionCreated }: WizardProps) {
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [isLaunching, setIsLaunching] = useState(false);
 
-  // Pre-select first mode
-  const modesLoaded = modes && Object.keys(modes).length > 0;
-  if (modesLoaded && !selectedMode) {
-    const firstMode = Object.keys(modes)[0];
-    setSelectedMode(firstMode);
-    setAgents(modes[firstMode].default_agents);
+  function cloneAgents(source: AgentConfig[]): AgentConfig[] {
+    return source.map((agent) => ({
+      ...agent,
+      tools: [...(agent.tools ?? [])],
+    }));
   }
+
+  useEffect(() => {
+    if (!modes || Object.keys(modes).length === 0) return;
+    if (selectedMode && modes[selectedMode]) return;
+
+    const firstMode = Object.keys(modes)[0];
+    if (!firstMode) return;
+
+    setSelectedMode(firstMode);
+    setAgents(cloneAgents(modes[firstMode].default_agents));
+    setStep(0);
+  }, [modes, selectedMode]);
 
   function handleModeSelect(mode: string) {
     setSelectedMode(mode);
     if (modes?.[mode]) {
-      setAgents(modes[mode].default_agents);
+      setAgents(cloneAgents(modes[mode].default_agents));
     }
   }
 

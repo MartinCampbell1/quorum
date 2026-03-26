@@ -1,53 +1,24 @@
 "use client";
 
-import { useState } from "react";
-import { Send } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { sendMessage } from "@/lib/api";
+import { AlertCircle } from "lucide-react";
 
 interface InputBarProps {
-  sessionId: string;
   disabled: boolean;
 }
 
-export function InputBar({ sessionId, disabled }: InputBarProps) {
-  const [text, setText] = useState("");
-  const [sending, setSending] = useState(false);
-
-  async function handleSend() {
-    if (!text.trim() || sending) return;
-    setSending(true);
-    try {
-      await sendMessage(sessionId, text.trim());
-      setText("");
-    } catch (err) {
-      console.error("Failed:", err);
-    } finally {
-      setSending(false);
-    }
-  }
-
+export function InputBar({ disabled }: InputBarProps) {
   return (
     <div className="border-t bg-background px-6 py-3.5">
-      <div className="flex items-center gap-2.5">
-        <input
-          type="text"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleSend()}
-          placeholder={disabled ? "Сессия завершена" : "Отправить сообщение..."}
-          disabled={disabled || sending}
-          className="flex-1 rounded-lg border border-border bg-muted/20 px-4 py-2 text-[13px] text-foreground placeholder:text-muted-foreground/50 disabled:opacity-40 focus:outline-none focus:ring-2 focus:ring-ring/30 focus:border-ring transition-colors"
-        />
-        <Button
-          size="icon"
-          variant="default"
-          onClick={handleSend}
-          disabled={disabled || sending || !text.trim()}
-          className="h-8 w-8 shrink-0"
-        >
-          <Send className="h-3.5 w-3.5" />
-        </Button>
+      <div className="flex items-start gap-2.5 rounded-lg border border-dashed border-border/70 bg-muted/20 px-4 py-3">
+        <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground/70" />
+        <div className="min-w-0">
+          <p className="text-[13px] font-medium text-foreground/80">
+            {disabled ? "Сессия только для чтения." : "Живые сообщения пользователя пока не подключены в этой сборке."}
+          </p>
+          <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground/70">
+            Журнал чата пока доступен только для наблюдения, пока backend не получит путь resume/replay.
+          </p>
+        </div>
       </div>
     </div>
   );
