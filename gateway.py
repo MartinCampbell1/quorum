@@ -300,7 +300,7 @@ def build_cmd(provider: str, prompt: str, model: str = None) -> list[str]:
         return cmd
 
     elif provider == "codex":
-        cmd = [CODEX_BIN, "-p", prompt, "--full-auto"]
+        cmd = [CODEX_BIN, "exec", "--skip-git-repo-check", prompt]
         if model:
             cmd.extend(["--model", model])
         return cmd
@@ -316,6 +316,10 @@ def parse_output(provider: str, stdout: str) -> str:
             return data.get("result", stdout)
         except json.JSONDecodeError:
             return stdout.strip()
+
+    # codex exec: clean response goes to stdout, metadata to stderr
+    # gemini: plain text to stdout
+
     return stdout.strip()
 
 
@@ -415,13 +419,17 @@ async def call_agent(
         await pool.mark_success(profile)
         output = parse_output(provider, stdout)
 
+        # Debug: log if output is empty
+        if not output and stdout.strip() == "" and stderr.strip():
+            print(f"[DEBUG] {provider}/{profile.name} stdout empty, stderr: {stderr[:300]}")
+
         return {
             "agent": provider,
             "profile_used": profile.name,
             "output": output,
             "elapsed_sec": round(time.time() - t0, 2),
-            "success": True,
-            "error": None,
+            "success": rc == 0 and bool(output),
+            "error": stderr.strip()[:500] if rc != 0 or not output else None,
             "retries": retries,
         }
 
@@ -709,6 +717,11 @@ async def ep_health():
             ) if pool else 0,
         }
     return checks
+
+
+# Mount orchestrator
+from orchestrator.api import router as orchestrate_router
+app.include_router(orchestrate_router)
 
 
 # =========================================================================
