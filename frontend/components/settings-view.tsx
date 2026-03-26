@@ -29,7 +29,7 @@ import type {
 import { cn } from "@/lib/utils";
 
 const INPUT_CLASS =
-  "w-full rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring/30 transition-colors";
+  "w-full rounded-2xl border border-slate-200/80 bg-white/85 px-3.5 py-2.5 text-xs text-foreground placeholder:text-muted-foreground/50 shadow-inner transition-colors focus:outline-none focus:ring-2 focus:ring-sky-400/25 dark:border-slate-800/80 dark:bg-slate-950/55";
 
 function slugify(text: string): string {
   return text
@@ -173,10 +173,10 @@ function ToolAddForm({
   }
 
   return (
-    <Card className="py-0 border-dashed border-foreground/20">
-      <CardContent className="px-4 py-3.5 space-y-3">
+    <Card className="overflow-hidden border-dashed border-sky-200/80 bg-[linear-gradient(135deg,rgba(255,255,255,0.96),rgba(241,245,249,0.92))] py-0 shadow-[0_20px_60px_-44px_rgba(14,165,233,0.35)] dark:border-sky-900/60 dark:bg-[linear-gradient(135deg,rgba(15,23,42,0.88),rgba(2,6,23,0.78))]">
+      <CardContent className="px-5 py-4 space-y-3">
         <div className="flex items-center justify-between">
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-foreground/70">
+          <span className="text-[11px] font-semibold uppercase tracking-[0.2em] text-sky-700 dark:text-sky-300">
             Новый инструмент
           </span>
           <button
@@ -196,9 +196,9 @@ function ToolAddForm({
         >
           {/* Tool type selector */}
           <div className="mb-3">
-            <label className="text-[11px] text-muted-foreground mb-1 block">Тип инструмента</label>
+            <label className="mb-1 block text-[11px] text-muted-foreground">Тип инструмента</label>
             <Select value={selectedType} onValueChange={handleTypeChange}>
-              <SelectTrigger className="w-full h-8 text-xs">
+              <SelectTrigger className="h-10 w-full rounded-2xl border-slate-200/80 bg-white/85 text-xs dark:border-slate-800 dark:bg-slate-950/55">
                 <SelectValue placeholder="Выберите тип..." />
               </SelectTrigger>
               <SelectContent>
@@ -220,7 +220,7 @@ function ToolAddForm({
           {currentType && (
             <>
               <div className="mb-3">
-                <label className="text-[11px] text-muted-foreground mb-1 block">Название</label>
+                <label className="mb-1 block text-[11px] text-muted-foreground">Название</label>
                 <input
                   value={name}
                   onChange={(e) => setName(e.target.value)}
@@ -236,7 +236,7 @@ function ToolAddForm({
               <div className="space-y-2 mb-3">
                 {currentType.fields.map((field) => (
                   <div key={field.name}>
-                    <label className="text-[11px] text-muted-foreground mb-1 block">
+                    <label className="mb-1 block text-[11px] text-muted-foreground">
                       {field.label}
                       {field.required && <span className="text-destructive ml-0.5">*</span>}
                     </label>
@@ -253,7 +253,7 @@ function ToolAddForm({
                 type="submit"
                 disabled={!name.trim()}
                 size="sm"
-                className="w-full text-xs"
+                className="w-full rounded-full bg-slate-950 text-xs text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-950 dark:hover:bg-white"
               >
                 <Plus size={12} className="mr-1.5" /> Добавить
               </Button>
@@ -287,10 +287,10 @@ function ToolEditForm({
   }
 
   return (
-    <Card className="py-0 border-dashed border-blue-500/30">
-      <CardContent className="px-4 py-3.5 space-y-3">
+    <Card className="overflow-hidden border-dashed border-slate-300/80 bg-[linear-gradient(135deg,rgba(255,255,255,0.96),rgba(248,250,252,0.92))] py-0 shadow-[0_20px_60px_-44px_rgba(15,23,42,0.28)] dark:border-slate-700/80 dark:bg-[linear-gradient(135deg,rgba(15,23,42,0.88),rgba(2,6,23,0.78))]">
+      <CardContent className="px-5 py-4 space-y-3">
         <div className="flex items-center justify-between">
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-foreground/70">
+          <span className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-600 dark:text-slate-300">
             Редактирование
           </span>
           <button
@@ -309,7 +309,7 @@ function ToolEditForm({
           }}
         >
           <div className="mb-3">
-            <label className="text-[11px] text-muted-foreground mb-1 block">Название</label>
+            <label className="mb-1 block text-[11px] text-muted-foreground">Название</label>
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -321,7 +321,7 @@ function ToolEditForm({
           <div className="space-y-2 mb-3">
             {fields.map((field) => (
               <div key={field.name}>
-                <label className="text-[11px] text-muted-foreground mb-1 block">
+                <label className="mb-1 block text-[11px] text-muted-foreground">
                   {field.label}
                   {field.required && <span className="text-destructive ml-0.5">*</span>}
                 </label>
@@ -335,10 +335,10 @@ function ToolEditForm({
           </div>
 
           <div className="flex gap-2">
-            <Button type="button" variant="outline" size="sm" className="flex-1 text-xs" onClick={onCancel}>
+            <Button type="button" variant="outline" size="sm" className="flex-1 rounded-full text-xs" onClick={onCancel}>
               Отмена
             </Button>
-            <Button type="submit" disabled={!name.trim()} size="sm" className="flex-1 text-xs">
+            <Button type="submit" disabled={!name.trim()} size="sm" className="flex-1 rounded-full bg-slate-950 text-xs text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-950 dark:hover:bg-white">
               Сохранить
             </Button>
           </div>
@@ -452,12 +452,12 @@ export function SettingsView() {
         <div className="mx-auto max-w-5xl space-y-8">
           {/* Section 1: Tools */}
           <section className="rounded-[28px] border border-slate-200/80 bg-white/86 p-6 shadow-[0_24px_70px_-52px_rgba(15,23,42,0.55)] dark:border-slate-800/80 dark:bg-slate-950/50">
-            <div className="flex items-center justify-between mb-4">
+            <div className="mb-4 flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Settings2 size={16} className="text-muted-foreground" />
-                <h3 className="text-sm font-medium">Инструменты</h3>
+                <Settings2 size={16} className="text-sky-600 dark:text-sky-300" />
+                <h3 className="text-sm font-medium text-slate-950 dark:text-white">Инструменты</h3>
                 {tools.length > 0 && (
-                  <Badge variant="outline" className="text-[10px] px-1.5 py-0 font-normal">
+                  <Badge variant="outline" className="border-slate-200/80 bg-white/85 px-1.5 py-0 text-[10px] font-normal dark:border-slate-800 dark:bg-slate-900/70">
                     {tools.length}
                   </Badge>
                 )}
@@ -466,7 +466,7 @@ export function SettingsView() {
                 <Button
                   variant="outline"
                   size="sm"
-                  className="text-xs"
+                  className="rounded-full border-slate-200/80 bg-white/85 text-xs dark:border-slate-800 dark:bg-slate-900/70"
                   onClick={() => { setShowAddForm(true); setEditingToolId(null); }}
                 >
                   <Plus size={12} className="mr-1" /> Добавить инструмент
@@ -501,12 +501,12 @@ export function SettingsView() {
                     <div
                       key={tool.id}
                       className={cn(
-                        "flex items-center gap-3 rounded-xl border border-border p-3 transition-all group",
+                        "group flex items-center gap-3 rounded-[22px] border border-slate-200/80 bg-white/80 p-3.5 shadow-sm transition-all dark:border-slate-800/80 dark:bg-slate-950/35",
                         !tool.enabled && "opacity-50"
                       )}
                     >
                       {/* Icon */}
-                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-slate-200/80 bg-[linear-gradient(135deg,rgba(255,255,255,0.96),rgba(241,245,249,0.92))] text-muted-foreground dark:border-slate-800 dark:bg-[linear-gradient(135deg,rgba(15,23,42,0.94),rgba(30,41,59,0.72))]">
                         {typeInfo?.icon ? (
                           <span className="text-sm">{typeInfo.icon}</span>
                         ) : (
@@ -525,7 +525,7 @@ export function SettingsView() {
                           )}
                         </div>
                         <div className="flex items-center gap-1.5 mt-0.5">
-                          <Badge variant="outline" className="text-[10px] px-1.5 py-0 font-normal">
+                          <Badge variant="outline" className="border-slate-200/80 bg-white/85 px-1.5 py-0 text-[10px] font-normal dark:border-slate-800 dark:bg-slate-900/70">
                             {typeInfo?.category ?? tool.tool_type}
                           </Badge>
                           <span className="text-[10px] text-muted-foreground/50 font-mono">
