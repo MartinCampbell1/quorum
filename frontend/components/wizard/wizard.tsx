@@ -81,16 +81,16 @@ export function Wizard({ onSessionCreated }: WizardProps) {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center gap-2 border-b border-border px-8 py-3">
+      <div className="flex items-center gap-3 border-b border-white/[0.05] px-10 py-4">
         {stepLabels.map((label, i) => (
           <div key={i} className="flex items-center gap-2">
             <div
-              className={`flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-bold ${
+              className={`flex h-7 w-7 items-center justify-center rounded-full text-[11px] font-semibold transition-all duration-300 ${
                 i === step
-                  ? "bg-accent text-white"
+                  ? "bg-accent text-white shadow-[0_0_12px_rgba(37,99,235,0.3)]"
                   : i < step
-                    ? "bg-green-950 text-success"
-                    : "bg-bg-card text-text-muted"
+                    ? "bg-success/20 text-success"
+                    : "bg-white/[0.04] text-text-muted"
               }`}
             >
               {i + 1}
