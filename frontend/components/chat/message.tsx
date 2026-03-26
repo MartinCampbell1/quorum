@@ -23,27 +23,26 @@ export function Message({ message }: MessageProps) {
 
   return (
     <div
-      className="mb-3 rounded-xl border border-border/60 bg-card px-5 py-4 transition-shadow hover:shadow-sm"
-      style={{ borderLeftWidth: "3px", borderLeftColor: color }}
+      className="mb-3 overflow-hidden rounded-[24px] border border-slate-200/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.94),rgba(248,250,252,0.9))] px-5 py-4 shadow-[0_18px_55px_-42px_rgba(15,23,42,0.5)] transition-shadow hover:shadow-[0_22px_70px_-42px_rgba(15,23,42,0.56)] dark:border-slate-800/80 dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.82),rgba(2,6,23,0.78))]"
+      style={{ boxShadow: `inset 3px 0 0 0 ${color}` }}
     >
-      <div className="flex items-center gap-2 mb-2.5">
-        <div
-          className="h-2 w-2 rounded-full shrink-0"
-          style={{ backgroundColor: color }}
-        />
-        <span
-          className="font-mono text-xs font-medium"
-          style={{ color }}
-        >
+      <div className="mb-3 flex items-center gap-2">
+        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-slate-200/80 bg-white/85 dark:border-slate-800 dark:bg-slate-900/70">
+          <div
+            className="h-2.5 w-2.5 rounded-full"
+            style={{ backgroundColor: color }}
+          />
+        </div>
+        <span className="font-mono text-[11px] font-semibold" style={{ color }}>
           {message.agent_id}
         </span>
         {message.phase && (
-          <Badge variant="outline" className="text-[9px] px-1.5 py-0 font-normal text-muted-foreground">
+          <Badge variant="outline" className="border-slate-200/80 bg-white/80 px-2 py-0 text-[9px] font-normal text-muted-foreground dark:border-slate-800 dark:bg-slate-900/60">
             {message.phase}
           </Badge>
         )}
       </div>
-      <p className="text-[13px] text-foreground/80 leading-relaxed whitespace-pre-wrap pl-4">
+      <p className="whitespace-pre-wrap pl-9 text-[13px] leading-relaxed text-foreground/80">
         {message.content}
       </p>
     </div>

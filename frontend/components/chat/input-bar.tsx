@@ -72,12 +72,15 @@ export function InputBar({
 
   if (status === "paused") {
     return (
-      <div className="border-t bg-background px-6 py-3.5">
-        <div className="rounded-xl border border-orange-500/20 bg-orange-50/60 px-4 py-4 dark:bg-orange-950/20">
+      <div className="border-t border-slate-200/70 bg-white/70 px-6 py-4 backdrop-blur-md dark:border-slate-800/70 dark:bg-slate-950/40">
+        <div className="rounded-[26px] border border-orange-200/70 bg-[linear-gradient(135deg,rgba(255,251,235,0.94),rgba(255,247,237,0.9))] px-5 py-5 shadow-[0_24px_60px_-44px_rgba(249,115,22,0.45)] dark:border-orange-900/60 dark:bg-[linear-gradient(135deg,rgba(67,20,7,0.55),rgba(30,27,75,0.38))]">
           <div className="flex items-start gap-2.5">
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-orange-600 dark:text-orange-400" />
             <div className="min-w-0 flex-1">
-              <p className="text-[13px] font-medium text-foreground/90">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-orange-700 dark:text-orange-300">
+                Checkpoint Control
+              </p>
+              <p className="mt-2 text-[14px] font-semibold text-foreground/90">
                 Сессия остановлена на checkpoint.
               </p>
               <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground/80">
@@ -93,13 +96,13 @@ export function InputBar({
                 onChange={(e) => setDraft(e.target.value)}
                 placeholder="Например: проверь гипотезу глубже и опирайся на последние новости по BTC"
                 rows={3}
-                className="mt-3 w-full rounded-xl border border-border bg-background px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/50 resize-none focus:outline-none focus:ring-2 focus:ring-ring/30"
+                className="mt-4 w-full resize-none rounded-2xl border border-orange-200/70 bg-white/85 px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground/50 shadow-inner focus:outline-none focus:ring-2 focus:ring-orange-400/25 dark:border-orange-900/60 dark:bg-slate-950/50"
               />
-              <div className="mt-3 flex flex-wrap gap-2">
+              <div className="mt-4 flex flex-wrap gap-2">
                 <Button
                   variant="outline"
                   size="sm"
-                  className="text-xs"
+                  className="rounded-full border-orange-200/80 bg-white/85 text-xs dark:border-orange-900/60 dark:bg-slate-950/40"
                   onClick={queueInstruction}
                   disabled={isWorking || !draft.trim()}
                 >
@@ -108,7 +111,7 @@ export function InputBar({
                 </Button>
                 <Button
                   size="sm"
-                  className="text-xs"
+                  className="rounded-full bg-slate-950 text-xs text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-950 dark:hover:bg-white"
                   onClick={resumeRun}
                   disabled={isWorking}
                 >
@@ -118,7 +121,7 @@ export function InputBar({
                 <Button
                   variant="secondary"
                   size="sm"
-                  className="text-xs"
+                  className="rounded-full text-xs"
                   onClick={forkFromCheckpoint}
                   disabled={isWorking || !currentCheckpointId}
                 >
@@ -148,11 +151,14 @@ export function InputBar({
   }
 
   return (
-    <div className="border-t bg-background px-6 py-3.5">
-      <div className="flex items-start gap-2.5 rounded-lg border border-dashed border-border/70 bg-muted/20 px-4 py-3">
+    <div className="border-t border-slate-200/70 bg-white/70 px-6 py-4 backdrop-blur-md dark:border-slate-800/70 dark:bg-slate-950/40">
+      <div className="flex items-start gap-3 rounded-[22px] border border-dashed border-slate-200/80 bg-[linear-gradient(135deg,rgba(255,255,255,0.85),rgba(248,250,252,0.82))] px-4 py-4 dark:border-slate-800/80 dark:bg-[linear-gradient(135deg,rgba(15,23,42,0.72),rgba(2,6,23,0.64))]">
         <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground/70" />
         <div className="min-w-0">
-          <p className="text-[13px] font-medium text-foreground/80">{title}</p>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">
+            Session Notes
+          </p>
+          <p className="mt-1 text-[13px] font-medium text-foreground/80">{title}</p>
           <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground/70">{body}</p>
         </div>
       </div>

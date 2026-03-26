@@ -34,20 +34,23 @@ export function ChatView({ sessionId, onForkSession }: ChatViewProps) {
   }
 
   return (
-    <div className="flex flex-col h-full bg-muted/10">
+    <div className="flex h-full flex-col bg-[radial-gradient(circle_at_top_left,rgba(14,165,233,0.08),transparent_34%),radial-gradient(circle_at_top_right,rgba(15,23,42,0.08),transparent_30%)]">
       <ChatHeader session={session} onRefresh={refresh} />
       <div className="min-h-0 flex-1 px-6 py-5">
         <div className="grid h-full gap-5 xl:grid-cols-[minmax(0,1.65fr)_minmax(20rem,26rem)]">
-          <div className="min-h-0 overflow-hidden rounded-2xl border border-border/70 bg-background/90 shadow-[0_16px_60px_-36px_rgba(15,23,42,0.45)]">
+          <div className="min-h-0 overflow-hidden rounded-[28px] border border-slate-200/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.94),rgba(248,250,252,0.9))] shadow-[0_28px_90px_-56px_rgba(15,23,42,0.58)] dark:border-slate-800/80 dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.86),rgba(2,6,23,0.82))]">
             <div className="h-full overflow-y-auto px-6 py-5">
               {session.messages.length === 0 && ["running", "pause_requested"].includes(session.status) && (
                 <div className="flex h-full items-center justify-center">
-                  <div className="flex items-center gap-2.5 text-muted-foreground">
-                    <div
-                      className="h-2 w-2 rounded-full bg-foreground/30"
-                      style={{ animation: "pulse-dot 1.5s ease-in-out infinite" }}
-                    />
-                    <span className="text-[13px]">
+                  <div className="flex items-center gap-3 rounded-full border border-sky-200/80 bg-white/80 px-4 py-2 text-slate-600 shadow-sm dark:border-sky-900/60 dark:bg-slate-900/70 dark:text-slate-300">
+                    <div className="relative flex h-3 w-3 items-center justify-center">
+                      <div
+                        className="h-2 w-2 rounded-full bg-sky-500"
+                        style={{ animation: "pulse-dot 1.5s ease-in-out infinite" }}
+                      />
+                      <div className="absolute h-3 w-3 rounded-full bg-sky-500/20" />
+                    </div>
+                    <span className="text-[13px] font-medium">
                       {session.status === "pause_requested" ? "Ожидаем безопасную паузу..." : "Агенты работают..."}
                     </span>
                   </div>

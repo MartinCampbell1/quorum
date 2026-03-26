@@ -62,6 +62,11 @@ Branch: `codex/personal-mvp-refine`
   - more decision-ready mode cards
   - less technical/noisy card content
   - denser desktop layout for easier comparison
+- Added a 21st.dev-inspired control-center pass:
+  - validated the local `magic21st` MCP server connection and tool catalog
+  - used the 21st.dev MCP flow as a design reference source for dashboard/sidebar composition
+  - aligned the chat header, message cards, paused-state composer, and settings forms with the same premium dashboard language as the scenario shell
+  - latest UI commit for this pass: `d9ddd9f`
 
 ## Validation
 
