@@ -1,5 +1,6 @@
 """Board mode: council of directors discuss, vote, then delegate."""
 
+from collections import Counter
 import json
 import operator
 from typing import Annotated
@@ -7,7 +8,7 @@ from typing import Annotated
 from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
 
-from orchestrator.modes.base import call_agent, call_agent_cfg, make_message, strip_markdown_fence
+from orchestrator.modes.base import call_agent_cfg, make_message, strip_markdown_fence
 
 
 class BoardState(TypedDict):
@@ -23,11 +24,38 @@ class BoardState(TypedDict):
     result: str
 
 
+def _normalize_position(position: str) -> str:
+    return " ".join(position.split()).strip().lower()
+
+
+def _summarize_positions(positions: list[dict]) -> tuple[Counter, dict[str, str], dict[str, int]]:
+    counts: Counter = Counter()
+    representatives: dict[str, str] = {}
+    first_seen: dict[str, int] = {}
+
+    for idx, position in enumerate(positions):
+        raw = str(position.get("position", "")).strip()
+        if not raw:
+            continue
+        key = _normalize_position(raw)
+        counts[key] += 1
+        representatives.setdefault(key, raw)
+        first_seen.setdefault(key, idx)
+
+    return counts, representatives, first_seen
+
+
 def directors_analyze(state: BoardState) -> dict:
     directors = state["agents"][:3]
     positions = []
     messages = []
     previous = ""
+    if not directors:
+        return {
+            "positions": [],
+            "vote_round": state["vote_round"] + 1,
+            "messages": [make_message("system", "No directors available", f"board_round_{state['vote_round'] + 1}")],
+        }
     if state["positions"]:
         previous = "\n\nPrevious round positions (no consensus):\n" + "\n".join(
             f"- {p['director']}: {p['position']}" for p in state["positions"]
@@ -51,21 +79,24 @@ def directors_analyze(state: BoardState) -> dict:
 
 
 def check_consensus(state: BoardState) -> dict:
-    positions_text = "\n".join(f"- {p['director']}: {p['position']}" for p in state["positions"])
-    # TODO: make arbitrator provider configurable via state config
-    response = call_agent(
-        "minimax",
-        f"Do these board members agree? Analyze their positions.\n\n"
-        f"{positions_text}\n\nRespond with JSON: {{\"consensus\": true, \"unified_decision\": \"the agreed position\"}}\nReturn ONLY valid JSON.",
+    counts, representatives, first_seen = _summarize_positions(state["positions"])
+    if not counts:
+        return {
+            "consensus_reached": False,
+            "decision": "",
+            "messages": [make_message("system", "No board positions to compare", "consensus_check")],
+        }
+
+    consensus = len(counts) == 1
+    decision = representatives[next(iter(counts))] if consensus else ""
+    summary = ", ".join(
+        f"{representatives[key]} x{counts[key]}"
+        for key in sorted(counts.keys(), key=lambda key: (-counts[key], first_seen[key], key))
     )
-    try:
-        result = json.loads(strip_markdown_fence(response))
-    except json.JSONDecodeError:
-        result = {"consensus": True, "unified_decision": state["positions"][0]["position"]}
     return {
-        "consensus_reached": result.get("consensus", False),
-        "decision": result.get("unified_decision", ""),
-        "messages": [make_message("system", f"Consensus: {result.get('consensus')}", "consensus_check")],
+        "consensus_reached": consensus,
+        "decision": decision,
+        "messages": [make_message("system", f"Consensus: {consensus}. Positions: {summary}", "consensus_check")],
     }
 
 
@@ -80,15 +111,39 @@ def route_after_consensus(state: BoardState) -> str:
 
 
 def chairman_decides(state: BoardState) -> dict:
+    if not state["agents"]:
+        message = "No chairman available."
+        return {"decision": "", "result": message, "messages": [make_message("system", message, "chairman_decision")]}
+
     chairman = state["agents"][0]
+    chairman_position = ""
+    for position in state["positions"]:
+        if position.get("director") == chairman["role"] and position.get("position"):
+            chairman_position = str(position["position"]).strip()
+            break
+    if not chairman_position:
+        for position in state["positions"]:
+            raw = str(position.get("position", "")).strip()
+            if raw:
+                chairman_position = raw
+                break
     positions_text = "\n".join(
         f"- {p['director']}: {p['position']}\n  Reasoning: {p['reasoning']}" for p in state["positions"]
     )
-    response = call_agent_cfg(
-        chairman,
-        f"As chairman, no consensus after {state['vote_round']} rounds.\n\nPositions:\n{positions_text}\n\nMake the final decision.",
-    )
-    return {"decision": response, "messages": [make_message(chairman["role"], response, "chairman_decision")]}
+    if chairman_position:
+        response = (
+            f"As chairman, no consensus after {state['vote_round']} rounds.\n\n"
+            f"Positions:\n{positions_text}\n\n"
+            f"Final decision: {chairman_position}"
+        )
+        return {
+            "decision": chairman_position,
+            "result": chairman_position,
+            "messages": [make_message(chairman["role"], response, "chairman_decision")],
+        }
+
+    response = f"As chairman, no consensus after {state['vote_round']} rounds, but no position was recorded."
+    return {"decision": "", "result": response, "messages": [make_message(chairman["role"], response, "chairman_decision")]}
 
 
 def delegate_to_workers(state: BoardState) -> dict:
