@@ -378,22 +378,38 @@ def build_mcp_config(tool_keys: list[str]) -> str | None:
             if not tc or not tc.enabled:
                 continue
             if tc.tool_type == "mcp_server":
-                command = tc.config.get("command", "").strip()
-                if not command:
-                    continue
-                parts = shlex.split(command)
-                env_str = tc.config.get("env", "")
-                env_vars = {}
-                if env_str:
-                    try:
-                        env_vars = json.loads(env_str)
-                    except json.JSONDecodeError:
-                        pass
-                args_str = tc.config.get("args", "").strip()
-                extra_args = shlex.split(args_str) if args_str else []
-                server_def = {"command": parts[0], "args": parts[1:] + extra_args}
-                if env_vars:
-                    server_def["env"] = env_vars
+                transport = tc.config.get("transport", "").strip().lower() or "stdio"
+                if transport == "http":
+                    url = tc.config.get("url", "").strip()
+                    if not url:
+                        continue
+                    headers_str = tc.config.get("headers", "").strip()
+                    headers = {}
+                    if headers_str:
+                        try:
+                            headers = json.loads(headers_str)
+                        except json.JSONDecodeError:
+                            pass
+                    server_def = {"type": "http", "url": url}
+                    if headers:
+                        server_def["headers"] = headers
+                else:
+                    command = tc.config.get("command", "").strip()
+                    if not command:
+                        continue
+                    parts = shlex.split(command)
+                    env_str = tc.config.get("env", "")
+                    env_vars = {}
+                    if env_str:
+                        try:
+                            env_vars = json.loads(env_str)
+                        except json.JSONDecodeError:
+                            pass
+                    args_str = tc.config.get("args", "").strip()
+                    extra_args = shlex.split(args_str) if args_str else []
+                    server_def = {"command": parts[0], "args": parts[1:] + extra_args}
+                    if env_vars:
+                        server_def["env"] = env_vars
                 config["mcpServers"][tc.id] = server_def
             elif tc.tool_type not in {"code_exec", "shell"}:
                 configured_runtime_tools.append(tc.model_dump())

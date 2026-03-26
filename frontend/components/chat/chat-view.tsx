@@ -34,11 +34,11 @@ export function ChatView({ sessionId, onForkSession }: ChatViewProps) {
   }
 
   return (
-    <div className="flex h-full flex-col bg-[radial-gradient(circle_at_top_left,rgba(14,165,233,0.08),transparent_34%),radial-gradient(circle_at_top_right,rgba(15,23,42,0.08),transparent_30%)]">
+    <div className="flex h-full flex-col bg-[#faf8ff] dark:bg-transparent">
       <ChatHeader session={session} onRefresh={refresh} />
       <div className="min-h-0 flex-1 px-6 py-5">
         <div className="grid h-full gap-5 xl:grid-cols-[minmax(0,1.65fr)_minmax(20rem,26rem)]">
-          <div className="min-h-0 overflow-hidden rounded-[28px] border border-slate-200/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.94),rgba(248,250,252,0.9))] shadow-[0_28px_90px_-56px_rgba(15,23,42,0.58)] dark:border-slate-800/80 dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.86),rgba(2,6,23,0.82))]">
+          <div className="min-h-0 overflow-hidden rounded-[18px] border border-[#e2e8f0] bg-white shadow-[0_4px_6px_-1px_rgba(17,48,105,0.04),0_2px_4px_-1px_rgba(17,48,105,0.02)] dark:border-slate-800/80 dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.86),rgba(2,6,23,0.82))]">
             <div className="h-full overflow-y-auto px-6 py-5">
               {session.messages.length === 0 && ["running", "pause_requested"].includes(session.status) && (
                 <div className="flex h-full items-center justify-center">

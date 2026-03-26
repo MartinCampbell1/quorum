@@ -67,6 +67,11 @@ Branch: `codex/personal-mvp-refine`
   - used the 21st.dev MCP flow as a design reference source for dashboard/sidebar composition
   - aligned the chat header, message cards, paused-state composer, and settings forms with the same premium dashboard language as the scenario shell
   - latest UI commit for this pass: `d9ddd9f`
+- Added a second approved-design pass based on the white premium reference set and `DESIGN.md`:
+  - shifted the shell toward the approved `Precision Blueprint` language: lighter surfaces, toned borders, editorial spacing
+  - restyled the left rail, sessions column, top app bar, scenario grid, and execution trace toward the approved white minimal layout
+  - upgraded `MCP Server` settings to support both `stdio` and `http` transports in the model and gateway runtime
+  - MCP forms now expose transport-aware fields and a clean handshake log panel matching the approved reference
 
 ## Validation
 
@@ -76,8 +81,12 @@ Branch: `codex/personal-mvp-refine`
 - `python3 -m pytest tests/test_api_contracts.py tests/test_modes.py tests/test_interactive_runtime.py -q`
 - `cd frontend && npx tsc --noEmit`
 - `cd frontend && npm run build`
+- `cd frontend && npx next build --webpack`
 
 All of the above passed during this pass.
+
+Note:
+- Plain `cd frontend && npm run build` can still fail in this sandbox when Turbopack tries to create an internal process/socket. The webpack build above passed and is the reliable validation method in this environment.
 
 ## Important current limitation
 
@@ -93,6 +102,7 @@ All of the above passed during this pass.
 - True “any MCP server on any provider” support
 - Choosing an arbitrary historical checkpoint from the UI (backend supports checkpoint branching, current UI forks the active checkpoint)
 - Rich mode-specific visualizations beyond the general timeline rail
+- True session-topology visualization like the approved premium monitor reference (the current session screen is stylistically aligned, but it does not yet render a real topology graph)
 
 ## Notes for the next agent
 

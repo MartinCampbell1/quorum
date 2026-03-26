@@ -119,27 +119,27 @@ export function EventTimeline({
   pendingInstructions = 0,
 }: EventTimelineProps) {
   return (
-    <Card className="h-full overflow-hidden rounded-[28px] border border-slate-200/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.95),rgba(248,250,252,0.95))] shadow-[0_26px_70px_-44px_rgba(15,23,42,0.62)] dark:border-slate-800/80 dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.94),rgba(2,6,23,0.9))]">
-      <CardHeader className="border-b border-slate-200/70 pb-4 dark:border-slate-800/70">
+    <Card className="h-full overflow-hidden rounded-[18px] border border-[#e2e8f0] bg-white shadow-[0_4px_6px_-1px_rgba(17,48,105,0.04),0_2px_4px_-1px_rgba(17,48,105,0.02)] dark:border-slate-800/80 dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.94),rgba(2,6,23,0.9))]">
+      <CardHeader className="border-b border-[#e2e8f0]/70 pb-4 dark:border-slate-800/70">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <CardTitle className="text-sm tracking-tight">Live Timeline</CardTitle>
-            <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">
-              Контрольные точки, системные статусы и сообщения агентов в реальном времени.
+            <CardTitle className="text-sm tracking-tight text-[#09090b] dark:text-white">Execution Trace</CardTitle>
+            <p className="mt-1 text-[12px] leading-relaxed text-[#445d99] dark:text-slate-300">
+              Контрольные точки, статусы и сообщения агентов в реальном времени.
             </p>
           </div>
-          <Badge variant="outline" className="text-[10px] font-normal shadow-sm">
+          <Badge variant="outline" className="border-[#e2e8f0] bg-white text-[10px] font-normal shadow-none dark:border-slate-800 dark:bg-slate-900">
             {events.length} events
           </Badge>
         </div>
         <div className="flex flex-wrap gap-2 pt-1">
           {activeNode && (
-            <Badge variant="outline" className="text-[10px] font-normal">
+            <Badge variant="outline" className="border-[#e2e8f0] bg-white text-[10px] font-normal dark:border-slate-800 dark:bg-slate-900">
               next: {activeNode}
             </Badge>
           )}
           {pendingInstructions > 0 && (
-            <Badge variant="outline" className="text-[10px] font-normal text-orange-700 dark:text-orange-300">
+            <Badge variant="outline" className="border-[#e2e8f0] bg-white text-[10px] font-normal text-orange-700 dark:border-slate-800 dark:bg-slate-900 dark:text-orange-300">
               queued: {pendingInstructions}
             </Badge>
           )}
@@ -153,21 +153,18 @@ export function EventTimeline({
             </div>
           ) : (
             <div className="relative space-y-3 py-4">
-              <div className="absolute bottom-0 left-[14px] top-4 w-px bg-[linear-gradient(180deg,rgba(148,163,184,0.28),rgba(15,23,42,0.08))] dark:bg-[linear-gradient(180deg,rgba(71,85,105,0.58),rgba(15,23,42,0.08))]" />
+              <div className="absolute bottom-0 left-[14px] top-4 w-px bg-[linear-gradient(180deg,rgba(152,177,242,0.38),rgba(17,48,105,0.08))] dark:bg-[linear-gradient(180deg,rgba(71,85,105,0.58),rgba(15,23,42,0.08))]" />
               {events.map((event) => {
                 const style = EVENT_STYLES[event.type] ?? EVENT_STYLES.agent_message;
                 const Icon = style.icon;
                 return (
                   <div key={event.id} className="relative pl-9">
                     <div
-                      className={cn(
-                        "absolute left-0 top-3 flex h-7 w-7 items-center justify-center rounded-full border bg-background shadow-sm dark:bg-slate-950",
-                        style.tone
-                      )}
+                      className={cn("absolute left-0 top-3 flex h-7 w-7 items-center justify-center rounded-full border bg-white dark:bg-slate-950", style.tone)}
                     >
                       <Icon className={cn("h-3.5 w-3.5", style.accent)} />
                     </div>
-                    <div className={cn("rounded-2xl border px-4 py-3 shadow-[0_12px_30px_-24px_rgba(15,23,42,0.45)]", style.tone)}>
+                    <div className={cn("rounded-[14px] border px-4 py-3 shadow-[0_4px_6px_-1px_rgba(17,48,105,0.04),0_2px_4px_-1px_rgba(17,48,105,0.02)]", style.tone)}>
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <p className="text-[12px] font-medium text-foreground/90">

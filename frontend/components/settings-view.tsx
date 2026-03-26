@@ -137,6 +137,68 @@ function PasswordField({
   );
 }
 
+function McpTransportPicker({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const options = ["stdio", "http"];
+
+  return (
+    <div className="grid grid-cols-2 gap-2 rounded-2xl border border-[#e2e8f0] bg-white p-1 dark:border-slate-800 dark:bg-slate-950/55">
+      {options.map((option) => {
+        const active = value === option;
+        return (
+          <button
+            key={option}
+            type="button"
+            onClick={() => onChange(option)}
+            className={cn(
+              "rounded-xl px-3 py-2 text-sm font-medium transition-colors",
+              active
+                ? "bg-[#09090b] text-white dark:bg-white dark:text-[#09090b]"
+                : "text-[#445d99] hover:bg-[#f2f3ff] dark:text-slate-400 dark:hover:bg-slate-900"
+            )}
+          >
+            {option}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function McpHandshakeLog({ transport }: { transport: string }) {
+  const lines = transport === "http"
+    ? [
+        "> Resolving remote endpoint...",
+        "> Sending capabilities request...",
+        "> Waiting for HTTP handshake...",
+        "> Connection successful. Remote MCP ready.",
+      ]
+    : [
+        "> Connecting to server...",
+        "> Handshake initiated...",
+        "> Waiting for stdio response...",
+        "> Connection successful. Server ready.",
+      ];
+
+  return (
+    <div className="rounded-[18px] border border-[#e2e8f0] bg-[#f7f8ff] p-4 dark:border-slate-800 dark:bg-slate-950/65">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#445d99] dark:text-slate-400">
+        Handshake Log
+      </p>
+      <div className="mt-3 rounded-[14px] border border-[#e2e8f0] bg-white px-4 py-3 font-mono text-[12px] leading-7 text-[#09090b] dark:border-slate-800 dark:bg-slate-900/80 dark:text-slate-200">
+        {lines.map((line) => (
+          <div key={line}>{line}</div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ToolAddForm({
   toolTypes,
   onAdd,
@@ -161,7 +223,7 @@ function ToolAddForm({
       setName(typeInfo.name);
       const initialConfig: Record<string, string> = {};
       for (const field of typeInfo.fields) {
-        initialConfig[field.name] = "";
+        initialConfig[field.name] = field.name === "transport" ? "stdio" : "";
       }
       setConfig(initialConfig);
     }
@@ -169,6 +231,11 @@ function ToolAddForm({
 
   function handleSubmit() {
     if (!name.trim() || !selectedType) return;
+    if (selectedType === "mcp_server") {
+      const transport = config.transport || "stdio";
+      if (transport === "http" && !config.url?.trim()) return;
+      if (transport === "stdio" && !config.command?.trim()) return;
+    }
     onAdd({ name: name.trim(), tool_type: selectedType, config });
   }
 
@@ -233,25 +300,94 @@ function ToolAddForm({
               </div>
 
               {/* Type-specific fields */}
-              <div className="space-y-2 mb-3">
-                {currentType.fields.map((field) => (
-                  <div key={field.name}>
-                    <label className="mb-1 block text-[11px] text-muted-foreground">
-                      {field.label}
-                      {field.required && <span className="text-destructive ml-0.5">*</span>}
-                    </label>
-                    {renderFieldControl({
-                      field,
-                      value: config[field.name] ?? "",
-                      onChange: (value) => setConfig((prev) => ({ ...prev, [field.name]: value })),
-                    })}
+              {selectedType === "mcp_server" ? (
+                <div className="mb-3 space-y-4">
+                  <div>
+                    <label className="mb-1 block text-[11px] text-muted-foreground">Transport Type</label>
+                    <McpTransportPicker
+                      value={config.transport ?? "stdio"}
+                      onChange={(value) => setConfig((prev) => ({ ...prev, transport: value }))}
+                    />
                   </div>
-                ))}
-              </div>
+
+                  {(config.transport ?? "stdio") === "stdio" ? (
+                    <>
+                      <div>
+                        <label className="mb-1 block text-[11px] text-muted-foreground">Command</label>
+                        <input
+                          value={config.command ?? ""}
+                          onChange={(e) => setConfig((prev) => ({ ...prev, command: e.target.value }))}
+                          placeholder="npx -y @modelcontextprotocol/server-github"
+                          className={INPUT_CLASS}
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[11px] text-muted-foreground">Args</label>
+                        <input
+                          value={config.args ?? ""}
+                          onChange={(e) => setConfig((prev) => ({ ...prev, args: e.target.value }))}
+                          placeholder="--project my-app"
+                          className={INPUT_CLASS}
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[11px] text-muted-foreground">Environment (JSON)</label>
+                        <textarea
+                          value={config.env ?? ""}
+                          onChange={(e) => setConfig((prev) => ({ ...prev, env: e.target.value }))}
+                          placeholder='{"GITHUB_TOKEN":"ghp_..."}'
+                          rows={4}
+                          className={`${INPUT_CLASS} min-h-24 resize-y leading-relaxed`}
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div>
+                        <label className="mb-1 block text-[11px] text-muted-foreground">URL</label>
+                        <input
+                          value={config.url ?? ""}
+                          onChange={(e) => setConfig((prev) => ({ ...prev, url: e.target.value }))}
+                          placeholder="https://stitch.googleapis.com/mcp"
+                          className={INPUT_CLASS}
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[11px] text-muted-foreground">HTTP Headers (JSON)</label>
+                        <textarea
+                          value={config.headers ?? ""}
+                          onChange={(e) => setConfig((prev) => ({ ...prev, headers: e.target.value }))}
+                          placeholder='{"X-Goog-Api-Key":"..."}'
+                          rows={4}
+                          className={`${INPUT_CLASS} min-h-24 resize-y leading-relaxed`}
+                        />
+                      </div>
+                    </>
+                  )}
+
+                  <McpHandshakeLog transport={config.transport ?? "stdio"} />
+                </div>
+              ) : (
+                <div className="space-y-2 mb-3">
+                  {currentType.fields.map((field) => (
+                    <div key={field.name}>
+                      <label className="mb-1 block text-[11px] text-muted-foreground">
+                        {field.label}
+                        {field.required && <span className="text-destructive ml-0.5">*</span>}
+                      </label>
+                      {renderFieldControl({
+                        field,
+                        value: config[field.name] ?? "",
+                        onChange: (value) => setConfig((prev) => ({ ...prev, [field.name]: value })),
+                      })}
+                    </div>
+                  ))}
+                </div>
+              )}
 
               <Button
                 type="submit"
-                disabled={!name.trim()}
+                disabled={!name.trim() || (selectedType === "mcp_server" && ((config.transport ?? "stdio") === "http" ? !config.url?.trim() : !config.command?.trim()))}
                 size="sm"
                 className="w-full rounded-full bg-slate-950 text-xs text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-950 dark:hover:bg-white"
               >
@@ -283,6 +419,11 @@ function ToolEditForm({
 
   function handleSubmit() {
     if (!name.trim()) return;
+    if (tool.tool_type === "mcp_server") {
+      const transport = config.transport || "stdio";
+      if (transport === "http" && !config.url?.trim()) return;
+      if (transport === "stdio" && !config.command?.trim()) return;
+    }
     onSave({ name: name.trim(), config });
   }
 
@@ -318,27 +459,101 @@ function ToolEditForm({
             />
           </div>
 
-          <div className="space-y-2 mb-3">
-            {fields.map((field) => (
-              <div key={field.name}>
-                <label className="mb-1 block text-[11px] text-muted-foreground">
-                  {field.label}
-                  {field.required && <span className="text-destructive ml-0.5">*</span>}
-                </label>
-                {renderFieldControl({
-                  field,
-                  value: config[field.name] ?? "",
-                  onChange: (value) => setConfig((prev) => ({ ...prev, [field.name]: value })),
-                })}
+          {tool.tool_type === "mcp_server" ? (
+            <div className="mb-3 space-y-4">
+              <div>
+                <label className="mb-1 block text-[11px] text-muted-foreground">Transport Type</label>
+                <McpTransportPicker
+                  value={config.transport ?? "stdio"}
+                  onChange={(value) => setConfig((prev) => ({ ...prev, transport: value }))}
+                />
               </div>
-            ))}
-          </div>
+
+              {(config.transport ?? "stdio") === "stdio" ? (
+                <>
+                  <div>
+                    <label className="mb-1 block text-[11px] text-muted-foreground">Command</label>
+                    <input
+                      value={config.command ?? ""}
+                      onChange={(e) => setConfig((prev) => ({ ...prev, command: e.target.value }))}
+                      placeholder="npx -y @modelcontextprotocol/server-github"
+                      className={INPUT_CLASS}
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] text-muted-foreground">Args</label>
+                    <input
+                      value={config.args ?? ""}
+                      onChange={(e) => setConfig((prev) => ({ ...prev, args: e.target.value }))}
+                      placeholder="--project my-app"
+                      className={INPUT_CLASS}
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] text-muted-foreground">Environment (JSON)</label>
+                    <textarea
+                      value={config.env ?? ""}
+                      onChange={(e) => setConfig((prev) => ({ ...prev, env: e.target.value }))}
+                      placeholder='{"GITHUB_TOKEN":"ghp_..."}'
+                      rows={4}
+                      className={`${INPUT_CLASS} min-h-24 resize-y leading-relaxed`}
+                    />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <label className="mb-1 block text-[11px] text-muted-foreground">URL</label>
+                    <input
+                      value={config.url ?? ""}
+                      onChange={(e) => setConfig((prev) => ({ ...prev, url: e.target.value }))}
+                      placeholder="https://stitch.googleapis.com/mcp"
+                      className={INPUT_CLASS}
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] text-muted-foreground">HTTP Headers (JSON)</label>
+                    <textarea
+                      value={config.headers ?? ""}
+                      onChange={(e) => setConfig((prev) => ({ ...prev, headers: e.target.value }))}
+                      placeholder='{"X-Goog-Api-Key":"..."}'
+                      rows={4}
+                      className={`${INPUT_CLASS} min-h-24 resize-y leading-relaxed`}
+                    />
+                  </div>
+                </>
+              )}
+
+              <McpHandshakeLog transport={config.transport ?? "stdio"} />
+            </div>
+          ) : (
+            <div className="space-y-2 mb-3">
+              {fields.map((field) => (
+                <div key={field.name}>
+                  <label className="mb-1 block text-[11px] text-muted-foreground">
+                    {field.label}
+                    {field.required && <span className="text-destructive ml-0.5">*</span>}
+                  </label>
+                  {renderFieldControl({
+                    field,
+                    value: config[field.name] ?? "",
+                    onChange: (value) => setConfig((prev) => ({ ...prev, [field.name]: value })),
+                  })}
+                </div>
+              ))}
+            </div>
+          )}
 
           <div className="flex gap-2">
             <Button type="button" variant="outline" size="sm" className="flex-1 rounded-full text-xs" onClick={onCancel}>
               Отмена
             </Button>
-            <Button type="submit" disabled={!name.trim()} size="sm" className="flex-1 rounded-full bg-slate-950 text-xs text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-950 dark:hover:bg-white">
+            <Button
+              type="submit"
+              disabled={!name.trim() || (tool.tool_type === "mcp_server" && ((config.transport ?? "stdio") === "http" ? !config.url?.trim() : !config.command?.trim()))}
+              size="sm"
+              className="flex-1 rounded-full bg-slate-950 text-xs text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-950 dark:hover:bg-white"
+            >
               Сохранить
             </Button>
           </div>
@@ -528,6 +743,11 @@ export function SettingsView() {
                           <Badge variant="outline" className="border-slate-200/80 bg-white/85 px-1.5 py-0 text-[10px] font-normal dark:border-slate-800 dark:bg-slate-900/70">
                             {typeInfo?.category ?? tool.tool_type}
                           </Badge>
+                          {tool.tool_type === "mcp_server" && (
+                            <Badge variant="outline" className="border-slate-200/80 bg-white/85 px-1.5 py-0 text-[10px] font-normal uppercase dark:border-slate-800 dark:bg-slate-900/70">
+                              {(tool.config.transport || "stdio").toUpperCase()}
+                            </Badge>
+                          )}
                           <span className="text-[10px] text-muted-foreground/50 font-mono">
                             {tool.id}
                           </span>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { Circle, Search, UserCircle2 } from "lucide-react";
 import { IconBar } from "@/components/sidebar/icon-bar";
 import { SessionList } from "@/components/sidebar/session-list";
 import { Wizard } from "@/components/wizard/wizard";
@@ -37,15 +38,34 @@ export default function Home() {
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-[radial-gradient(circle_at_top_left,_rgba(148,163,184,0.18),_transparent_22%),linear-gradient(180deg,_#f8fafc_0%,_#f1f5f9_100%)] text-foreground dark:bg-[radial-gradient(circle_at_top_left,_rgba(30,41,59,0.55),_transparent_20%),linear-gradient(180deg,_#020617_0%,_#0f172a_100%)]">
+    <div className="flex h-screen overflow-hidden bg-[#faf8ff] text-foreground dark:bg-[linear-gradient(180deg,#0f172a_0%,#020617_100%)]">
       <IconBar activeView={view} onViewChange={handleViewChange} />
       <SessionList
         activeSessionId={activeSessionId}
         onSelectSession={handleSelectSession}
         onNewSession={handleNewSession}
       />
-      <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-white/65 backdrop-blur-[2px] dark:bg-slate-950/30">
-        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,0.4)_0%,transparent_38%),radial-gradient(circle_at_top_right,rgba(14,165,233,0.08),transparent_22%)] dark:bg-[linear-gradient(135deg,rgba(15,23,42,0.28)_0%,transparent_38%),radial-gradient(circle_at_top_right,rgba(56,189,248,0.1),transparent_22%)]" />
+      <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[#faf8ff] dark:bg-transparent">
+        <div className="flex h-[72px] items-center justify-between border-b border-[#e2e8f0]/70 bg-white/82 px-7 backdrop-blur-md dark:border-slate-800/80 dark:bg-slate-950/45">
+          <div className="relative w-full max-w-xl">
+            <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[#445d99]/80 dark:text-slate-400" />
+            <input
+              readOnly
+              value=""
+              placeholder="Search"
+              className="h-10 w-full rounded-[14px] border border-[#98b1f2]/28 bg-white px-11 text-sm text-[#09090b] outline-none placeholder:text-[#445d99]/65 dark:border-slate-700 dark:bg-slate-900/80 dark:text-white"
+            />
+          </div>
+          <div className="ml-6 flex shrink-0 items-center gap-4 text-sm text-[#09090b] dark:text-slate-200">
+            <div className="flex items-center gap-2">
+              <span className="whitespace-nowrap text-[13px] text-[#09090b]/80 dark:text-slate-300">Localhost Status: Connected</span>
+              <Circle className="h-2.5 w-2.5 fill-current text-[#4a5167] dark:text-emerald-400" />
+            </div>
+            <button className="flex h-9 w-9 items-center justify-center rounded-full border border-[#e2e8f0] bg-white text-[#09090b] dark:border-slate-700 dark:bg-slate-900 dark:text-white">
+              <UserCircle2 className="h-5 w-5" />
+            </button>
+          </div>
+        </div>
         {view === "history" ? (
           <HistoryView onSelectSession={handleSelectSession} />
         ) : view === "settings" ? (
