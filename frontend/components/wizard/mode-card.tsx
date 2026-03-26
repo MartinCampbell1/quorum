@@ -1,4 +1,4 @@
-import { MODE_ICONS, MODE_LABELS } from "@/lib/constants";
+import { MODE_LABELS, MODE_ICONS } from "@/lib/constants";
 import type { ModeInfo } from "@/lib/types";
 
 interface ModeCardProps {
@@ -6,32 +6,33 @@ interface ModeCardProps {
   info: ModeInfo;
   isSelected: boolean;
   onClick: () => void;
+  index: number;
 }
 
-export function ModeCard({ modeKey, info, isSelected, onClick }: ModeCardProps) {
+export function ModeCard({ modeKey, info, isSelected, onClick, index }: ModeCardProps) {
   const Icon = MODE_ICONS[modeKey];
+
   return (
     <button
       onClick={onClick}
-      className={`group flex flex-col items-start rounded-2xl border p-6 text-left cursor-pointer backdrop-blur-xl transition-all duration-[400ms] ease-[cubic-bezier(0.175,0.885,0.32,1.275)] ${
+      className={`group relative flex flex-col items-start rounded-2xl border p-7 text-left cursor-pointer transition-all duration-[250ms] ease-[cubic-bezier(0.4,0,0.2,1)] ${
         isSelected
-          ? "border-accent bg-white/[0.07] shadow-[0_0_32px_rgba(37,99,235,0.15)]"
-          : "border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.06] hover:border-accent/40 hover:-translate-y-1 hover:shadow-[0_8px_32px_rgba(0,0,0,0.3)]"
+          ? "border-amber-700/50 bg-amber-900/[0.08] shadow-[0_0_0_1px_rgba(217,171,123,0.25),0_4px_24px_rgba(217,171,123,0.08)]"
+          : "border-white/[0.08] bg-white/[0.04] hover:bg-white/[0.07] hover:border-white/[0.15] hover:-translate-y-0.5 hover:shadow-[0_2px_20px_rgba(0,0,0,0.3)]"
       }`}
+      style={{
+        animation: `card-enter 0.4s ease-out ${index * 60}ms both`,
+      }}
     >
-      <div
-        className={`mb-4 flex h-11 w-11 items-center justify-center rounded-xl transition-all duration-300 ${
-          isSelected
-            ? "bg-accent text-white shadow-[0_0_16px_rgba(37,99,235,0.3)]"
-            : "bg-white/[0.04] text-text-muted group-hover:text-accent group-hover:bg-accent/10"
-        }`}
-      >
-        {Icon && <Icon size={20} strokeWidth={1.5} />}
-      </div>
-      <div className="text-[15px] font-semibold text-text-primary tracking-tight">
+      {Icon && (
+        <div className="absolute top-6 right-6">
+          <Icon size={28} strokeWidth={1.5} className="text-white/[0.2]" />
+        </div>
+      )}
+      <div className="text-[16px] font-semibold text-white/90 tracking-tight mt-1">
         {MODE_LABELS[modeKey] ?? modeKey}
       </div>
-      <div className="mt-1.5 text-[13px] text-white/75 leading-relaxed [text-wrap:balance] [font-weight:450]">
+      <div className="mt-2.5 text-[13.5px] font-normal leading-[1.5] text-white/[0.6] tracking-[0.01em]">
         {info.description}
       </div>
     </button>

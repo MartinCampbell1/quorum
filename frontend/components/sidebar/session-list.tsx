@@ -18,7 +18,7 @@ export function SessionList({
   const { sessions, isLoading } = useSessions();
 
   return (
-    <div className="flex h-full w-60 flex-col border-r border-border bg-bg-secondary">
+    <div className="flex h-full w-60 flex-col border-r border-white/[0.06] bg-[#111111]">
       <div className="flex items-center justify-between px-4 py-3">
         <span className="text-[10px] font-semibold uppercase tracking-widest text-text-muted">
           Sessions

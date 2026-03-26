@@ -81,31 +81,21 @@ export function Wizard({ onSessionCreated }: WizardProps) {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center gap-3 border-b border-white/[0.05] px-10 py-4">
+      <div className="flex items-center gap-8 border-b border-white/[0.06] px-16 py-0">
         {stepLabels.map((label, i) => (
-          <div key={i} className="flex items-center gap-2">
-            <div
-              className={`flex h-7 w-7 items-center justify-center rounded-full text-[11px] font-semibold transition-all duration-300 ${
-                i === step
-                  ? "bg-accent text-white shadow-[0_0_12px_rgba(37,99,235,0.3)]"
-                  : i < step
-                    ? "bg-success/20 text-success"
-                    : "bg-white/[0.04] text-text-muted"
-              }`}
-            >
-              {i + 1}
-            </div>
-            <span
-              className={`text-xs font-medium ${
-                i === step ? "text-text-primary" : "text-text-muted"
-              }`}
-            >
-              {label}
-            </span>
-            {i < stepLabels.length - 1 && (
-              <div className="mx-2 h-px w-8 bg-border" />
-            )}
-          </div>
+          <button
+            key={i}
+            onClick={() => i < step && setStep(i)}
+            className={`py-4 text-[13px] font-medium transition-colors border-b-2 cursor-pointer ${
+              i === step
+                ? "text-[#f5f5f7] border-[#f5f5f7]"
+                : i < step
+                  ? "text-white/55 border-transparent hover:text-white/70"
+                  : "text-white/30 border-transparent cursor-default"
+            }`}
+          >
+            {label}
+          </button>
         ))}
       </div>
       {steps[step]}
