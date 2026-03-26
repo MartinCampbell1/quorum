@@ -1,7 +1,9 @@
 "use client";
 
-import { MessageSquare, Clock, Sliders } from "lucide-react";
-import { ThemeToggle } from "@/components/common/theme-toggle";
+import { MessageSquare, Clock, Sliders, Sun, Moon } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Separator } from "@/components/ui/separator";
+import { useTheme } from "next-themes";
 
 type View = "chat" | "history" | "settings";
 
@@ -17,50 +19,37 @@ const navItems: { id: View; icon: typeof MessageSquare; label: string }[] = [
 ];
 
 export function IconBar({ activeView, onViewChange }: IconBarProps) {
-  return (
-    <div
-      className="flex h-full w-[56px] flex-col items-center py-4"
-      style={{ background: "#0a0a0a", borderRight: "1px solid #1a1a1a" }}
-    >
-      {/* Logo */}
-      <div className="mb-8 relative">
-        <div
-          className="flex h-9 w-9 items-center justify-center rounded-lg font-mono text-[14px] font-bold"
-          style={{
-            background: "linear-gradient(135deg, #cfa872, #b8935f)",
-            color: "#0c0c0c",
-            boxShadow: "0 2px 12px rgba(207,168,114,0.2)",
-          }}
-        >
-          Q
-        </div>
-      </div>
+  const { theme, setTheme } = useTheme();
 
-      {/* Nav */}
-      <nav className="flex flex-col gap-1">
-        {navItems.map(({ id, icon: Icon, label }) => (
-          <button
-            key={id}
-            onClick={() => onViewChange(id)}
-            aria-label={label}
-            className="relative flex h-10 w-10 items-center justify-center rounded-lg transition-all duration-200 cursor-pointer"
-            style={{
-              color: activeView === id ? "#cfa872" : "#555",
-              background: activeView === id ? "rgba(207,168,114,0.08)" : "transparent",
-            }}
-          >
-            <Icon size={17} strokeWidth={1.5} />
-            {activeView === id && (
-              <div
-                className="absolute left-0 top-1/2 -translate-y-1/2 w-[2px] h-4 rounded-r"
-                style={{ background: "#cfa872" }}
-              />
-            )}
-          </button>
-        ))}
-      </nav>
+  return (
+    <div className="flex h-full w-[60px] flex-col items-center border-r bg-muted/30 py-4 gap-1.5">
+      <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-primary-foreground font-mono text-sm font-bold mb-4">
+        Q
+      </div>
+      <Separator className="w-8 mb-2" />
+      {navItems.map(({ id, icon: Icon, label }) => (
+        <Button
+          key={id}
+          variant={activeView === id ? "secondary" : "ghost"}
+          size="icon"
+          className="h-9 w-9"
+          onClick={() => onViewChange(id)}
+          aria-label={label}
+        >
+          <Icon className="h-4 w-4" />
+        </Button>
+      ))}
       <div className="mt-auto">
-        <ThemeToggle />
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-9 w-9"
+          onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+          aria-label="Toggle theme"
+        >
+          <Sun className="h-4 w-4 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
+          <Moon className="absolute h-4 w-4 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
+        </Button>
       </div>
     </div>
   );

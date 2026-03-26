@@ -1,5 +1,11 @@
+"use client";
+
 import { ModeCard } from "./mode-card";
+import { ShimmerButton } from "@/components/ui/shimmer-button";
+import { Button } from "@/components/ui/button";
+import { Separator } from "@/components/ui/separator";
 import { ArrowRight } from "lucide-react";
+import { cn } from "@/lib/utils";
 import type { ModeInfo } from "@/lib/types";
 
 interface StepModeProps {
@@ -9,84 +15,90 @@ interface StepModeProps {
   onNext: () => void;
 }
 
+const STEPS = ["Select Mode", "Configure", "Launch"];
+
 export function StepMode({ modes, selected, onSelect, onNext }: StepModeProps) {
   const entries = Object.entries(modes);
 
   return (
     <div className="flex flex-col h-full">
       <div className="flex-1 overflow-y-auto">
-        <div className="max-w-[760px] mx-auto px-8 pt-12 pb-8">
+        <div className="max-w-3xl mx-auto px-8 pt-12 pb-8">
+          {/* Stepper */}
+          <div className="flex items-center gap-3 mb-10">
+            {STEPS.map((label, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <div className={cn(
+                  "flex h-7 w-7 items-center justify-center rounded-full text-xs font-semibold",
+                  i === 0
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-muted text-muted-foreground"
+                )}>
+                  {i + 1}
+                </div>
+                <span className={cn(
+                  "text-sm",
+                  i === 0 ? "text-foreground font-semibold" : "text-muted-foreground/60 font-normal"
+                )}>
+                  {label}
+                </span>
+                {i < STEPS.length - 1 && <Separator className="w-12" />}
+              </div>
+            ))}
+          </div>
+
           {/* Header */}
-          <div className="mb-10" style={{ animation: "fade-up 0.5s ease-out both" }}>
-            <p className="text-[11px] font-mono font-medium uppercase tracking-[0.15em] mb-3" style={{ color: "#cfa872" }}>
-              Step 1 of 3
-            </p>
-            <h2
-              className="text-[28px] font-bold tracking-tight leading-tight"
-              style={{ color: "#e8e5dc" }}
-            >
-              How should agents
-              <br />
-              <span style={{ color: "#cfa872" }}>collaborate?</span>
-            </h2>
-            <p className="mt-3 text-[14px]" style={{ color: "#777" }}>
-              Each mode defines a different decision-making structure.
+          <div className="mb-10">
+            <h1 className="text-3xl font-bold tracking-tight">
+              Choose orchestration mode
+            </h1>
+            <p className="mt-3 text-base text-muted-foreground max-w-lg">
+              Each mode defines how agents communicate, make decisions, and deliver results.
             </p>
           </div>
 
           {/* Cards grid */}
-          <div className="grid grid-cols-2 gap-3">
-            {entries.map(([key, info], idx) => {
-              const isLast = idx === entries.length - 1 && entries.length % 2 === 1;
-              return (
-                <div key={key} className={isLast ? "col-span-2 max-w-[calc(50%-6px)]" : ""}>
-                  <ModeCard
-                    modeKey={key}
-                    info={info}
-                    isSelected={selected === key}
-                    onClick={() => onSelect(key)}
-                    index={idx}
-                  />
-                </div>
-              );
-            })}
+          <div className="grid grid-cols-2 gap-5 lg:grid-cols-3">
+            {entries.map(([key, info], idx) => (
+              <ModeCard
+                key={key}
+                modeKey={key}
+                info={info}
+                isSelected={selected === key}
+                isRecommended={idx === 0}
+                onClick={() => onSelect(key)}
+                index={idx}
+              />
+            ))}
           </div>
         </div>
       </div>
 
       {/* Footer */}
-      <div
-        className="px-8 py-4 flex items-center justify-between"
-        style={{
-          borderTop: "1px solid #1a1a1a",
-          background: "linear-gradient(to top, #0c0c0c, #0c0c0cee)",
-          backdropFilter: "blur(8px)",
-        }}
-      >
-        <p className="text-[12px] font-mono" style={{ color: "#444" }}>
-          {selected ? `${selected} selected` : "Select a mode to continue"}
-        </p>
-        <button
-          onClick={onNext}
-          disabled={!selected}
-          className="group flex items-center gap-2 cursor-pointer transition-all duration-200 disabled:cursor-not-allowed"
-          style={{
-            background: selected
-              ? "linear-gradient(135deg, #cfa872, #b8935f)"
-              : "#1a1a1a",
-            color: selected ? "#0c0c0c" : "#444",
-            fontWeight: 600,
-            fontSize: "13px",
-            padding: "10px 24px",
-            borderRadius: "8px",
-            border: selected ? "none" : "1px solid #252525",
-            opacity: selected ? 1 : 0.6,
-            boxShadow: selected ? "0 4px 16px rgba(207,168,114,0.25)" : "none",
-          }}
-        >
-          Continue
-          <ArrowRight size={14} className="transition-transform group-hover:translate-x-0.5" />
-        </button>
+      <Separator />
+      <div className="px-8 py-4 flex items-center justify-between">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          {selected ? (
+            <>
+              {(() => { const I = MODE_ICONS[selected]; return I ? <I className="h-4 w-4" /> : null; })()}
+              <span className="font-medium text-foreground">{MODE_LABELS[selected]}</span>
+              <span>selected</span>
+            </>
+          ) : (
+            <span>Select a mode to continue</span>
+          )}
+        </div>
+        {selected ? (
+          <ShimmerButton onClick={onNext} className="shadow-lg">
+            <span className="flex items-center gap-2 text-sm font-medium">
+              Continue <ArrowRight className="h-4 w-4" />
+            </span>
+          </ShimmerButton>
+        ) : (
+          <Button onClick={onNext} disabled size="lg">
+            Continue <ArrowRight className="ml-2 h-4 w-4" />
+          </Button>
+        )}
       </div>
     </div>
   );
