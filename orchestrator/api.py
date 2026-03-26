@@ -1,6 +1,10 @@
 """FastAPI router for orchestration endpoints."""
 
-from fastapi import APIRouter, HTTPException
+import asyncio
+import json
+
+from fastapi import APIRouter, HTTPException, Request
+from sse_starlette.sse import EventSourceResponse
 
 from orchestrator.models import (
     MODE_AGENT_REQUIREMENTS,
@@ -54,6 +58,39 @@ async def ep_session(session_id: str):
     if not session:
         raise HTTPException(404, f"Session not found: {session_id}")
     return session
+
+
+@router.get("/session/{session_id}/events")
+async def ep_session_events(
+    session_id: str,
+    request: Request,
+    since: int = 0,
+    once: bool = False,
+):
+    session = store.get(session_id)
+    if not session:
+        raise HTTPException(404, f"Session not found: {session_id}")
+
+    async def event_stream():
+        cursor = since
+        while True:
+            if await request.is_disconnected():
+                break
+
+            events = store.list_events(session_id, cursor)
+            for event in events:
+                cursor = int(event.get("id", cursor))
+                yield {
+                    "id": str(event.get("id", "")),
+                    "data": json.dumps(event),
+                }
+
+            if once:
+                break
+
+            await asyncio.sleep(0.75)
+
+    return EventSourceResponse(event_stream())
 
 
 @router.get("/sessions")

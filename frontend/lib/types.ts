@@ -69,6 +69,22 @@ export interface Message {
   phase: string;
 }
 
+export interface SessionEvent {
+  id: number;
+  timestamp: number;
+  type: string;
+  title: string;
+  detail: string;
+  status?: string;
+  agent_id?: string;
+  phase?: string;
+  checkpoint_id?: string;
+  next_node?: string | null;
+  pending_instructions?: number;
+  applied_count?: number;
+  mode?: string;
+}
+
 export interface Session {
   id: string;
   mode: string;
@@ -89,6 +105,7 @@ export interface Session {
     status: string;
     result_preview?: string;
   }>;
+  events?: SessionEvent[];
   pending_instructions?: number;
   active_node?: string | null;
 }

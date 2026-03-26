@@ -141,12 +141,21 @@ class SessionRunner:
     def __post_init__(self) -> None:
         self.resume_event.set()
 
+    def _emit_event(self, event_type: str, title: str, detail: str = "", **extra: object) -> None:
+        store.append_event(self.session_id, event_type, title, detail, **extra)
+
     def request_pause(self) -> bool:
         session = store.get(self.session_id)
         if not session or session["status"] not in {"running", "pause_requested"}:
             return False
         self.pause_requested = True
         store.update(self.session_id, status="pause_requested")
+        self._emit_event(
+            "pause_requested",
+            "Пауза запрошена",
+            "Сессия остановится после завершения текущего узла.",
+            status="pause_requested",
+        )
         return True
 
     def request_cancel(self) -> bool:
@@ -157,6 +166,12 @@ class SessionRunner:
         if session["status"] == "paused":
             self.resume_event.set()
         store.update(self.session_id, status="cancel_requested")
+        self._emit_event(
+            "cancel_requested",
+            "Остановка запрошена",
+            "Сессия завершится на ближайшем безопасном checkpoint.",
+            status="cancel_requested",
+        )
         return True
 
     def inject_instruction(self, content: str) -> int:
@@ -168,6 +183,14 @@ class SessionRunner:
             self.session_id,
             [make_message("user", text, "user_instruction")],
         )
+        self._emit_event(
+            "instruction_queued",
+            "Инструкция добавлена",
+            text,
+            agent_id="user",
+            phase="user_instruction",
+            pending_instructions=queued,
+        )
         return queued
 
     def resume(self, content: str = "") -> bool:
@@ -178,6 +201,12 @@ class SessionRunner:
             self.inject_instruction(content)
         self.resume_event.set()
         store.update(self.session_id, status="running")
+        self._emit_event(
+            "run_resumed",
+            "Сессия продолжена",
+            "Выполнение возобновлено с текущего checkpoint.",
+            status="running",
+        )
         return True
 
     async def _apply_pending_instructions(self) -> None:
@@ -190,6 +219,12 @@ class SessionRunner:
             self.graph_config,
             {"user_messages": [*current, *instructions]},
         )
+        self._emit_event(
+            "instruction_applied",
+            "Инструкция применена",
+            instructions[-1],
+            applied_count=len(instructions),
+        )
 
     async def _sync_from_snapshot(self, snapshot: Any) -> None:
         values = snapshot.values or {}
@@ -197,6 +232,14 @@ class SessionRunner:
         new_messages = graph_messages[self.last_graph_message_count:]
         if new_messages:
             store.append_messages(self.session_id, new_messages)
+            for message in new_messages:
+                self._emit_event(
+                    "agent_message",
+                    message.get("agent_id", "agent"),
+                    message.get("content", ""),
+                    agent_id=message.get("agent_id"),
+                    phase=message.get("phase"),
+                )
         self.last_graph_message_count = len(graph_messages)
 
         self.checkpoint_index += 1
@@ -209,6 +252,17 @@ class SessionRunner:
             "result_preview": str(values.get("result", ""))[:160],
         }
         store.add_checkpoint(self.session_id, checkpoint)
+        checkpoint_detail = (
+            f"Следующий узел: {next_node}" if next_node else "Граф дошёл до terminal state."
+        )
+        self._emit_event(
+            "checkpoint_created",
+            f"Checkpoint {checkpoint['id']}",
+            checkpoint_detail,
+            checkpoint_id=checkpoint["id"],
+            next_node=next_node,
+            status=checkpoint["status"],
+        )
         store.update(
             self.session_id,
             result=values.get("result", ""),
@@ -219,6 +273,13 @@ class SessionRunner:
     async def run(self) -> None:
         next_input: Any = self.initial_state
         try:
+            self._emit_event(
+                "run_started",
+                "Сессия запущена",
+                self.initial_state.get("task", ""),
+                mode=self.mode,
+                status="running",
+            )
             while True:
                 await self.resume_event.wait()
                 if self.cancel_requested:
@@ -227,6 +288,12 @@ class SessionRunner:
                         status="cancelled",
                         elapsed_sec=round(time.time() - self.started_at, 2),
                         active_node=None,
+                    )
+                    self._emit_event(
+                        "run_cancelled",
+                        "Сессия остановлена",
+                        "Выполнение было остановлено пользователем.",
+                        status="cancelled",
                     )
                     return
 
@@ -246,6 +313,12 @@ class SessionRunner:
                         elapsed_sec=round(time.time() - self.started_at, 2),
                         active_node=None,
                     )
+                    self._emit_event(
+                        "run_completed",
+                        "Сессия завершена",
+                        str(values.get("result", ""))[:240],
+                        status="completed",
+                    )
                     return
 
                 if self.cancel_requested:
@@ -255,12 +328,25 @@ class SessionRunner:
                         elapsed_sec=round(time.time() - self.started_at, 2),
                         active_node=None,
                     )
+                    self._emit_event(
+                        "run_cancelled",
+                        "Сессия остановлена",
+                        "Выполнение было остановлено пользователем.",
+                        status="cancelled",
+                    )
                     return
 
                 if self.pause_requested:
                     self.pause_requested = False
                     self.resume_event.clear()
                     store.update(self.session_id, status="paused")
+                    self._emit_event(
+                        "run_paused",
+                        "Сессия на паузе",
+                        "Checkpoint достигнут, можно дать новую инструкцию.",
+                        status="paused",
+                        checkpoint_id=store.get(self.session_id).get("current_checkpoint_id"),
+                    )
                 else:
                     store.update(self.session_id, status="running")
         except Exception as exc:
@@ -270,6 +356,12 @@ class SessionRunner:
                 result=f"Error: {type(exc).__name__}: {exc}\n{traceback.format_exc()}",
                 elapsed_sec=round(time.time() - self.started_at, 2),
                 active_node=None,
+            )
+            self._emit_event(
+                "run_failed",
+                f"Ошибка: {type(exc).__name__}",
+                str(exc),
+                status="failed",
             )
         finally:
             RUNNERS.pop(self.session_id, None)

@@ -1,5 +1,6 @@
 """Regression coverage for API boundary validation and honest capability reporting."""
 
+import json
 from unittest.mock import AsyncMock, patch
 
 from fastapi import FastAPI
@@ -118,6 +119,30 @@ def test_live_messages_endpoint_reports_read_only_session():
 
     assert response.status_code == 409
     assert "Pause the run first" in response.json()["detail"]
+
+
+def test_session_events_endpoint_streams_backlog_once():
+    session_id = store.create(
+        "dictator",
+        "Draft a plan",
+        [
+            AgentConfig(role="director", provider="claude", tools=[]),
+            AgentConfig(role="worker", provider="codex", tools=[]),
+        ],
+        {},
+    )
+    store.append_event(session_id, "run_started", "Сессия запущена", "Draft a plan")
+    store.append_event(session_id, "checkpoint_created", "Checkpoint cp_1", "Следующий узел: workers")
+
+    response = client.get(f"/orchestrate/session/{session_id}/events?once=true")
+
+    assert response.status_code == 200
+    payloads = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert [payload["type"] for payload in payloads] == ["run_started", "checkpoint_created"]
 
 
 def test_run_accepts_configured_tool_for_claude():
