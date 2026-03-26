@@ -10,6 +10,12 @@ import operator
 from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
+from orchestrator.tool_configs import (
+    normalize_tool_id,
+    supported_providers_for_tool_type,
+    tool_config_store,
+)
+
 
 # ---- API Request/Response models (Pydantic) ----
 
@@ -168,6 +174,20 @@ class SessionStore:
 store = SessionStore()
 
 
+def normalize_agent_configs(agents: list[AgentConfig]) -> list[AgentConfig]:
+    """Normalize tool ids so the UI and runtime use the same canonical keys."""
+    normalized_agents: list[AgentConfig] = []
+    for agent in agents:
+        normalized_agents.append(
+            agent.model_copy(
+                update={
+                    "tools": [normalize_tool_id(tool) for tool in agent.tools],
+                }
+            )
+        )
+    return normalized_agents
+
+
 def validate_agents_for_mode(mode: str, agents: list[AgentConfig]) -> list[str]:
     """Validate topology, provider, and tool compatibility before execution."""
     errors: list[str] = []
@@ -195,17 +215,29 @@ def validate_agents_for_mode(mode: str, agents: list[AgentConfig]) -> list[str]:
             )
             continue
 
-        invalid_tools = [tool for tool in agent.tools if tool not in TOOLS_BY_KEY]
+        invalid_tools: list[str] = []
+        disallowed_tools: list[str] = []
+        for tool in agent.tools:
+            if tool in TOOLS_BY_KEY:
+                if tool not in PROVIDER_TOOL_ALLOWLIST.get(agent.provider, set()):
+                    disallowed_tools.append(tool)
+                continue
+
+            configured_tool = tool_config_store.get(tool)
+            if not configured_tool or not configured_tool.enabled:
+                invalid_tools.append(tool)
+                continue
+
+            allowed_providers = supported_providers_for_tool_type(configured_tool.tool_type)
+            if agent.provider not in allowed_providers:
+                disallowed_tools.append(tool)
+
         if invalid_tools:
             errors.append(
                 f"Agent {index + 1} ('{agent.role}') uses unknown tools: {', '.join(sorted(invalid_tools))}."
             )
             continue
 
-        disallowed_tools = [
-            tool for tool in agent.tools
-            if tool not in PROVIDER_TOOL_ALLOWLIST.get(agent.provider, set())
-        ]
         if disallowed_tools:
             errors.append(
                 f"Agent {index + 1} ('{agent.role}') cannot use {agent.provider} with tools: "

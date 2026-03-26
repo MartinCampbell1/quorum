@@ -26,6 +26,7 @@ Multi-Agent Gateway v3 - FastAPI + Profile Rotation + Orchestrator
 import asyncio
 import json
 import os
+import shlex
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -76,6 +77,12 @@ DEFAULT_CORS_ORIGINS = _parse_csv_env(
         "http://127.0.0.1:3000",
         "http://localhost:3001",
         "http://127.0.0.1:3001",
+        "http://localhost:3737",
+        "http://127.0.0.1:3737",
+        "http://localhost:3740",
+        "http://127.0.0.1:3740",
+        "http://localhost:3741",
+        "http://127.0.0.1:3741",
         "http://localhost:8800",
         "http://127.0.0.1:8800",
     ],
@@ -332,6 +339,18 @@ MCP_SERVER_DEFINITIONS = {
 }
 
 
+def _write_temp_json(payload: dict, prefix: str) -> str:
+    """Write a JSON payload to a temp file and return the path."""
+    fd, path = tempfile.mkstemp(suffix=".json", prefix=prefix)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            json.dump(payload, handle)
+    except Exception:
+        os.unlink(path)
+        raise
+    return path
+
+
 def build_mcp_config(tool_keys: list[str]) -> str | None:
     """Generate a temporary MCP config JSON file for the given tool keys.
     Returns the file path, or None if no tools need MCP servers.
@@ -349,16 +368,20 @@ def build_mcp_config(tool_keys: list[str]) -> str | None:
         if defn:
             config["mcpServers"][server_name] = defn
 
-    # 2. Resolve custom MCP servers from tool_configs
+    configured_runtime_tools: list[dict] = []
+
+    # 2. Resolve configured tools from tool_configs
     try:
-        from orchestrator.tool_configs import tool_config_store
+        from orchestrator.tool_configs import normalize_tool_id, tool_config_store
         for tool_id in tool_keys:
-            tc = tool_config_store.get(tool_id)
-            if tc and tc.tool_type == "mcp_server" and tc.enabled:
+            tc = tool_config_store.get(normalize_tool_id(tool_id))
+            if not tc or not tc.enabled:
+                continue
+            if tc.tool_type == "mcp_server":
                 command = tc.config.get("command", "").strip()
                 if not command:
                     continue
-                parts = command.split()
+                parts = shlex.split(command)
                 env_str = tc.config.get("env", "")
                 env_vars = {}
                 if env_str:
@@ -367,26 +390,27 @@ def build_mcp_config(tool_keys: list[str]) -> str | None:
                     except json.JSONDecodeError:
                         pass
                 args_str = tc.config.get("args", "").strip()
-                extra_args = args_str.split() if args_str else []
+                extra_args = shlex.split(args_str) if args_str else []
                 server_def = {"command": parts[0], "args": parts[1:] + extra_args}
                 if env_vars:
                     server_def["env"] = env_vars
                 config["mcpServers"][tc.id] = server_def
+            elif tc.tool_type not in {"code_exec", "shell"}:
+                configured_runtime_tools.append(tc.model_dump())
     except ImportError:
         pass
+
+    if configured_runtime_tools:
+        payload_path = _write_temp_json({"tools": configured_runtime_tools}, "configured_tools_")
+        config["mcpServers"]["configured-tools"] = {
+            "command": "python3",
+            "args": [str(Path(__file__).parent / "mcp_servers" / "configured_tools_server.py"), payload_path],
+        }
 
     if not config["mcpServers"]:
         return None
 
-    # Write with proper error handling
-    fd, path = tempfile.mkstemp(suffix=".json", prefix="mcp_")
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(config, f)
-    except Exception:
-        os.unlink(path)
-        raise
-    return path
+    return _write_temp_json(config, "mcp_")
 
 
 def resolve_mcp_servers(tool_keys: list[str] | None) -> list[str]:
@@ -396,6 +420,20 @@ def resolve_mcp_servers(tool_keys: list[str] | None) -> list[str]:
         for key in (tool_keys or [])
         if (server_name := MCP_SERVER_MAP.get(key))
     }
+    try:
+        from orchestrator.tool_configs import normalize_tool_id, tool_config_store
+
+        for raw_key in tool_keys or []:
+            tool_id = normalize_tool_id(raw_key)
+            configured_tool = tool_config_store.get(tool_id)
+            if not configured_tool or not configured_tool.enabled:
+                continue
+            if configured_tool.tool_type == "mcp_server":
+                needed_servers.add(configured_tool.id)
+            elif configured_tool.tool_type not in {"code_exec", "shell"}:
+                needed_servers.add("configured-tools")
+    except ImportError:
+        pass
     return sorted(needed_servers)
 
 

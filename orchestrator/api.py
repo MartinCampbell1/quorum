@@ -3,11 +3,11 @@
 from fastapi import APIRouter, HTTPException
 
 from orchestrator.models import (
-    AVAILABLE_TOOLS,
     MODE_AGENT_REQUIREMENTS,
     store,
     RunRequest,
     MessageRequest,
+    normalize_agent_configs,
     validate_agents_for_mode,
 )
 from orchestrator.engine import run, AVAILABLE_MODES, DEFAULT_AGENTS
@@ -24,7 +24,7 @@ def _resolve_agents(req: RunRequest):
 async def ep_run(req: RunRequest):
     if req.mode not in AVAILABLE_MODES:
         raise HTTPException(400, f"Unknown mode: {req.mode}. Available: {list(AVAILABLE_MODES.keys())}")
-    agents = _resolve_agents(req)
+    agents = normalize_agent_configs(_resolve_agents(req))
     errors = validate_agents_for_mode(req.mode, agents)
     if errors:
         raise HTTPException(422, {

@@ -1,8 +1,11 @@
 """Tool configuration store — manages user-configured tools with their credentials."""
 
+import json
 import threading
+from pathlib import Path
 from typing import Optional
-from pydantic import BaseModel
+
+from pydantic import BaseModel, Field
 
 
 class ToolConfig(BaseModel):
@@ -11,8 +14,37 @@ class ToolConfig(BaseModel):
     name: str                  # display name, e.g. "Brave Search", "Production Graph"
     tool_type: str             # "brave_search", "perplexity", "neo4j", "ssh", "http_api", "shell"
     icon: str = ""             # emoji or icon key
-    config: dict = {}          # type-specific: {"api_key": "..."} or {"bolt_url": "...", "user": "...", "password": "..."}
+    config: dict = Field(default_factory=dict)
     enabled: bool = True       # can be disabled without deleting
+
+
+LEGACY_TOOL_ID_ALIASES = {
+    "code-exec": "code_exec",
+    "shell": "shell_exec",
+}
+
+
+TOOL_TYPE_PROVIDER_ALLOWLIST: dict[str, set[str]] = {
+    "code_exec": {"claude", "codex"},
+    "shell": {"claude", "codex"},
+    "brave_search": {"claude"},
+    "perplexity": {"claude"},
+    "http_api": {"claude"},
+    "custom_api": {"claude"},
+    "ssh": {"claude"},
+    "neo4j": {"claude"},
+    "mcp_server": {"claude"},
+}
+
+
+def normalize_tool_id(tool_id: str) -> str:
+    """Normalize legacy UI aliases to canonical runtime ids."""
+    return LEGACY_TOOL_ID_ALIASES.get(tool_id, tool_id)
+
+
+def supported_providers_for_tool_type(tool_type: str) -> set[str]:
+    """Return providers that can execute a configured tool type today."""
+    return TOOL_TYPE_PROVIDER_ALLOWLIST.get(tool_type, {"claude"})
 
 
 # Tool type definitions — what fields each type needs
@@ -22,7 +54,7 @@ TOOL_TYPES = {
         "category": "search",
         "icon": "🔍",
         "fields": [
-            {"key": "api_key", "label": "API Key", "type": "password", "required": True, "placeholder": "BSA-..."},
+            {"name": "api_key", "label": "API Key", "type": "password", "required": True, "placeholder": "BSA-..."},
         ],
         "mcp_server": "search-server",
         "mcp_tool": "web_search",
@@ -32,7 +64,7 @@ TOOL_TYPES = {
         "category": "search",
         "icon": "🧠",
         "fields": [
-            {"key": "api_key", "label": "API Key", "type": "password", "required": True, "placeholder": "pplx-..."},
+            {"name": "api_key", "label": "API Key", "type": "password", "required": True, "placeholder": "pplx-..."},
         ],
         "mcp_server": "search-server",
         "mcp_tool": "perplexity_search",
@@ -42,12 +74,12 @@ TOOL_TYPES = {
         "category": "database",
         "icon": "📊",
         "fields": [
-            {"key": "bolt_url", "label": "Bolt URL", "type": "text", "required": True, "placeholder": "bolt://localhost:7687"},
-            {"key": "user", "label": "Пользователь", "type": "text", "required": True, "placeholder": "neo4j"},
-            {"key": "password", "label": "Пароль", "type": "password", "required": True, "placeholder": ""},
-            {"key": "database", "label": "База данных", "type": "text", "required": False, "placeholder": "neo4j"},
+            {"name": "bolt_url", "label": "Bolt URL", "type": "text", "required": True, "placeholder": "bolt://localhost:7687"},
+            {"name": "user", "label": "Пользователь", "type": "text", "required": True, "placeholder": "neo4j"},
+            {"name": "password", "label": "Пароль", "type": "password", "required": True, "placeholder": ""},
+            {"name": "database", "label": "База данных", "type": "text", "required": False, "placeholder": "neo4j"},
         ],
-        "mcp_server": "db-server",
+        "mcp_server": "configured-tools",
         "mcp_tool": "neo4j_query",
     },
     "ssh": {
@@ -55,26 +87,26 @@ TOOL_TYPES = {
         "category": "infrastructure",
         "icon": "🖥",
         "fields": [
-            {"key": "host", "label": "Хост", "type": "text", "required": True, "placeholder": "10.0.0.5"},
-            {"key": "port", "label": "Порт", "type": "text", "required": False, "placeholder": "22"},
-            {"key": "user", "label": "Пользователь", "type": "text", "required": True, "placeholder": "admin"},
-            {"key": "auth_type", "label": "Авторизация", "type": "select", "required": True, "options": ["password", "key"], "placeholder": ""},
-            {"key": "password", "label": "Пароль / Путь к ключу", "type": "password", "required": False, "placeholder": ""},
+            {"name": "host", "label": "Хост", "type": "text", "required": True, "placeholder": "10.0.0.5"},
+            {"name": "port", "label": "Порт", "type": "text", "required": False, "placeholder": "22"},
+            {"name": "user", "label": "Пользователь", "type": "text", "required": True, "placeholder": "admin"},
+            {"name": "auth_type", "label": "Авторизация", "type": "select", "required": True, "options": ["key", "password"], "placeholder": ""},
+            {"name": "password", "label": "Путь к ключу / пароль", "type": "password", "required": False, "placeholder": ""},
         ],
-        "mcp_server": "exec-server",
-        "mcp_tool": "shell_exec",
+        "mcp_server": "configured-tools",
+        "mcp_tool": "ssh_exec",
     },
     "http_api": {
         "name": "HTTP API",
         "category": "integration",
         "icon": "🔗",
         "fields": [
-            {"key": "base_url", "label": "Base URL", "type": "text", "required": True, "placeholder": "https://api.example.com"},
-            {"key": "auth_header", "label": "Authorization header", "type": "password", "required": False, "placeholder": "Bearer ..."},
-            {"key": "method", "label": "Метод", "type": "select", "required": False, "options": ["GET", "POST", "PUT", "DELETE"], "placeholder": ""},
+            {"name": "base_url", "label": "Base URL", "type": "text", "required": True, "placeholder": "https://api.example.com"},
+            {"name": "auth_header", "label": "Authorization header", "type": "password", "required": False, "placeholder": "Bearer ..."},
+            {"name": "method", "label": "Метод", "type": "select", "required": False, "options": ["GET", "POST", "PUT", "DELETE"], "placeholder": ""},
         ],
-        "mcp_server": "exec-server",
-        "mcp_tool": "http_request",
+        "mcp_server": "configured-tools",
+        "mcp_tool": "http_api_request",
     },
     "code_exec": {
         "name": "Python",
@@ -98,24 +130,24 @@ TOOL_TYPES = {
         "category": "custom",
         "icon": "🔧",
         "fields": [
-            {"key": "base_url", "label": "Base URL", "type": "text", "required": True, "placeholder": "https://api.example.com/v1"},
-            {"key": "method", "label": "HTTP метод", "type": "select", "required": False, "options": ["GET", "POST", "PUT", "DELETE"], "placeholder": ""},
-            {"key": "auth_header", "label": "Authorization", "type": "password", "required": False, "placeholder": "Bearer sk-..."},
-            {"key": "content_type", "label": "Content-Type", "type": "text", "required": False, "placeholder": "application/json"},
-            {"key": "body_template", "label": "Шаблон тела запроса", "type": "textarea", "required": False, "placeholder": '{"query": "{input}"}'},
-            {"key": "description", "label": "Описание для агента", "type": "textarea", "required": False, "placeholder": "Что этот API делает, как его использовать..."},
+            {"name": "base_url", "label": "Base URL", "type": "text", "required": True, "placeholder": "https://api.example.com/v1"},
+            {"name": "method", "label": "HTTP метод", "type": "select", "required": False, "options": ["GET", "POST", "PUT", "DELETE"], "placeholder": ""},
+            {"name": "auth_header", "label": "Authorization", "type": "password", "required": False, "placeholder": "Bearer sk-..."},
+            {"name": "content_type", "label": "Content-Type", "type": "text", "required": False, "placeholder": "application/json"},
+            {"name": "body_template", "label": "Шаблон тела запроса", "type": "textarea", "required": False, "placeholder": "{\"query\": \"{input}\"}"},
+            {"name": "description", "label": "Описание для агента", "type": "textarea", "required": False, "placeholder": "Что этот API делает, как его использовать..."},
         ],
-        "mcp_server": "exec-server",
-        "mcp_tool": "http_request",
+        "mcp_server": "configured-tools",
+        "mcp_tool": "custom_api_request",
     },
     "mcp_server": {
         "name": "MCP Server",
         "category": "mcp",
         "icon": "🔌",
         "fields": [
-            {"key": "command", "label": "Команда запуска", "type": "text", "required": True, "placeholder": "npx -y @modelcontextprotocol/server-github"},
-            {"key": "args", "label": "Аргументы (через пробел)", "type": "text", "required": False, "placeholder": ""},
-            {"key": "env", "label": "Переменные окружения (JSON)", "type": "textarea", "required": False, "placeholder": '{"GITHUB_TOKEN": "ghp_..."}'},
+            {"name": "command", "label": "Команда запуска", "type": "text", "required": True, "placeholder": "npx -y @modelcontextprotocol/server-github"},
+            {"name": "args", "label": "Аргументы (через пробел)", "type": "text", "required": False, "placeholder": ""},
+            {"name": "env", "label": "Переменные окружения (JSON)", "type": "textarea", "required": False, "placeholder": "{\"GITHUB_TOKEN\": \"ghp_...\"}"},
         ],
         "mcp_server": "__custom_mcp__",
         "mcp_tool": "__all__",
@@ -159,16 +191,47 @@ class ToolConfigStore:
     def __init__(self):
         self._tools: dict[str, ToolConfig] = {}
         self._lock = threading.Lock()
+        self._store_path = Path.home() / ".multi-agent" / "tool_configs.json"
         self._init_defaults()
+        self._load_from_disk()
 
     def _init_defaults(self):
         """Register built-in tools that need no configuration."""
         defaults = [
-            ToolConfig(id="code-exec", name="Python", tool_type="code_exec", icon="🐍"),
-            ToolConfig(id="shell", name="Shell", tool_type="shell", icon="⚡"),
+            ToolConfig(id="code_exec", name="Python", tool_type="code_exec", icon="🐍"),
+            ToolConfig(id="shell_exec", name="Shell", tool_type="shell", icon="⚡"),
         ]
         for t in defaults:
             self._tools[t.id] = t
+
+    def _load_from_disk(self) -> None:
+        """Load user-configured tools from disk, if present."""
+        if not self._store_path.exists():
+            return
+        try:
+            payload = self._store_path.read_text()
+            data = json.loads(payload)
+        except Exception:
+            return
+
+        for raw_tool in data.get("tools", []):
+            try:
+                tool = ToolConfig.model_validate(raw_tool)
+            except Exception:
+                continue
+            tool = tool.model_copy(update={"id": normalize_tool_id(tool.id)})
+            self._tools[tool.id] = tool
+
+    def _save_to_disk(self) -> None:
+        """Persist non-default tools outside the repository."""
+        self._store_path.parent.mkdir(parents=True, exist_ok=True)
+        tools = []
+        for tool in self._tools.values():
+            if tool.id in {"code_exec", "shell_exec"}:
+                continue
+            tools.append(tool.model_dump())
+        payload = {"tools": tools}
+        self._store_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
 
     def list_all(self) -> list[ToolConfig]:
         with self._lock:
@@ -180,26 +243,35 @@ class ToolConfigStore:
 
     def get(self, tool_id: str) -> ToolConfig | None:
         with self._lock:
-            return self._tools.get(tool_id)
+            normalized_id = normalize_tool_id(tool_id)
+            return self._tools.get(normalized_id)
 
     def add(self, tool: ToolConfig) -> ToolConfig:
         with self._lock:
-            self._tools[tool.id] = tool
-            return tool
+            normalized = tool.model_copy(update={"id": normalize_tool_id(tool.id)})
+            self._tools[normalized.id] = normalized
+            self._save_to_disk()
+            return normalized
 
     def update(self, tool_id: str, updates: dict) -> ToolConfig | None:
         with self._lock:
-            if tool_id not in self._tools:
+            normalized_id = normalize_tool_id(tool_id)
+            if normalized_id not in self._tools:
                 return None
-            tool = self._tools[tool_id]
+            tool = self._tools[normalized_id]
             updated = tool.model_copy(update=updates)
-            self._tools[tool_id] = updated
+            self._tools[normalized_id] = updated
+            self._save_to_disk()
             return updated
 
     def delete(self, tool_id: str) -> bool:
         with self._lock:
-            if tool_id in self._tools:
-                del self._tools[tool_id]
+            normalized_id = normalize_tool_id(tool_id)
+            if normalized_id in self._tools:
+                if normalized_id in {"code_exec", "shell_exec"}:
+                    return False
+                del self._tools[normalized_id]
+                self._save_to_disk()
                 return True
             return False
 

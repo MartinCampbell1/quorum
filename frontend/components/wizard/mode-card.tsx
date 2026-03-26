@@ -24,32 +24,64 @@ const MODE_COLORS: Record<string, { bg: string; fg: string; ring: string }> = {
   tournament:    { bg: "bg-amber-50 dark:bg-amber-950/30",    fg: "text-amber-700",   ring: "ring-amber-200 dark:ring-amber-800" },
 };
 
+const MODE_TAGLINES: Record<string, string> = {
+  dictator: "Один лидер делегирует и собирает результат",
+  board: "Несколько директоров обсуждают и приходят к решению",
+  democracy: "Команда голосует, а система считает итог честно",
+  debate: "Две позиции спорят, третий агент выносит вердикт",
+  map_reduce: "Большая задача делится на куски и собирается обратно",
+  creator_critic: "Один создаёт, второй жёстко улучшает",
+  tournament: "Несколько решений соревнуются за лучший финал",
+};
+
+const MODE_BEST_FOR: Record<string, string> = {
+  dictator: "Когда нужен один ведущий агент и несколько исполнителей",
+  board: "Когда важно собрать несколько сильных мнений и договориться",
+  democracy: "Когда ты хочешь прозрачное голосование без скрытого арбитра",
+  debate: "Когда нужно столкнуть две противоположные позиции",
+  map_reduce: "Когда задача большая и её удобно делить на части",
+  creator_critic: "Когда нужен быстрый черновик с жёсткой критикой",
+  tournament: "Когда хочется столкнуть несколько вариантов и выбрать чемпиона",
+};
+
+const MODE_DIFFICULTY: Record<string, string> = {
+  dictator: "Лёгкий старт",
+  board: "Средний",
+  democracy: "Средний",
+  debate: "Лёгкий старт",
+  map_reduce: "Продвинутый",
+  creator_critic: "Лёгкий старт",
+  tournament: "Продвинутый",
+};
+
 export function ModeCard({ modeKey, info, isSelected, isRecommended, onClick, index }: ModeCardProps) {
   const Icon = MODE_ICONS[modeKey];
   const agentCount = info.default_agents.length;
   const color = MODE_COLORS[modeKey] ?? MODE_COLORS.dictator;
-  const description = info.description;
+  const description = MODE_TAGLINES[modeKey] ?? info.description;
+  const bestFor = MODE_BEST_FOR[modeKey];
+  const difficulty = MODE_DIFFICULTY[modeKey] ?? "Средний";
 
   return (
     <button
       onClick={onClick}
       className={cn(
-        "group relative w-full text-left rounded-2xl border-2 p-6 transition-all duration-200 cursor-pointer min-h-[180px]",
+        "group relative w-full text-left rounded-[24px] border-2 p-5 transition-all duration-200 cursor-pointer min-h-[172px]",
         isSelected
-          ? "border-foreground bg-foreground text-background shadow-lg scale-[1.02] z-10"
-          : "border-transparent bg-background shadow-[0_1px_3px_rgba(0,0,0,0.06)] hover:shadow-md hover:border-border"
+          ? "border-foreground bg-foreground text-background shadow-[0_18px_40px_rgba(0,0,0,0.18)] scale-[1.02] z-10"
+          : "border-transparent bg-background shadow-[0_10px_30px_rgba(15,23,42,0.06)] hover:shadow-[0_16px_36px_rgba(15,23,42,0.1)] hover:border-border"
       )}
       style={{ animation: `fade-up 0.2s ease-out ${index * 30}ms both` }}
     >
       {/* Icon — larger with colored fill */}
-      <div className="mb-4">
+      <div className="mb-3.5">
         <span className={cn(
-          "inline-flex items-center justify-center rounded-xl p-4 ring-1 ring-inset transition-all",
+          "inline-flex items-center justify-center rounded-xl p-3.5 ring-1 ring-inset transition-all",
           isSelected
             ? "bg-background text-foreground ring-background/20 shadow-sm"
             : cn(color.bg, color.fg, color.ring)
         )}>
-          {Icon && <Icon size={28} strokeWidth={2} />}
+          {Icon && <Icon size={24} strokeWidth={2} />}
         </span>
       </div>
 
@@ -62,18 +94,37 @@ export function ModeCard({ modeKey, info, isSelected, isRecommended, onClick, in
       </h3>
       <p className={cn(
         "text-[13px] leading-[1.6] mb-4",
-        isSelected ? "text-background/70" : "text-foreground/60"
+        isSelected ? "text-background/72" : "text-foreground/68"
       )}>
         {description}
       </p>
+      <p className={cn(
+        "text-[11px] leading-relaxed mb-4",
+        isSelected ? "text-background/52" : "text-muted-foreground/82"
+      )}>
+        Лучше всего подходит, {bestFor?.charAt(0).toLowerCase()}{bestFor?.slice(1)}
+      </p>
+      <div className="mb-3 flex flex-wrap gap-2">
+        <span className={cn(
+          "rounded-full px-2.5 py-1 text-[10px] font-medium",
+          isSelected ? "bg-background/10 text-background/80" : "bg-muted text-foreground/70"
+        )}>
+          {difficulty}
+        </span>
+        <span className={cn(
+          "rounded-full px-2.5 py-1 text-[10px] font-medium",
+          isSelected ? "bg-background/10 text-background/80" : "bg-muted text-foreground/70"
+        )}>
+          {agentCount} {agentCount === 1 ? "агент" : agentCount < 5 ? "агента" : "агентов"}
+        </span>
+      </div>
 
       {/* Meta */}
-      <span className={cn(
-        "text-[11px] font-mono",
-        isSelected ? "text-background/40" : "text-muted-foreground/40"
-      )}>
-        {agentCount} {agentCount === 1 ? "агент" : agentCount < 5 ? "агента" : "агентов"}
-      </span>
+      {isSelected && (
+        <span className="text-[10px] uppercase tracking-[0.18em] text-background/38">
+          Выбранный режим
+        </span>
+      )}
 
       {/* Selected indicator */}
       {isSelected && (

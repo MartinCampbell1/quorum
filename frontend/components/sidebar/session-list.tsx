@@ -14,6 +14,7 @@ interface SessionListProps {
 
 export function SessionList({ activeSessionId, onSelectSession, onNewSession }: SessionListProps) {
   const { sessions, isLoading } = useSessions();
+  const isEmpty = !isLoading && sessions.length === 0;
 
   return (
     <div className="flex h-full w-60 flex-col border-r bg-background">
@@ -40,10 +41,22 @@ export function SessionList({ activeSessionId, onSelectSession, onNewSession }: 
             onClick={() => onSelectSession(s.id)}
           />
         ))}
-        {!isLoading && sessions.length === 0 && (
-          <p className="px-3 py-10 text-center text-sm text-muted-foreground/60">
-            Пока нет сессий
-          </p>
+        {isEmpty && (
+          <div className="mx-2 mt-2 rounded-2xl border border-dashed border-border/80 bg-muted/20 px-4 py-5 text-center">
+            <p className="text-sm font-medium text-foreground">Пока нет сессий</p>
+            <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground/70">
+              Создай первый запуск, выбери режим и посмотри, как агенты делят задачу между собой.
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-4 text-xs"
+              onClick={onNewSession}
+            >
+              <Plus className="mr-1.5 h-3.5 w-3.5" />
+              Первая сессия
+            </Button>
+          </div>
         )}
       </ScrollArea>
     </div>
