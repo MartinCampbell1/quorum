@@ -1,14 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { ChevronDown, ChevronUp, ArrowRight, Plus, Trash2, Wrench } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SelectorChips } from "@/components/ui/selector-chips";
-import { PROVIDER_LABELS, ALL_TOOL_KEYS, TOOL_LABELS, TOOL_DESCRIPTIONS } from "@/lib/constants";
+import { PROVIDER_LABELS } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 import type { AgentConfig } from "@/lib/types";
+import { getTools, getPromptTemplates } from "@/lib/api";
 import { Stepper } from "./stepper";
 
 interface StepAgentsProps {
@@ -22,6 +23,16 @@ const providers = ["claude", "gemini", "codex", "minimax"] as const;
 
 export function StepAgents({ agents, onChange, onNext, onBack }: StepAgentsProps) {
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+  const [availableTools, setAvailableTools] = useState<{ key: string; name: string; icon?: string }[]>([]);
+  const [promptTemplates, setPromptTemplates] = useState<Record<string, { name: string; description: string; prompt: string }>>({});
+
+  useEffect(() => {
+    getTools().then((tools: any[]) => setAvailableTools(tools)).catch(() => {});
+    getPromptTemplates().then((templates) => setPromptTemplates(templates as Record<string, { name: string; description: string; prompt: string }>)).catch(() => {});
+  }, []);
+
+  const toolKeys = availableTools.map((t) => t.key);
+  const toolLabels = Object.fromEntries(availableTools.map((t) => [t.key, `${t.icon ?? ""} ${t.name}`.trim()]));
 
   function updateAgent(index: number, updates: Partial<AgentConfig>) {
     const next = agents.map((a, i) => (i === index ? { ...a, ...updates } : a));
@@ -29,7 +40,7 @@ export function StepAgents({ agents, onChange, onNext, onBack }: StepAgentsProps
   }
 
   function addWorker() {
-    const workerCount = agents.filter(a => a.role.startsWith("worker")).length;
+    const workerCount = agents.filter((a) => a.role.startsWith("worker")).length;
     const newWorker: AgentConfig = {
       role: `worker_${workerCount + 1}`,
       provider: "codex",
@@ -119,17 +130,41 @@ export function StepAgents({ agents, onChange, onNext, onBack }: StepAgentsProps
                       <label className="text-[10px] uppercase tracking-widest text-muted-foreground/60 mb-2 block font-medium">
                         Инструменты
                       </label>
-                      <SelectorChips
-                        options={ALL_TOOL_KEYS}
-                        value={agent.tools ?? []}
-                        onChange={(selected) => updateAgent(i, { tools: selected })}
-                        labels={TOOL_LABELS}
-                        descriptions={TOOL_DESCRIPTIONS}
-                      />
+                      {toolKeys.length > 0 ? (
+                        <SelectorChips
+                          options={toolKeys}
+                          value={agent.tools ?? []}
+                          onChange={(selected) => updateAgent(i, { tools: selected })}
+                          labels={toolLabels}
+                        />
+                      ) : (
+                        <p className="text-[11px] leading-relaxed text-muted-foreground/60">
+                          Нет настроенных инструментов. Добавьте их в Настройках.
+                        </p>
+                      )}
 
-                      <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground/60">
-                        Кастомные инструменты пока не подключены к backend в этой сборке. Активны только встроенные инструменты выше.
-                      </p>
+                      {/* Prompt template section */}
+                      <label className="text-[10px] uppercase tracking-widest text-muted-foreground/60 mb-1.5 mt-4 block font-medium">
+                        Шаблон промпта
+                      </label>
+                      <Select
+                        onValueChange={(templateKey) => {
+                          if (typeof templateKey !== "string") return;
+                          const tmpl = promptTemplates[templateKey];
+                          if (tmpl) updateAgent(i, { system_prompt: tmpl.prompt });
+                        }}
+                      >
+                        <SelectTrigger className="h-8 text-xs">
+                          <SelectValue placeholder="Выбрать шаблон..." />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {Object.entries(promptTemplates).map(([key, tmpl]) => (
+                            <SelectItem key={key} value={key} className="text-xs">
+                              {tmpl.name} — {tmpl.description}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
 
                       {/* System prompt section */}
                       <label className="text-[10px] uppercase tracking-widest text-muted-foreground/60 mb-1.5 mt-4 block font-medium">

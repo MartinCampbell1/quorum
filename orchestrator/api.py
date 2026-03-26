@@ -11,6 +11,7 @@ from orchestrator.models import (
     validate_agents_for_mode,
 )
 from orchestrator.engine import run, AVAILABLE_MODES, DEFAULT_AGENTS
+from orchestrator.tool_configs import tool_config_store, ToolConfig, TOOL_TYPES, PROMPT_TEMPLATES
 
 router = APIRouter(prefix="/orchestrate", tags=["orchestrate"])
 
@@ -77,7 +78,9 @@ async def ep_modes():
 
 @router.get("/tools")
 async def ep_tools():
-    return [tool.model_dump() for tool in AVAILABLE_TOOLS]
+    """List enabled tools for agent configuration (wizard use)."""
+    enabled = tool_config_store.list_enabled()
+    return [{"key": t.id, "name": t.name, "icon": t.icon, "tool_type": t.tool_type} for t in enabled]
 
 
 @router.get("/tools/custom")
@@ -136,3 +139,49 @@ async def ep_agents():
         "pool_status": pool,
         "minimax": {"model": "minimax/minimax-m2.7", "via": "OpenRouter API"},
     }
+
+
+# ---- Settings: Tool Configuration ----
+
+@router.get("/settings/tools")
+async def ep_settings_tools():
+    """List all configured tools."""
+    return [t.model_dump() for t in tool_config_store.list_all()]
+
+
+@router.get("/settings/tools/types")
+async def ep_tool_types():
+    """List available tool types with their config schemas."""
+    return TOOL_TYPES
+
+
+@router.post("/settings/tools")
+async def ep_add_tool(tool: ToolConfig):
+    """Add a new configured tool."""
+    if tool.tool_type not in TOOL_TYPES:
+        raise HTTPException(422, f"Unknown tool type: {tool.tool_type}")
+    return tool_config_store.add(tool).model_dump()
+
+
+@router.put("/settings/tools/{tool_id}")
+async def ep_update_tool(tool_id: str, updates: dict):
+    """Update a configured tool."""
+    result = tool_config_store.update(tool_id, updates)
+    if not result:
+        raise HTTPException(404, f"Tool not found: {tool_id}")
+    return result.model_dump()
+
+
+@router.delete("/settings/tools/{tool_id}")
+async def ep_delete_tool(tool_id: str):
+    if not tool_config_store.delete(tool_id):
+        raise HTTPException(404, f"Tool not found: {tool_id}")
+    return {"status": "deleted"}
+
+
+# ---- Settings: Prompt Templates ----
+
+@router.get("/settings/prompts")
+async def ep_prompt_templates():
+    """List available prompt templates."""
+    return PROMPT_TEMPLATES

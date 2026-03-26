@@ -1,5 +1,4 @@
 import type { Session, SessionSummary, ModeInfo, RunRequest, ToolDefinition, CustomToolConfig } from "./types";
-import { BUILTIN_TOOL_DEFINITIONS } from "./constants";
 
 const BASE = "http://localhost:8800";
 
@@ -22,7 +21,7 @@ export async function getModes(): Promise<Record<string, ModeInfo>> {
 }
 
 export async function getTools(): Promise<ToolDefinition[]> {
-  return BUILTIN_TOOL_DEFINITIONS;
+  return request("/orchestrate/tools");
 }
 
 export async function addCustomTool(
@@ -71,4 +70,36 @@ export async function sendMessage(
   void _sessionId;
   void _content;
   throw new Error("Live user messages are not supported in this build.");
+}
+
+// Settings API
+
+export async function getConfiguredTools(): Promise<any[]> {
+  return request("/orchestrate/settings/tools");
+}
+
+export async function getToolTypes(): Promise<Record<string, any>> {
+  return request("/orchestrate/settings/tools/types");
+}
+
+export async function addConfiguredTool(tool: any): Promise<any> {
+  return request("/orchestrate/settings/tools", {
+    method: "POST",
+    body: JSON.stringify(tool),
+  });
+}
+
+export async function updateConfiguredTool(id: string, updates: any): Promise<any> {
+  return request(`/orchestrate/settings/tools/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(updates),
+  });
+}
+
+export async function deleteConfiguredTool(id: string): Promise<void> {
+  await request(`/orchestrate/settings/tools/${id}`, { method: "DELETE" });
+}
+
+export async function getPromptTemplates(): Promise<Record<string, any>> {
+  return request("/orchestrate/settings/prompts");
 }
