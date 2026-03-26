@@ -416,20 +416,42 @@ export function SettingsView() {
   const templateKeys = Object.keys(templates);
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="border-b bg-background px-8 py-4">
-        <h2 className="text-lg font-semibold tracking-tight">Настройки</h2>
-        <p className="text-sm text-muted-foreground mt-0.5">
-          Инструменты, шаблоны и конфигурация
-        </p>
+    <div className="flex h-full flex-col">
+      <div className="border-b border-slate-200/70 bg-white/80 px-8 py-6 backdrop-blur-md dark:border-slate-800/80 dark:bg-slate-950/45">
+        <div className="mx-auto max-w-5xl">
+          <div className="overflow-hidden rounded-[30px] border border-slate-200/80 bg-[linear-gradient(135deg,rgba(255,255,255,0.95),rgba(241,245,249,0.92))] px-6 py-6 shadow-[0_28px_80px_-52px_rgba(15,23,42,0.55)] dark:border-slate-800/80 dark:bg-[linear-gradient(135deg,rgba(15,23,42,0.92),rgba(2,6,23,0.88))]">
+            <div className="flex flex-wrap items-start justify-between gap-5">
+              <div className="max-w-2xl">
+                <span className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-sky-700 dark:border-sky-900/60 dark:bg-sky-950/40 dark:text-sky-300">
+                  Tool Registry
+                </span>
+                <h2 className="mt-4 text-2xl font-semibold tracking-tight text-slate-950 dark:text-white">
+                  Настройки рабочего пространства
+                </h2>
+                <p className="mt-2 text-sm leading-relaxed text-slate-600 dark:text-slate-300">
+                  Здесь живут инструменты, prompt templates и конфигурация для локального multi-agent cockpit.
+                  Держи registry в порядке, чтобы сценарии запускались без ручной переклейки.
+                </p>
+              </div>
+              <div className="grid min-w-[220px] grid-cols-2 gap-3">
+                <div className="rounded-2xl border border-slate-200/80 bg-white/90 px-4 py-3 shadow-sm dark:border-slate-800 dark:bg-slate-900/60">
+                  <p className="text-[10px] uppercase tracking-[0.16em] text-slate-500 dark:text-slate-400">Tools</p>
+                  <p className="mt-1 text-lg font-semibold text-slate-900 dark:text-slate-100">{tools.length}</p>
+                </div>
+                <div className="rounded-2xl border border-slate-200/80 bg-white/90 px-4 py-3 shadow-sm dark:border-slate-800 dark:bg-slate-900/60">
+                  <p className="text-[10px] uppercase tracking-[0.16em] text-slate-500 dark:text-slate-400">Templates</p>
+                  <p className="mt-1 text-lg font-semibold text-slate-900 dark:text-slate-100">{templateKeys.length}</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
-      {/* Content */}
       <div className="flex-1 overflow-y-auto px-8 py-6">
-        <div className="max-w-2xl space-y-8">
+        <div className="mx-auto max-w-5xl space-y-8">
           {/* Section 1: Tools */}
-          <section>
+          <section className="rounded-[28px] border border-slate-200/80 bg-white/86 p-6 shadow-[0_24px_70px_-52px_rgba(15,23,42,0.55)] dark:border-slate-800/80 dark:bg-slate-950/50">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
                 <Settings2 size={16} className="text-muted-foreground" />
@@ -604,7 +626,7 @@ export function SettingsView() {
           </section>
 
           {/* Section 2: Prompt templates */}
-          <section>
+          <section className="rounded-[28px] border border-slate-200/80 bg-white/86 p-6 shadow-[0_24px_70px_-52px_rgba(15,23,42,0.55)] dark:border-slate-800/80 dark:bg-slate-950/50">
             <div className="flex items-center gap-2 mb-4">
               <BookOpen size={16} className="text-muted-foreground" />
               <h3 className="text-sm font-medium">Шаблоны промптов</h3>
