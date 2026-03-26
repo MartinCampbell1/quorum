@@ -56,8 +56,11 @@ export function Wizard({ onSessionCreated }: WizardProps) {
     return (
       <div className="flex h-full items-center justify-center">
         <div className="flex items-center gap-3">
-          <div className="w-2 h-2 rounded-full animate-pulse" style={{ background: "#cfa872" }} />
-          <span className="text-[13px] font-mono" style={{ color: "#555" }}>Loading modes...</span>
+          <div
+            className="h-2 w-2 rounded-full bg-foreground/20"
+            style={{ animation: "pulse-dot 1.5s ease-in-out infinite" }}
+          />
+          <span className="text-[13px] text-muted-foreground">Загрузка режимов...</span>
         </div>
       </div>
     );

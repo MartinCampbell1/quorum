@@ -29,13 +29,13 @@ export const MODE_ICONS: Record<string, LucideIcon> = {
 };
 
 export const MODE_LABELS: Record<string, string> = {
-  dictator: "Dictator",
-  board: "Board",
-  democracy: "Democracy",
-  debate: "Debate",
+  dictator: "Диктатор",
+  board: "Совет",
+  democracy: "Демократия",
+  debate: "Дебаты",
   map_reduce: "Map-Reduce",
-  creator_critic: "Creator-Critic",
-  tournament: "Tournament",
+  creator_critic: "Создатель-Критик",
+  tournament: "Турнир",
 };
 
 export const PROVIDER_LABELS: Record<string, string> = {

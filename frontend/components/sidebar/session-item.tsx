@@ -9,33 +9,61 @@ interface SessionItemProps {
   onClick: () => void;
 }
 
+const STATUS_LABELS: Record<string, string> = {
+  running: "работает",
+  completed: "готово",
+  failed: "ошибка",
+};
+
 function timeAgo(ts: number): string {
   const diff = Math.floor(Date.now() / 1000 - ts);
-  if (diff < 60) return "now";
-  if (diff < 3600) return `${Math.floor(diff / 60)}m`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h`;
-  return `${Math.floor(diff / 86400)}d`;
+  if (diff < 60) return "сейчас";
+  if (diff < 3600) return `${Math.floor(diff / 60)} мин`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} ч`;
+  return `${Math.floor(diff / 86400)} д`;
 }
 
 export function SessionItem({ session, isActive, onClick }: SessionItemProps) {
   const Icon = MODE_ICONS[session.mode];
+
   return (
     <button
       onClick={onClick}
       className={cn(
-        "w-full rounded-md px-3 py-2 text-left transition-colors cursor-pointer mb-0.5",
-        isActive ? "bg-accent" : "hover:bg-accent/50"
+        "group w-full rounded-lg px-3 py-2.5 text-left transition-all duration-150 cursor-pointer mb-0.5",
+        isActive
+          ? "bg-accent shadow-sm"
+          : "hover:bg-accent/50"
       )}
     >
-      <div className="flex items-center gap-2">
-        {Icon && <Icon className="h-3 w-3 text-muted-foreground shrink-0" />}
-        <span className={cn("truncate text-xs", isActive ? "font-medium" : "text-muted-foreground")}>
-          {session.task.slice(0, 30)}
+      <div className="flex items-center gap-2.5">
+        {Icon && (
+          <Icon className={cn(
+            "h-3.5 w-3.5 shrink-0 transition-colors",
+            isActive ? "text-foreground" : "text-muted-foreground"
+          )} />
+        )}
+        <span className={cn(
+          "truncate text-sm leading-tight",
+          isActive ? "font-medium text-foreground" : "text-muted-foreground"
+        )}>
+          {session.task.slice(0, 40)}
         </span>
       </div>
-      <div className="mt-1 pl-5 flex items-center gap-2">
-        <span className="font-mono text-[10px] text-muted-foreground">{timeAgo(session.created_at)}</span>
-        <Badge variant="outline" className="text-[9px] px-1 py-0">{session.status}</Badge>
+      <div className="mt-1.5 pl-6 flex items-center gap-2">
+        <span className="font-mono text-[11px] text-muted-foreground/60">
+          {timeAgo(session.created_at)}
+        </span>
+        <Badge
+          variant="outline"
+          className={cn(
+            "text-[10px] px-1.5 py-0 font-normal",
+            session.status === "running" && "border-green-500/30 text-green-600 dark:text-green-400",
+            session.status === "failed" && "border-red-500/30 text-red-600 dark:text-red-400"
+          )}
+        >
+          {STATUS_LABELS[session.status] ?? session.status}
+        </Badge>
       </div>
     </button>
   );
