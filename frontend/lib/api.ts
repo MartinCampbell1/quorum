@@ -4,6 +4,7 @@ import type {
   ModeInfo,
   PromptTemplate,
   RunRequest,
+  ScenarioDefinition,
   Session,
   SessionSummary,
   ToolDefinition,
@@ -28,6 +29,10 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 export async function getModes(): Promise<Record<string, ModeInfo>> {
   return request("/orchestrate/modes");
+}
+
+export async function getScenarios(): Promise<ScenarioDefinition[]> {
+  return request("/orchestrate/scenarios");
 }
 
 export function getSessionEventsStreamUrl(sessionId: string, since: number = 0): string {
@@ -94,12 +99,13 @@ export async function sendMessage(
 
 export async function controlSession(
   sessionId: string,
-  action: "pause" | "resume" | "inject_instruction" | "cancel",
-  content?: string
-): Promise<{ status: string; pending_instructions?: number }> {
+  action: "pause" | "resume" | "inject_instruction" | "cancel" | "restart_from_checkpoint",
+  content?: string,
+  checkpointId?: string
+): Promise<{ status: string; pending_instructions?: number; new_session_id?: string }> {
   return request(`/orchestrate/session/${sessionId}/control`, {
     method: "POST",
-    body: JSON.stringify({ action, content: content ?? "" }),
+    body: JSON.stringify({ action, content: content ?? "", checkpoint_id: checkpointId ?? "" }),
   });
 }
 

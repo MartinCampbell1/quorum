@@ -1,21 +1,21 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useModes } from "@/hooks/use-modes";
+import { useScenarios } from "@/hooks/use-scenarios";
 import { runSession } from "@/lib/api";
-import { StepMode } from "./step-mode";
+import { StepScenario } from "./step-scenario";
 import { StepAgents } from "./step-agents";
 import { StepTask } from "./step-task";
-import type { AgentConfig } from "@/lib/types";
+import type { AgentConfig, ScenarioDefinition } from "@/lib/types";
 
 interface WizardProps {
   onSessionCreated: (sessionId: string) => void;
 }
 
 export function Wizard({ onSessionCreated }: WizardProps) {
-  const { modes, isLoading } = useModes();
+  const { scenarios, isLoading } = useScenarios();
   const [step, setStep] = useState(0);
-  const [selectedMode, setSelectedMode] = useState<string | null>(null);
+  const [selectedScenarioId, setSelectedScenarioId] = useState<string | null>(null);
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [isLaunching, setIsLaunching] = useState(false);
 
@@ -26,32 +26,40 @@ export function Wizard({ onSessionCreated }: WizardProps) {
     }));
   }
 
+  function findScenario(list: ScenarioDefinition[] | undefined, scenarioId: string | null) {
+    return list?.find((scenario) => scenario.id === scenarioId) ?? null;
+  }
+
   useEffect(() => {
-    if (!modes || Object.keys(modes).length === 0) return;
-    if (selectedMode && modes[selectedMode]) return;
+    if (!scenarios || scenarios.length === 0) return;
+    const selectedScenario = findScenario(scenarios, selectedScenarioId);
+    if (selectedScenario) return;
 
-    const firstMode = Object.keys(modes)[0];
-    if (!firstMode) return;
+    const firstScenario = scenarios[0];
+    if (!firstScenario) return;
 
-    setSelectedMode(firstMode);
-    setAgents(cloneAgents(modes[firstMode].default_agents));
+    setSelectedScenarioId(firstScenario.id);
+    setAgents(cloneAgents(firstScenario.default_agents));
     setStep(0);
-  }, [modes, selectedMode]);
+  }, [scenarios, selectedScenarioId]);
 
-  function handleModeSelect(mode: string) {
-    setSelectedMode(mode);
-    if (modes?.[mode]) {
-      setAgents(cloneAgents(modes[mode].default_agents));
+  function handleScenarioSelect(scenarioId: string) {
+    setSelectedScenarioId(scenarioId);
+    const scenario = findScenario(scenarios, scenarioId);
+    if (scenario) {
+      setAgents(cloneAgents(scenario.default_agents));
     }
   }
 
   async function handleLaunch(task: string, config: Record<string, number>) {
-    if (!selectedMode) return;
+    const scenario = findScenario(scenarios, selectedScenarioId);
+    if (!scenario) return;
     setIsLaunching(true);
     try {
       const result = await runSession({
-        mode: selectedMode,
+        mode: scenario.mode,
         task,
+        scenario_id: scenario.id,
         agents,
         config,
       });
@@ -63,7 +71,7 @@ export function Wizard({ onSessionCreated }: WizardProps) {
     }
   }
 
-  if (isLoading || !modes) {
+  if (isLoading || !scenarios) {
     return (
       <div className="flex h-full items-center justify-center">
         <div className="flex items-center gap-3">
@@ -77,12 +85,14 @@ export function Wizard({ onSessionCreated }: WizardProps) {
     );
   }
 
+  const selectedScenario = findScenario(scenarios, selectedScenarioId);
+
   const steps = [
-    <StepMode
-      key="mode"
-      modes={modes}
-      selected={selectedMode}
-      onSelect={handleModeSelect}
+    <StepScenario
+      key="scenario"
+      scenarios={scenarios}
+      selectedId={selectedScenarioId}
+      onSelect={handleScenarioSelect}
       onNext={() => setStep(1)}
     />,
     <StepAgents
@@ -94,11 +104,13 @@ export function Wizard({ onSessionCreated }: WizardProps) {
     />,
     <StepTask
       key="task"
-      mode={selectedMode ?? ""}
+      mode={selectedScenario?.mode ?? ""}
       agents={agents}
       onLaunch={handleLaunch}
       onBack={() => setStep(1)}
       isLaunching={isLaunching}
+      taskPlaceholder={selectedScenario?.task_placeholder}
+      scenarioLabel={selectedScenario?.name}
     />,
   ];
 

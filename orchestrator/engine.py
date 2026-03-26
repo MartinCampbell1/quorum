@@ -1,6 +1,7 @@
 """Orchestration engine — routes tasks to the correct LangGraph mode."""
 
 import asyncio
+import copy
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -122,6 +123,7 @@ def _build_graph(mode: str, **compile_kwargs):
 
 
 RUNNERS: dict[str, "SessionRunner"] = {}
+CHECKPOINT_SAVERS: dict[str, MemorySaver] = {}
 
 
 @dataclass
@@ -130,13 +132,15 @@ class SessionRunner:
     mode: str
     graph: Any
     graph_config: dict[str, Any]
-    initial_state: dict[str, Any]
+    initial_state: dict[str, Any] | None
+    checkpointer: MemorySaver
     started_at: float = field(default_factory=time.time)
     resume_event: asyncio.Event = field(default_factory=asyncio.Event)
     pause_requested: bool = False
     cancel_requested: bool = False
     checkpoint_index: int = 0
     last_graph_message_count: int = 0
+    resume_from_checkpoint_id: str | None = None
 
     def __post_init__(self) -> None:
         self.resume_event.set()
@@ -215,7 +219,7 @@ class SessionRunner:
             return
         snapshot = await self.graph.aget_state(self.graph_config)
         current = list((snapshot.values or {}).get("user_messages", []))
-        await self.graph.aupdate_state(
+        self.graph_config = await self.graph.aupdate_state(
             self.graph_config,
             {"user_messages": [*current, *instructions]},
         )
@@ -250,6 +254,7 @@ class SessionRunner:
             "next_node": next_node,
             "status": "terminal" if not snapshot.next else "ready",
             "result_preview": str(values.get("result", ""))[:160],
+            "graph_checkpoint_id": ((snapshot.config or {}).get("configurable") or {}).get("checkpoint_id"),
         }
         store.add_checkpoint(self.session_id, checkpoint)
         checkpoint_detail = (
@@ -273,13 +278,25 @@ class SessionRunner:
     async def run(self) -> None:
         next_input: Any = self.initial_state
         try:
-            self._emit_event(
-                "run_started",
-                "Сессия запущена",
-                self.initial_state.get("task", ""),
-                mode=self.mode,
-                status="running",
-            )
+            session = store.get(self.session_id) or {}
+            if self.resume_from_checkpoint_id:
+                self._emit_event(
+                    "branch_started",
+                    "Создана новая ветка",
+                    f"Продолжение с checkpoint {self.resume_from_checkpoint_id}.",
+                    mode=self.mode,
+                    status="running",
+                    forked_from=session.get("forked_from"),
+                    checkpoint_id=self.resume_from_checkpoint_id,
+                )
+            else:
+                self._emit_event(
+                    "run_started",
+                    "Сессия запущена",
+                    (self.initial_state or {}).get("task", ""),
+                    mode=self.mode,
+                    status="running",
+                )
             while True:
                 await self.resume_event.wait()
                 if self.cancel_requested:
@@ -299,6 +316,8 @@ class SessionRunner:
 
                 await self._apply_pending_instructions()
                 await self.graph.ainvoke(next_input, self.graph_config)
+                if ((self.graph_config.get("configurable") or {}).get("checkpoint_id")):
+                    self.graph_config = {"configurable": {"thread_id": self.session_id}}
                 next_input = None
 
                 snapshot = await self.graph.aget_state(self.graph_config)
@@ -367,14 +386,21 @@ class SessionRunner:
             RUNNERS.pop(self.session_id, None)
 
 
-async def run(mode: str, task: str, agents: list[AgentConfig] | None = None, config: dict | None = None) -> str:
+async def run(
+    mode: str,
+    task: str,
+    agents: list[AgentConfig] | None = None,
+    config: dict | None = None,
+    scenario_id: str | None = None,
+) -> str:
     config = config or {}
     agents = agents or DEFAULT_AGENTS.get(mode, [])
-    session_id = store.create(mode, task, agents, config)
+    session_id = store.create(mode, task, agents, config, scenario_id=scenario_id)
 
+    saver = MemorySaver()
     graph = _build_graph(
         mode,
-        checkpointer=MemorySaver(),
+        checkpointer=saver,
         interrupt_after="*",
     )
     graph_config = {"configurable": {"thread_id": session_id}}
@@ -385,8 +411,10 @@ async def run(mode: str, task: str, agents: list[AgentConfig] | None = None, con
         graph=graph,
         graph_config=graph_config,
         initial_state=initial_state,
+        checkpointer=saver,
     )
     RUNNERS[session_id] = runner
+    CHECKPOINT_SAVERS[session_id] = saver
     asyncio.create_task(runner.run())
     return session_id
 
@@ -413,3 +441,89 @@ def inject_instruction(session_id: str, content: str) -> int:
 def request_cancel(session_id: str) -> bool:
     runner = get_runner(session_id)
     return runner.request_cancel() if runner else False
+
+
+def _copy_checkpointer_state(
+    source_saver: MemorySaver,
+    source_thread_id: str,
+    target_saver: MemorySaver,
+    target_thread_id: str,
+) -> None:
+    if source_thread_id in source_saver.storage:
+        target_saver.storage[target_thread_id] = copy.deepcopy(source_saver.storage[source_thread_id])
+
+    for key, value in list(source_saver.writes.items()):
+        if key[0] == source_thread_id:
+            target_saver.writes[(target_thread_id, key[1], key[2])] = copy.deepcopy(value)
+
+    for key, value in list(source_saver.blobs.items()):
+        if key[0] == source_thread_id:
+            target_saver.blobs[(target_thread_id, key[1], key[2], key[3])] = copy.deepcopy(value)
+
+
+def _resolve_checkpoint(session: dict, checkpoint_id: str | None) -> dict | None:
+    checkpoints = session.get("checkpoints", [])
+    target_id = checkpoint_id or session.get("current_checkpoint_id")
+    if not target_id:
+        return None
+    for checkpoint in checkpoints:
+        if checkpoint.get("id") == target_id or checkpoint.get("graph_checkpoint_id") == target_id:
+            return checkpoint
+    return None
+
+
+def fork_from_checkpoint(session_id: str, checkpoint_id: str = "", content: str = "") -> str | None:
+    session = store.get(session_id)
+    if not session:
+        return None
+
+    checkpoint = _resolve_checkpoint(session, checkpoint_id or None)
+    graph_checkpoint_id = (checkpoint or {}).get("graph_checkpoint_id")
+    if not checkpoint or not graph_checkpoint_id:
+        return None
+
+    source_saver = CHECKPOINT_SAVERS.get(session_id)
+    if not source_saver:
+        return None
+
+    agents = [AgentConfig(**agent) for agent in session.get("agents", [])]
+    new_session_id = store.create(
+        session["mode"],
+        session["task"],
+        agents,
+        session.get("config", {}),
+        scenario_id=session.get("active_scenario"),
+        forked_from=session_id,
+        forked_checkpoint_id=checkpoint.get("id"),
+    )
+
+    saver = MemorySaver()
+    _copy_checkpointer_state(source_saver, session_id, saver, new_session_id)
+    graph = _build_graph(
+        session["mode"],
+        checkpointer=saver,
+        interrupt_after="*",
+    )
+    graph_config = {
+        "configurable": {
+            "thread_id": new_session_id,
+            "checkpoint_ns": "",
+            "checkpoint_id": graph_checkpoint_id,
+        }
+    }
+    runner = SessionRunner(
+        session_id=new_session_id,
+        mode=session["mode"],
+        graph=graph,
+        graph_config=graph_config,
+        initial_state=None,
+        checkpointer=saver,
+        resume_from_checkpoint_id=checkpoint.get("id"),
+    )
+    if content.strip():
+        runner.inject_instruction(content)
+
+    RUNNERS[new_session_id] = runner
+    CHECKPOINT_SAVERS[new_session_id] = saver
+    asyncio.create_task(runner.run())
+    return new_session_id
