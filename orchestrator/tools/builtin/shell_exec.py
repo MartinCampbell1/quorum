@@ -1,6 +1,8 @@
 """Shell command execution tool."""
 
 import asyncio
+import os
+import shlex
 from typing import Any
 
 from orchestrator.tools.base import BaseTool, ToolParam
@@ -18,12 +20,18 @@ class ShellExecTool(BaseTool):
         )
 
     async def execute(self, command: str, workdir: str = "/tmp", **kwargs: Any) -> str:
+        safe_root = "/tmp"
+        resolved = os.path.realpath(workdir or safe_root)
+        if not resolved.startswith(safe_root):
+            return f"[shell] Error: workdir must be under {safe_root}"
+
         try:
-            proc = await asyncio.create_subprocess_shell(
-                command,
+            args = shlex.split(command)
+            proc = await asyncio.create_subprocess_exec(
+                *args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=workdir,
+                cwd=resolved,
             )
             try:
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)

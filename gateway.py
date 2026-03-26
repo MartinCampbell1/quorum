@@ -334,11 +334,15 @@ def build_mcp_config(tool_keys: list[str]) -> str | None:
         if defn:
             config["mcpServers"][server_name] = defn
 
-    # Write to temp file
-    f = tempfile.NamedTemporaryFile(mode="w", suffix=".json", prefix="mcp_", delete=False)
-    json.dump(config, f)
-    f.close()
-    return f.name
+    # Write with proper error handling
+    fd, path = tempfile.mkstemp(suffix=".json", prefix="mcp_")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(config, f)
+    except Exception:
+        os.unlink(path)
+        raise
+    return path
 
 
 def build_cmd(provider: str, prompt: str, model: str = None, mcp_config_path: str = None) -> list[str]:

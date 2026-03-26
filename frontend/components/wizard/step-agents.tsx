@@ -24,7 +24,7 @@ const providers = ["claude", "gemini", "codex", "minimax"] as const;
 
 export function StepAgents({ agents, onChange, onNext, onBack }: StepAgentsProps) {
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
-  const [showCustomToolForm, setShowCustomToolForm] = useState(false);
+  const [showCustomToolFormIdx, setShowCustomToolFormIdx] = useState<number | null>(null);
 
   function updateAgent(index: number, updates: Partial<AgentConfig>) {
     const next = agents.map((a, i) => (i === index ? { ...a, ...updates } : a));
@@ -131,24 +131,24 @@ export function StepAgents({ agents, onChange, onNext, onBack }: StepAgentsProps
                       />
 
                       {/* Custom tool button / form */}
-                      {showCustomToolForm ? (
+                      {showCustomToolFormIdx === i ? (
                         <div className="mt-3">
                           <CustomToolForm
                             onAdd={async (tool) => {
                               try {
-                                await addCustomTool(tool as any);
+                                await addCustomTool(tool);
                                 updateAgent(i, { tools: [...(agent.tools ?? []), tool.key] });
-                                setShowCustomToolForm(false);
+                                setShowCustomToolFormIdx(null);
                               } catch (err) {
                                 console.error("Failed to add custom tool:", err);
                               }
                             }}
-                            onCancel={() => setShowCustomToolForm(false)}
+                            onCancel={() => setShowCustomToolFormIdx(null)}
                           />
                         </div>
                       ) : (
                         <button
-                          onClick={() => setShowCustomToolForm(true)}
+                          onClick={() => setShowCustomToolFormIdx(i)}
                           className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
                         >
                           <Plus size={12} />

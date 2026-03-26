@@ -2,8 +2,8 @@
 
 import json
 import logging
+import os
 from langchain_openai import ChatOpenAI
-from orchestrator.tools.base import BaseTool
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ async def route_tool_visibility(
     try:
         router_llm = ChatOpenAI(
             model="minimax/minimax-m2.7",
-            api_key="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",
+            api_key=os.environ.get("OPENROUTER_API_KEY", ""),
             base_url="https://openrouter.ai/api/v1",
             temperature=0,
         )

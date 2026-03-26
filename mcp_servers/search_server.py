@@ -77,16 +77,20 @@ async def list_tools() -> list[Tool]:
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     t0 = time.time()
-    try:
-        if name == "web_search":
-            result = await web_search.execute(**arguments)
-        elif name == "perplexity_search":
-            result = await perplexity.execute(**arguments)
+    if name == "web_search":
+        query = arguments.get("query")
+        if not isinstance(query, str) or not query.strip():
+            result = "[web_search] Error: 'query' parameter required (string)"
         else:
-            result = f"Unknown tool: {name}"
-    except Exception as exc:
-        result = f"Error executing {name}: {exc}"
-
+            result = await web_search.execute(query=query, count=int(arguments.get("count", 5)))
+    elif name == "perplexity_search":
+        query = arguments.get("query")
+        if not isinstance(query, str) or not query.strip():
+            result = "[perplexity] Error: 'query' parameter required (string)"
+        else:
+            result = await perplexity.execute(query=query)
+    else:
+        result = f"Unknown tool: {name}"
     log_tool_call("search-server", name, arguments, result, round(time.time() - t0, 2))
     return [TextContent(type="text", text=result)]
 

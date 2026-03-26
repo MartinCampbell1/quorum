@@ -25,6 +25,7 @@ LangChain / LangGraph Adapter for CLI Gateway
     pip install langchain-core httpx
 """
 
+import os
 from typing import Any, Iterator, List, Optional
 
 import httpx
@@ -228,7 +229,7 @@ class GatewayMiniMax(ChatOpenAI):
     def __init__(self, **kwargs):
         super().__init__(
             model=kwargs.pop("model", "minimax/minimax-m2.7"),
-            api_key=kwargs.pop("api_key", "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"),
+            api_key=kwargs.pop("api_key", os.environ.get("OPENROUTER_API_KEY", "")),
             base_url=kwargs.pop("base_url", "https://openrouter.ai/api/v1"),
             **kwargs,
         )
