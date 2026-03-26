@@ -12,6 +12,8 @@ export interface ToolDefinition {
   category?: string;
   icon?: string;
   tool_type?: string;
+  transport?: string;
+  compatibility?: Record<string, "native" | "bridged" | "unavailable">;
 }
 
 export interface CustomToolConfig {
@@ -47,6 +49,16 @@ export interface ConfiguredTool {
   icon?: string;
   enabled: boolean;
   config: Record<string, string>;
+  transport?: string;
+  compatibility?: Record<string, "native" | "bridged" | "unavailable">;
+  validation_status?: string;
+  last_validation_result?: {
+    ok?: boolean;
+    error?: string;
+    log?: string[];
+    transport?: string;
+    tool_count?: number;
+  };
 }
 
 export interface PromptTemplate {
@@ -61,6 +73,17 @@ export interface RunRequest {
   scenario_id?: string | null;
   agents?: AgentConfig[];
   config?: Record<string, unknown>;
+  workspace_preset_ids?: string[];
+  workspace_paths?: string[];
+  attached_tool_ids?: string[];
+}
+
+export interface WorkspacePreset {
+  id: string;
+  name: string;
+  description?: string | null;
+  paths: string[];
+  created_at?: number;
 }
 
 export interface Message {
@@ -85,6 +108,7 @@ export interface SessionEvent {
   applied_count?: number;
   mode?: string;
   forked_from?: string;
+  branch_to?: string;
 }
 
 export interface Session {
@@ -114,6 +138,24 @@ export interface Session {
   events?: SessionEvent[];
   pending_instructions?: number;
   active_node?: string | null;
+  workspace_preset_ids?: string[];
+  workspace_paths?: string[];
+  attached_tool_ids?: string[];
+  provider_capabilities_snapshot?: Record<string, {
+    provider: string;
+    tools: Record<string, {
+      capability: "native" | "bridged" | "unavailable";
+      tool_type?: string | null;
+      name?: string | null;
+    }>;
+  }>;
+  branch_children?: Array<{
+    id: string;
+    mode: string;
+    status: string;
+    created_at: number;
+    forked_checkpoint_id?: string | null;
+  }>;
 }
 
 export interface SessionSummary {
@@ -122,6 +164,8 @@ export interface SessionSummary {
   task: string;
   status: string;
   created_at: number;
+  active_scenario?: string | null;
+  forked_from?: string | null;
 }
 
 export interface ModeInfo {

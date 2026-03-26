@@ -44,22 +44,25 @@ def test_run_rejects_invalid_debate_topology():
     assert any("exactly 3 agents" in error for error in payload["errors"])
 
 
-def test_run_rejects_provider_tool_mismatch():
-    response = client.post(
-        "/orchestrate/run",
-        json={
-            "mode": "dictator",
-            "task": "Investigate an internal API",
-            "agents": [
-                _agent("director", "claude", ["web_search"]),
-                _agent("worker", "codex", ["http_request"]),
-            ],
-        },
-    )
+def test_run_accepts_bridged_provider_tool_combo():
+    with patch("orchestrator.api.run", new=AsyncMock(return_value="sess_bridge")) as mock_run:
+        response = client.post(
+            "/orchestrate/run",
+            json={
+                "mode": "dictator",
+                "task": "Investigate an internal API",
+                "agents": [
+                    _agent("director", "claude", ["web_search"]),
+                    _agent("worker", "codex", ["http_request"]),
+                ],
+            },
+        )
 
-    assert response.status_code == 422
-    errors = response.json()["detail"]["errors"]
-    assert any("cannot use codex" in error for error in errors)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["session_id"] == "sess_bridge"
+    assert payload["provider_capabilities_snapshot"]["worker"]["tools"]["http_request"]["capability"] == "bridged"
+    mock_run.assert_awaited_once()
 
 
 def test_run_accepts_valid_default_tournament_topology():
@@ -83,6 +86,15 @@ def test_tools_endpoint_returns_builtin_catalog():
     assert response.status_code == 200
     payload = response.json()
     assert {"code_exec", "shell_exec"}.issubset({item["key"] for item in payload})
+
+
+def test_provider_capabilities_endpoint_reports_native_and_bridged_support():
+    response = client.get("/orchestrate/settings/providers/capabilities")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["tools"]["web_search"]["codex"] == "native"
+    assert payload["tools"]["http_request"]["codex"] == "bridged"
 
 
 def test_scenarios_endpoint_returns_personal_catalog():
@@ -248,3 +260,34 @@ def test_run_rejects_configured_tool_for_codex():
         assert any("cannot use codex" in error for error in errors)
     finally:
         tool_config_store.delete("github_mcp")
+
+
+def test_workspace_preset_crud_round_trip(tmp_path):
+    workspace_dir = tmp_path / "market-data"
+    workspace_dir.mkdir()
+
+    create = client.post(
+        "/orchestrate/settings/workspaces",
+        json={
+            "id": "ws_market",
+            "name": "Market data",
+            "paths": [str(workspace_dir)],
+            "description": "Trading datasets",
+        },
+    )
+    assert create.status_code == 200
+    assert create.json()["paths"] == [str(workspace_dir)]
+
+    listing = client.get("/orchestrate/settings/workspaces")
+    assert listing.status_code == 200
+    assert any(item["id"] == "ws_market" for item in listing.json())
+
+    update = client.put(
+        "/orchestrate/settings/workspaces/ws_market",
+        json={"description": "Updated"},
+    )
+    assert update.status_code == 200
+    assert update.json()["description"] == "Updated"
+
+    delete = client.delete("/orchestrate/settings/workspaces/ws_market")
+    assert delete.status_code == 200

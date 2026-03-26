@@ -9,7 +9,12 @@ from typing import Any, Optional
 
 from langgraph.checkpoint.memory import MemorySaver
 
-from orchestrator.models import store, AgentConfig
+from orchestrator.models import (
+    AgentConfig,
+    build_provider_capabilities_snapshot,
+    collect_attached_tool_ids,
+    store,
+)
 from orchestrator.modes.base import make_message
 from orchestrator.modes.dictator import build_dictator_graph
 from orchestrator.modes.democracy import build_democracy_graph
@@ -72,14 +77,36 @@ AVAILABLE_MODES = {
 }
 
 
-def _build_initial_state(mode: str, task: str, agents: list[AgentConfig], config: dict) -> dict:
-    agents_dicts = [a.model_dump() for a in agents]
+def _build_initial_state(
+    mode: str,
+    task: str,
+    agents: list[AgentConfig],
+    config: dict,
+    session_id: str,
+    workspace_paths: list[str],
+    attached_tool_ids: list[str],
+) -> dict:
+    agents_dicts = [
+        {
+            **agent.model_dump(),
+            "workspace_paths": list(workspace_paths),
+            "workdir": str(config.get("workdir", "")) or None,
+        }
+        for agent in agents
+    ]
     base = {
+        "session_id": session_id,
+        "mode": mode,
         "task": task,
         "agents": agents_dicts,
         "messages": [],
         "result": "",
         "user_messages": [],
+        "status": "running",
+        "config": dict(config),
+        "created_at": time.time(),
+        "workspace_paths": list(workspace_paths),
+        "attached_tool_ids": list(attached_tool_ids),
     }
 
     if mode == "dictator":
@@ -392,10 +419,25 @@ async def run(
     agents: list[AgentConfig] | None = None,
     config: dict | None = None,
     scenario_id: str | None = None,
+    workspace_preset_ids: list[str] | None = None,
+    workspace_paths: list[str] | None = None,
+    attached_tool_ids: list[str] | None = None,
 ) -> str:
     config = config or {}
     agents = agents or DEFAULT_AGENTS.get(mode, [])
-    session_id = store.create(mode, task, agents, config, scenario_id=scenario_id)
+    resolved_attached_tools = collect_attached_tool_ids(agents, attached_tool_ids)
+    provider_capabilities_snapshot = build_provider_capabilities_snapshot(agents)
+    session_id = store.create(
+        mode,
+        task,
+        agents,
+        config,
+        scenario_id=scenario_id,
+        workspace_preset_ids=workspace_preset_ids,
+        workspace_paths=workspace_paths,
+        attached_tool_ids=resolved_attached_tools,
+        provider_capabilities_snapshot=provider_capabilities_snapshot,
+    )
 
     saver = MemorySaver()
     graph = _build_graph(
@@ -404,7 +446,15 @@ async def run(
         interrupt_after="*",
     )
     graph_config = {"configurable": {"thread_id": session_id}}
-    initial_state = _build_initial_state(mode, task, agents, config)
+    initial_state = _build_initial_state(
+        mode,
+        task,
+        agents,
+        config,
+        session_id=session_id,
+        workspace_paths=list(workspace_paths or []),
+        attached_tool_ids=resolved_attached_tools,
+    )
     runner = SessionRunner(
         session_id=session_id,
         mode=mode,
@@ -495,6 +545,10 @@ def fork_from_checkpoint(session_id: str, checkpoint_id: str = "", content: str 
         scenario_id=session.get("active_scenario"),
         forked_from=session_id,
         forked_checkpoint_id=checkpoint.get("id"),
+        workspace_preset_ids=session.get("workspace_preset_ids", []),
+        workspace_paths=session.get("workspace_paths", []),
+        attached_tool_ids=session.get("attached_tool_ids", []),
+        provider_capabilities_snapshot=session.get("provider_capabilities_snapshot", {}),
     )
 
     saver = MemorySaver()

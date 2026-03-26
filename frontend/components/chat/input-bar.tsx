@@ -11,7 +11,7 @@ interface InputBarProps {
   sessionId: string;
   status: Session["status"];
   pendingInstructions?: number;
-  currentCheckpointId?: string | null;
+  checkpointId?: string | null;
   onForkSession?: (sessionId: string) => void;
   onRefresh?: () => void;
 }
@@ -20,7 +20,7 @@ export function InputBar({
   sessionId,
   status,
   pendingInstructions = 0,
-  currentCheckpointId,
+  checkpointId,
   onForkSession,
   onRefresh,
 }: InputBarProps) {
@@ -51,14 +51,14 @@ export function InputBar({
   }
 
   async function forkFromCheckpoint() {
-    if (!currentCheckpointId) return;
+    if (!checkpointId) return;
     setIsWorking(true);
     try {
       const result = await controlSession(
         sessionId,
         "restart_from_checkpoint",
         draft.trim() || undefined,
-        currentCheckpointId
+        checkpointId
       );
       setDraft("");
       await onRefresh?.();
@@ -123,7 +123,7 @@ export function InputBar({
                   size="sm"
                   className="rounded-full text-xs"
                   onClick={forkFromCheckpoint}
-                  disabled={isWorking || !currentCheckpointId}
+                  disabled={isWorking || !checkpointId}
                 >
                   {isWorking ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Play className="mr-1.5 h-3.5 w-3.5" />}
                   Новая ветка
@@ -135,33 +135,5 @@ export function InputBar({
       </div>
     );
   }
-
-  let title = "Сессия только для наблюдения.";
-  let body = "Здесь будет доступен ввод, когда прогон остановится на checkpoint или завершится поддержка live control.";
-
-  if (status === "running") {
-    title = "Идёт выполнение.";
-    body = "Можно нажать «Пауза» в заголовке. Система остановится после текущего узла, а не посреди шага.";
-  } else if (status === "pause_requested") {
-    title = "Пауза запрошена.";
-    body = "Текущий узел должен завершиться, после этого сессия перейдёт в paused и примет инструкцию.";
-  } else if (status === "cancel_requested") {
-    title = "Остановка запрошена.";
-    body = "Сессия завершится на ближайшем безопасном checkpoint.";
-  }
-
-  return (
-    <div className="border-t border-slate-200/70 bg-white/70 px-6 py-4 backdrop-blur-md dark:border-slate-800/70 dark:bg-slate-950/40">
-      <div className="flex items-start gap-3 rounded-[22px] border border-dashed border-slate-200/80 bg-[linear-gradient(135deg,rgba(255,255,255,0.85),rgba(248,250,252,0.82))] px-4 py-4 dark:border-slate-800/80 dark:bg-[linear-gradient(135deg,rgba(15,23,42,0.72),rgba(2,6,23,0.64))]">
-        <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground/70" />
-        <div className="min-w-0">
-          <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">
-            Session Notes
-          </p>
-          <p className="mt-1 text-[13px] font-medium text-foreground/80">{title}</p>
-          <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground/70">{body}</p>
-        </div>
-      </div>
-    </div>
-  );
+  return null;
 }
