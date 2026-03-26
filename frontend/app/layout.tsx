@@ -1,12 +1,11 @@
 import type { Metadata } from "next";
-import { DM_Sans, JetBrains_Mono } from "next/font/google";
+import { Geist, JetBrains_Mono } from "next/font/google";
+import { ThemeProvider } from "next-themes";
 import "./globals.css";
 
-const dmSans = DM_Sans({
-  subsets: ["latin", "latin-ext"],
-  weight: ["300", "400", "500", "600", "700"],
+const geist = Geist({
+  subsets: ["latin"],
   variable: "--font-sans",
-  display: "swap",
 });
 
 const jetBrainsMono = JetBrains_Mono({
@@ -28,8 +27,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className={`${dmSans.variable} ${jetBrainsMono.variable}`}>
-        {children}
+      <body className={`${geist.variable} ${jetBrainsMono.variable} font-sans antialiased`}>
+        <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false}>
+          {children}
+        </ThemeProvider>
       </body>
     </html>
   );

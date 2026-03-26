@@ -1,4 +1,6 @@
+import { Badge } from "@/components/ui/badge";
 import { MODE_ICONS } from "@/lib/constants";
+import { cn } from "@/lib/utils";
 import type { SessionSummary } from "@/lib/types";
 
 interface SessionItemProps {
@@ -20,25 +22,20 @@ export function SessionItem({ session, isActive, onClick }: SessionItemProps) {
   return (
     <button
       onClick={onClick}
-      className="w-full rounded-lg px-3 py-2 text-left transition-colors cursor-pointer mb-0.5"
-      style={{ background: isActive ? "#161616" : "transparent" }}
+      className={cn(
+        "w-full rounded-md px-3 py-2 text-left transition-colors cursor-pointer mb-0.5",
+        isActive ? "bg-accent" : "hover:bg-accent/50"
+      )}
     >
       <div className="flex items-center gap-2">
-        {Icon && <Icon size={12} strokeWidth={1.5} style={{ color: "#555" }} />}
-        <span
-          className="truncate text-[13px]"
-          style={{ color: isActive ? "#ccc" : "#888", fontWeight: isActive ? 500 : 400 }}
-        >
+        {Icon && <Icon className="h-3 w-3 text-muted-foreground shrink-0" />}
+        <span className={cn("truncate text-xs", isActive ? "font-medium" : "text-muted-foreground")}>
           {session.task.slice(0, 30)}
         </span>
       </div>
       <div className="mt-1 pl-5 flex items-center gap-2">
-        <span className="font-mono text-[10px]" style={{ color: "#444" }}>
-          {timeAgo(session.created_at)}
-        </span>
-        <span className="font-mono text-[10px] uppercase" style={{ color: "#555" }}>
-          {session.status}
-        </span>
+        <span className="font-mono text-[10px] text-muted-foreground">{timeAgo(session.created_at)}</span>
+        <Badge variant="outline" className="text-[9px] px-1 py-0">{session.status}</Badge>
       </div>
     </button>
   );
