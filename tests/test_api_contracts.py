@@ -117,7 +117,7 @@ def test_live_messages_endpoint_reports_read_only_session():
     )
 
     assert response.status_code == 409
-    assert "not wired" in response.json()["detail"]
+    assert "Pause the run first" in response.json()["detail"]
 
 
 def test_run_accepts_configured_tool_for_claude():

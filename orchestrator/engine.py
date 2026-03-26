@@ -3,8 +3,13 @@
 import asyncio
 import time
 import traceback
+from dataclasses import dataclass, field
+from typing import Any, Optional
+
+from langgraph.checkpoint.memory import MemorySaver
 
 from orchestrator.models import store, AgentConfig
+from orchestrator.modes.base import make_message
 from orchestrator.modes.dictator import build_dictator_graph
 from orchestrator.modes.democracy import build_democracy_graph
 from orchestrator.modes.debate import build_debate_graph
@@ -68,33 +73,39 @@ AVAILABLE_MODES = {
 
 def _build_initial_state(mode: str, task: str, agents: list[AgentConfig], config: dict) -> dict:
     agents_dicts = [a.model_dump() for a in agents]
-    base = {"task": task, "agents": agents_dicts, "messages": [], "result": ""}
+    base = {
+        "task": task,
+        "agents": agents_dicts,
+        "messages": [],
+        "result": "",
+        "user_messages": [],
+    }
 
     if mode == "dictator":
         return {**base, "subtasks": [], "worker_results": [],
                 "iteration": 0, "max_iterations": config.get("max_iterations", 3)}
-    elif mode == "democracy":
+    if mode == "democracy":
         return {**base, "votes": [], "round": 0,
                 "max_rounds": config.get("max_rounds", 3), "majority_position": ""}
-    elif mode == "debate":
+    if mode == "debate":
         return {**base, "rounds": [], "current_round": 0,
                 "max_rounds": config.get("max_rounds", 3), "verdict": ""}
-    elif mode == "board":
+    if mode == "board":
         return {**base, "positions": [], "vote_round": 0,
                 "max_rounds": config.get("max_rounds", 3),
                 "consensus_reached": False, "decision": "", "worker_results": []}
-    elif mode == "map_reduce":
+    if mode == "map_reduce":
         return {**base, "chunks": [], "chunk_results": [], "synthesis": ""}
-    elif mode == "creator_critic":
+    if mode == "creator_critic":
         return {**base, "versions": [], "critiques": [],
                 "iteration": 0, "max_iterations": config.get("max_iterations", 3), "approved": False}
-    elif mode == "tournament":
+    if mode == "tournament":
         return {**base, "submissions": [], "bracket": [],
                 "current_round": 0, "winners": [], "champion": {}}
     raise ValueError(f"Unknown mode: {mode}")
 
 
-def _build_graph(mode: str):
+def _build_graph(mode: str, **compile_kwargs):
     builders = {
         "dictator": build_dictator_graph,
         "democracy": build_democracy_graph,
@@ -107,7 +118,161 @@ def _build_graph(mode: str):
     builder = builders.get(mode)
     if not builder:
         raise ValueError(f"Unknown mode: {mode}")
-    return builder()
+    return builder(**compile_kwargs)
+
+
+RUNNERS: dict[str, "SessionRunner"] = {}
+
+
+@dataclass
+class SessionRunner:
+    session_id: str
+    mode: str
+    graph: Any
+    graph_config: dict[str, Any]
+    initial_state: dict[str, Any]
+    started_at: float = field(default_factory=time.time)
+    resume_event: asyncio.Event = field(default_factory=asyncio.Event)
+    pause_requested: bool = False
+    cancel_requested: bool = False
+    checkpoint_index: int = 0
+    last_graph_message_count: int = 0
+
+    def __post_init__(self) -> None:
+        self.resume_event.set()
+
+    def request_pause(self) -> bool:
+        session = store.get(self.session_id)
+        if not session or session["status"] not in {"running", "pause_requested"}:
+            return False
+        self.pause_requested = True
+        store.update(self.session_id, status="pause_requested")
+        return True
+
+    def request_cancel(self) -> bool:
+        session = store.get(self.session_id)
+        if not session or session["status"] in {"completed", "failed", "cancelled"}:
+            return False
+        self.cancel_requested = True
+        if session["status"] == "paused":
+            self.resume_event.set()
+        store.update(self.session_id, status="cancel_requested")
+        return True
+
+    def inject_instruction(self, content: str) -> int:
+        text = content.strip()
+        if not text:
+            return 0
+        queued = store.queue_instruction(self.session_id, text)
+        store.append_messages(
+            self.session_id,
+            [make_message("user", text, "user_instruction")],
+        )
+        return queued
+
+    def resume(self, content: str = "") -> bool:
+        session = store.get(self.session_id)
+        if not session or session["status"] not in {"paused", "pause_requested"}:
+            return False
+        if content.strip():
+            self.inject_instruction(content)
+        self.resume_event.set()
+        store.update(self.session_id, status="running")
+        return True
+
+    async def _apply_pending_instructions(self) -> None:
+        instructions = store.pop_pending_instructions(self.session_id)
+        if not instructions:
+            return
+        snapshot = await self.graph.aget_state(self.graph_config)
+        current = list((snapshot.values or {}).get("user_messages", []))
+        await self.graph.aupdate_state(
+            self.graph_config,
+            {"user_messages": [*current, *instructions]},
+        )
+
+    async def _sync_from_snapshot(self, snapshot: Any) -> None:
+        values = snapshot.values or {}
+        graph_messages = list(values.get("messages", []))
+        new_messages = graph_messages[self.last_graph_message_count:]
+        if new_messages:
+            store.append_messages(self.session_id, new_messages)
+        self.last_graph_message_count = len(graph_messages)
+
+        self.checkpoint_index += 1
+        next_node = snapshot.next[0] if snapshot.next else None
+        checkpoint = {
+            "id": f"cp_{self.checkpoint_index}",
+            "timestamp": time.time(),
+            "next_node": next_node,
+            "status": "terminal" if not snapshot.next else "ready",
+            "result_preview": str(values.get("result", ""))[:160],
+        }
+        store.add_checkpoint(self.session_id, checkpoint)
+        store.update(
+            self.session_id,
+            result=values.get("result", ""),
+            elapsed_sec=round(time.time() - self.started_at, 2),
+            active_node=next_node,
+        )
+
+    async def run(self) -> None:
+        next_input: Any = self.initial_state
+        try:
+            while True:
+                await self.resume_event.wait()
+                if self.cancel_requested:
+                    store.update(
+                        self.session_id,
+                        status="cancelled",
+                        elapsed_sec=round(time.time() - self.started_at, 2),
+                        active_node=None,
+                    )
+                    return
+
+                await self._apply_pending_instructions()
+                await self.graph.ainvoke(next_input, self.graph_config)
+                next_input = None
+
+                snapshot = await self.graph.aget_state(self.graph_config)
+                await self._sync_from_snapshot(snapshot)
+
+                if not snapshot.next:
+                    values = snapshot.values or {}
+                    store.update(
+                        self.session_id,
+                        status="completed",
+                        result=values.get("result", ""),
+                        elapsed_sec=round(time.time() - self.started_at, 2),
+                        active_node=None,
+                    )
+                    return
+
+                if self.cancel_requested:
+                    store.update(
+                        self.session_id,
+                        status="cancelled",
+                        elapsed_sec=round(time.time() - self.started_at, 2),
+                        active_node=None,
+                    )
+                    return
+
+                if self.pause_requested:
+                    self.pause_requested = False
+                    self.resume_event.clear()
+                    store.update(self.session_id, status="paused")
+                else:
+                    store.update(self.session_id, status="running")
+        except Exception as exc:
+            store.update(
+                self.session_id,
+                status="failed",
+                result=f"Error: {type(exc).__name__}: {exc}\n{traceback.format_exc()}",
+                elapsed_sec=round(time.time() - self.started_at, 2),
+                active_node=None,
+            )
+        finally:
+            RUNNERS.pop(self.session_id, None)
 
 
 async def run(mode: str, task: str, agents: list[AgentConfig] | None = None, config: dict | None = None) -> str:
@@ -115,24 +280,44 @@ async def run(mode: str, task: str, agents: list[AgentConfig] | None = None, con
     agents = agents or DEFAULT_AGENTS.get(mode, [])
     session_id = store.create(mode, task, agents, config)
 
-    async def _execute():
-        t0 = time.time()
-        try:
-            graph = _build_graph(mode)
-            initial_state = _build_initial_state(mode, task, agents, config)
-            final_state = await graph.ainvoke(initial_state)
-            store.update(session_id,
-                status="completed",
-                result=final_state.get("result", ""),
-                elapsed_sec=round(time.time() - t0, 2),
-            )
-            store.append_messages(session_id, final_state.get("messages", []))
-        except Exception as e:
-            store.update(session_id,
-                status="failed",
-                result=f"Error: {type(e).__name__}: {e}\n{traceback.format_exc()}",
-                elapsed_sec=round(time.time() - t0, 2),
-            )
-
-    asyncio.create_task(_execute())
+    graph = _build_graph(
+        mode,
+        checkpointer=MemorySaver(),
+        interrupt_after="*",
+    )
+    graph_config = {"configurable": {"thread_id": session_id}}
+    initial_state = _build_initial_state(mode, task, agents, config)
+    runner = SessionRunner(
+        session_id=session_id,
+        mode=mode,
+        graph=graph,
+        graph_config=graph_config,
+        initial_state=initial_state,
+    )
+    RUNNERS[session_id] = runner
+    asyncio.create_task(runner.run())
     return session_id
+
+
+def get_runner(session_id: str) -> Optional[SessionRunner]:
+    return RUNNERS.get(session_id)
+
+
+def request_pause(session_id: str) -> bool:
+    runner = get_runner(session_id)
+    return runner.request_pause() if runner else False
+
+
+def request_resume(session_id: str, content: str = "") -> bool:
+    runner = get_runner(session_id)
+    return runner.resume(content) if runner else False
+
+
+def inject_instruction(session_id: str, content: str) -> int:
+    runner = get_runner(session_id)
+    return runner.inject_instruction(content) if runner else 0
+
+
+def request_cancel(session_id: str) -> bool:
+    runner = get_runner(session_id)
+    return runner.request_cancel() if runner else False

@@ -5,12 +5,21 @@ from fastapi import APIRouter, HTTPException
 from orchestrator.models import (
     MODE_AGENT_REQUIREMENTS,
     store,
+    ControlRequest,
     RunRequest,
     MessageRequest,
     normalize_agent_configs,
     validate_agents_for_mode,
 )
-from orchestrator.engine import run, AVAILABLE_MODES, DEFAULT_AGENTS
+from orchestrator.engine import (
+    inject_instruction,
+    request_cancel,
+    request_pause,
+    request_resume,
+    run,
+    AVAILABLE_MODES,
+    DEFAULT_AGENTS,
+)
 from orchestrator.tool_configs import tool_config_store, ToolConfig, TOOL_TYPES, PROMPT_TEMPLATES
 
 router = APIRouter(prefix="/orchestrate", tags=["orchestrate"])
@@ -57,11 +66,42 @@ async def ep_user_message(session_id: str, req: MessageRequest):
     session = store.get(session_id)
     if not session:
         raise HTTPException(404, f"Session not found: {session_id}")
-    raise HTTPException(
-        409,
-        "Live user messages are not wired into running graphs in this build. "
-        "Treat sessions as read-only until interactive resume support is implemented.",
-    )
+    if session["status"] not in {"paused", "pause_requested"}:
+        raise HTTPException(
+            409,
+            "Pause the run first, then send an instruction so it can be applied at the next checkpoint.",
+        )
+    queued = inject_instruction(session_id, req.content)
+    if not queued:
+        raise HTTPException(422, "Instruction content cannot be empty.")
+    return {"status": "queued", "pending_instructions": queued}
+
+
+@router.post("/session/{session_id}/control")
+async def ep_session_control(session_id: str, req: ControlRequest):
+    session = store.get(session_id)
+    if not session:
+        raise HTTPException(404, f"Session not found: {session_id}")
+
+    action = req.action.strip().lower()
+    if action == "pause":
+        if not request_pause(session_id):
+            raise HTTPException(409, f"Session '{session_id}' cannot be paused from status '{session['status']}'.")
+        return {"status": "pause_requested"}
+    if action == "resume":
+        if not request_resume(session_id, req.content):
+            raise HTTPException(409, f"Session '{session_id}' cannot be resumed from status '{session['status']}'.")
+        return {"status": "running"}
+    if action == "inject_instruction":
+        queued = inject_instruction(session_id, req.content)
+        if not queued:
+            raise HTTPException(422, "Instruction content cannot be empty.")
+        return {"status": "queued", "pending_instructions": queued}
+    if action == "cancel":
+        if not request_cancel(session_id):
+            raise HTTPException(409, f"Session '{session_id}' cannot be cancelled from status '{session['status']}'.")
+        return {"status": "cancel_requested"}
+    raise HTTPException(422, f"Unknown control action: {req.action}")
 
 
 @router.get("/modes")

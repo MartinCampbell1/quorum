@@ -7,7 +7,10 @@ export function useSession(id: string | null) {
     id ? `/orchestrate/session/${id}` : null,
     id ? () => getSession(id) : null,
     {
-      refreshInterval: (data) => (data?.status === "running" ? 2000 : 0),
+      refreshInterval: (data) =>
+        data?.status === "running" || data?.status === "pause_requested" || data?.status === "cancel_requested"
+          ? 1500
+          : 0,
     }
   );
   return { session: data ?? null, error, isLoading, refresh: mutate };

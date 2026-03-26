@@ -20,6 +20,10 @@ function timeAgo(ts: number): string {
 
 const STATUS_LABELS: Record<string, string> = {
   running: "работает",
+  pause_requested: "ставим на паузу",
+  paused: "на паузе",
+  cancel_requested: "останавливаем",
+  cancelled: "остановлено",
   completed: "готово",
   failed: "ошибка",
 };
@@ -72,6 +76,10 @@ export function HistoryView({ onSelectSession }: HistoryViewProps) {
                     className={cn(
                       "text-[10px] px-1.5 py-0 font-normal shrink-0",
                       s.status === "running" && "border-green-500/30 text-green-600",
+                      s.status === "pause_requested" && "border-amber-500/30 text-amber-600",
+                      s.status === "paused" && "border-orange-500/30 text-orange-600",
+                      s.status === "cancel_requested" && "border-amber-500/30 text-amber-600",
+                      s.status === "cancelled" && "border-zinc-500/30 text-zinc-600",
                       s.status === "completed" && "border-foreground/20 text-foreground/50",
                       s.status === "failed" && "border-red-500/30 text-red-600"
                     )}

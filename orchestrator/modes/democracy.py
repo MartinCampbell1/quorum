@@ -13,13 +13,14 @@ from typing import Annotated
 from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
 
-from orchestrator.modes.base import call_agent_cfg, make_message, strip_markdown_fence
+from orchestrator.modes.base import apply_user_instructions, call_agent_cfg, make_message, strip_markdown_fence
 
 
 class DemocracyState(TypedDict):
     task: str
     agents: list[dict]
     messages: Annotated[list[dict], operator.add]
+    user_messages: list[str]
     votes: list[dict]
     round: int
     max_rounds: int
@@ -71,7 +72,7 @@ def collect_votes(state: DemocracyState) -> dict:
             f"Respond with JSON: {{\"position\": \"your clear position\", \"reasoning\": \"why\"}}\n"
             f"Return ONLY valid JSON."
         )
-        response = call_agent_cfg(agent, prompt)
+        response = call_agent_cfg(agent, apply_user_instructions(state, prompt))
         try:
             vote = json.loads(strip_markdown_fence(response))
         except json.JSONDecodeError:
@@ -140,7 +141,7 @@ def force_decision(state: DemocracyState) -> dict:
     }
 
 
-def build_democracy_graph() -> StateGraph:
+def build_democracy_graph(**compile_kwargs) -> StateGraph:
     builder = StateGraph(DemocracyState)
     builder.add_node("collect_votes", collect_votes)
     builder.add_node("tally_votes", tally_votes)
@@ -151,4 +152,4 @@ def build_democracy_graph() -> StateGraph:
         END: END, "collect_votes": "collect_votes", "force_decision": "force_decision",
     })
     builder.add_edge("force_decision", END)
-    return builder.compile()
+    return builder.compile(**compile_kwargs)

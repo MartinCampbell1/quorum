@@ -7,13 +7,14 @@ from typing import Annotated
 from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
 
-from orchestrator.modes.base import call_agent_cfg, make_message, strip_markdown_fence
+from orchestrator.modes.base import apply_user_instructions, call_agent_cfg, make_message, strip_markdown_fence
 
 
 class TournamentState(TypedDict):
     task: str
     agents: list[dict]
     messages: Annotated[list[dict], operator.add]
+    user_messages: list[str]
     submissions: list[dict]
     bracket: list[list[dict]]
     current_round: int
@@ -27,7 +28,7 @@ def all_compete(state: TournamentState) -> dict:
     submissions = []
     messages = []
     for agent in competitors:
-        response = call_agent_cfg(agent, f"Solve this task. Give your best answer.\n\n{state['task']}")
+        response = call_agent_cfg(agent, apply_user_instructions(state, f"Solve this task. Give your best answer.\n\n{state['task']}"))
         sub = {"agent_id": agent["role"], "provider": agent["provider"], "solution": response}
         submissions.append(sub)
         messages.append(make_message(agent["role"], response, "submission"))
@@ -61,7 +62,7 @@ def judge_matches(state: TournamentState) -> dict:
             f"Which solution is better? Respond with JSON:\n"
             f'{{\"winner\": \"A\" or \"B\", \"reasoning\": \"why\"}}\nReturn ONLY valid JSON.'
         )
-        response = call_agent_cfg(judge, prompt)
+        response = call_agent_cfg(judge, apply_user_instructions(state, prompt))
         try:
             verdict = json.loads(strip_markdown_fence(response))
         except json.JSONDecodeError:
@@ -109,7 +110,7 @@ def crown_champion(state: TournamentState) -> dict:
     }
 
 
-def build_tournament_graph() -> StateGraph:
+def build_tournament_graph(**compile_kwargs) -> StateGraph:
     builder = StateGraph(TournamentState)
     builder.add_node("all_compete", all_compete)
     builder.add_node("setup_bracket", setup_bracket)
@@ -124,4 +125,4 @@ def build_tournament_graph() -> StateGraph:
     })
     builder.add_edge("next_round", "judge_matches")
     builder.add_edge("crown_champion", END)
-    return builder.compile()
+    return builder.compile(**compile_kwargs)
