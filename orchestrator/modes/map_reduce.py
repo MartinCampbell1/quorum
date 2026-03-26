@@ -8,13 +8,14 @@ from typing import Annotated
 from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
 
-from orchestrator.modes.base import call_agent_cfg, make_message, strip_markdown_fence
+from orchestrator.modes.base import apply_user_instructions, call_agent_cfg, make_message, strip_markdown_fence
 
 
 class MapReduceState(TypedDict):
     task: str
     agents: list[dict]
     messages: Annotated[list[dict], operator.add]
+    user_messages: list[str]
     chunks: list[str]
     chunk_results: list[dict]
     synthesis: str
@@ -41,7 +42,7 @@ def plan_chunks(state: MapReduceState) -> dict:
         f"Split this task into {num_workers} independent sub-tasks that can be worked on in parallel.\n\n"
         f"TASK: {state['task']}\n\nRespond with a JSON array of strings.\nReturn ONLY valid JSON."
     )
-    response = call_agent_cfg(planner, prompt)
+    response = call_agent_cfg(planner, apply_user_instructions(state, prompt))
     try:
         chunks = _normalize_chunks(json.loads(strip_markdown_fence(response)), state["task"])
     except json.JSONDecodeError:
@@ -62,7 +63,7 @@ async def process_chunks(state: MapReduceState) -> dict:
         response = await asyncio.to_thread(
             call_agent_cfg,
             worker,
-            f"Process this sub-task:\n{chunk}\n\nOverall context: {state['task']}",
+            apply_user_instructions(state, f"Process this sub-task:\n{chunk}\n\nOverall context: {state['task']}"),
         )
         return (
             {"chunk": chunk, "worker": worker["role"], "result": response},
@@ -96,11 +97,11 @@ def synthesize(state: MapReduceState) -> dict:
         f"Synthesize these partial results into one comprehensive answer.\n\n"
         f"ORIGINAL TASK: {state['task']}\n\nPARTIAL RESULTS:\n{chunks_text}\n\nProduce a unified, coherent final answer."
     )
-    response = call_agent_cfg(synth, prompt)
+    response = call_agent_cfg(synth, apply_user_instructions(state, prompt))
     return {"synthesis": response, "result": response, "messages": [make_message(synth["role"], response, "synthesis")]}
 
 
-def build_map_reduce_graph() -> StateGraph:
+def build_map_reduce_graph(**compile_kwargs) -> StateGraph:
     builder = StateGraph(MapReduceState)
     builder.add_node("plan_chunks", plan_chunks)
     builder.add_node("process_chunks", process_chunks)
@@ -109,4 +110,4 @@ def build_map_reduce_graph() -> StateGraph:
     builder.add_edge("plan_chunks", "process_chunks")
     builder.add_edge("process_chunks", "synthesize")
     builder.add_edge("synthesize", END)
-    return builder.compile()
+    return builder.compile(**compile_kwargs)

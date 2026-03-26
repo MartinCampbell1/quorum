@@ -76,10 +76,21 @@ export interface Session {
   agents: AgentConfig[];
   messages: Message[];
   result: string | null;
-  status: "running" | "completed" | "failed";
+  status: "running" | "pause_requested" | "paused" | "cancel_requested" | "cancelled" | "completed" | "failed";
   config: Record<string, unknown>;
+  capabilities?: Record<string, boolean>;
   created_at: number;
   elapsed_sec: number | null;
+  current_checkpoint_id?: string | null;
+  checkpoints?: Array<{
+    id: string;
+    timestamp: number;
+    next_node?: string | null;
+    status: string;
+    result_preview?: string;
+  }>;
+  pending_instructions?: number;
+  active_node?: string | null;
 }
 
 export interface SessionSummary {

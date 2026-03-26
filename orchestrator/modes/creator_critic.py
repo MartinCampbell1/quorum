@@ -6,13 +6,14 @@ from typing import Annotated
 from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
 
-from orchestrator.modes.base import call_agent_cfg, make_message
+from orchestrator.modes.base import apply_user_instructions, call_agent_cfg, make_message
 
 
 class CreatorCriticState(TypedDict):
     task: str
     agents: list[dict]
     messages: Annotated[list[dict], operator.add]
+    user_messages: list[str]
     versions: list[str]
     critiques: list[str]
     iteration: int
@@ -33,7 +34,7 @@ def creator_produces(state: CreatorCriticState) -> dict:
             f"ORIGINAL TASK: {state['task']}\n\nYOUR PREVIOUS VERSION:\n{last_version}\n\n"
             f"CRITIC'S FEEDBACK:\n{last_critique}\n\nProduce an improved version addressing all feedback."
         )
-    response = call_agent_cfg(creator, prompt)
+    response = call_agent_cfg(creator, apply_user_instructions(state, prompt))
     return {"versions": [*state["versions"], response], "messages": [make_message(creator["role"], response, f"version_{state['iteration'] + 1}")]}
 
 
@@ -45,7 +46,7 @@ def critic_evaluates(state: CreatorCriticState) -> dict:
         f"WORK (version {state['iteration'] + 1}):\n{latest_version}\n\n"
         f"Rate: APPROVED (if good enough) or NEEDS_WORK (with specific feedback).\nIf NEEDS_WORK, list exactly what needs to change."
     )
-    response = call_agent_cfg(critic, prompt)
+    response = call_agent_cfg(critic, apply_user_instructions(state, prompt))
     approved = "APPROVED" in response.upper() and "NEEDS_WORK" not in response.upper()
     return {
         "critiques": [*state["critiques"], response], "iteration": state["iteration"] + 1,
@@ -69,7 +70,7 @@ def final_version(state: CreatorCriticState) -> dict:
     }
 
 
-def build_creator_critic_graph() -> StateGraph:
+def build_creator_critic_graph(**compile_kwargs) -> StateGraph:
     builder = StateGraph(CreatorCriticState)
     builder.add_node("creator_produces", creator_produces)
     builder.add_node("critic_evaluates", critic_evaluates)
@@ -80,4 +81,4 @@ def build_creator_critic_graph() -> StateGraph:
         "creator_produces": "creator_produces", "final_version": "final_version", END: END,
     })
     builder.add_edge("final_version", END)
-    return builder.compile()
+    return builder.compile(**compile_kwargs)

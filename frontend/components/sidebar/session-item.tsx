@@ -11,6 +11,10 @@ interface SessionItemProps {
 
 const STATUS_LABELS: Record<string, string> = {
   running: "работает",
+  pause_requested: "ставим на паузу",
+  paused: "на паузе",
+  cancel_requested: "останавливаем",
+  cancelled: "остановлено",
   completed: "готово",
   failed: "ошибка",
 };
@@ -59,6 +63,10 @@ export function SessionItem({ session, isActive, onClick }: SessionItemProps) {
           className={cn(
             "text-[10px] px-1.5 py-0 font-normal",
             session.status === "running" && "border-green-500/30 text-green-600 dark:text-green-400",
+            session.status === "pause_requested" && "border-amber-500/30 text-amber-600 dark:text-amber-400",
+            session.status === "paused" && "border-orange-500/30 text-orange-600 dark:text-orange-400",
+            session.status === "cancel_requested" && "border-amber-500/30 text-amber-600 dark:text-amber-400",
+            session.status === "cancelled" && "border-zinc-500/30 text-zinc-600 dark:text-zinc-400",
             session.status === "failed" && "border-red-500/30 text-red-600 dark:text-red-400"
           )}
         >

@@ -40,8 +40,10 @@ AVAILABLE_TOOLS: list[ToolDefinition] = [
 TOOLS_BY_KEY: dict[str, ToolDefinition] = {t.key: t for t in AVAILABLE_TOOLS}
 SUPPORTED_PROVIDERS = {"claude", "gemini", "codex", "minimax"}
 SESSION_CAPABILITIES = {
-    "live_messages": False,
+    "live_messages": True,
     "custom_tools": False,
+    "pause_resume": True,
+    "checkpoints": True,
 }
 
 MODE_AGENT_REQUIREMENTS: dict[str, dict[str, object]] = {
@@ -84,6 +86,12 @@ class MessageRequest(BaseModel):
     content: str
 
 
+class ControlRequest(BaseModel):
+    """POST /orchestrate/session/{id}/control request body."""
+    action: str
+    content: str = ""
+
+
 class SessionResponse(BaseModel):
     """GET /orchestrate/session/{id} response."""
     id: str
@@ -97,6 +105,10 @@ class SessionResponse(BaseModel):
     capabilities: dict = Field(default_factory=lambda: dict(SESSION_CAPABILITIES))
     created_at: float
     elapsed_sec: Optional[float] = None
+    current_checkpoint_id: Optional[str] = None
+    checkpoints: list[dict] = Field(default_factory=list)
+    pending_instructions: int = 0
+    active_node: Optional[str] = None
 
 
 # ---- LangGraph State (TypedDict for graph nodes) ----
@@ -142,6 +154,11 @@ class SessionStore:
                 "capabilities": dict(SESSION_CAPABILITIES),
                 "created_at": time.time(),
                 "elapsed_sec": None,
+                "current_checkpoint_id": None,
+                "checkpoints": [],
+                "pending_instruction_queue": [],
+                "pending_instructions": 0,
+                "active_node": None,
             }
             if len(self._sessions) > self._max:
                 oldest = min(self._sessions, key=lambda k: self._sessions[k]["created_at"])
@@ -151,7 +168,11 @@ class SessionStore:
     def get(self, sid: str) -> Optional[dict]:
         with self._lock:
             session = self._sessions.get(sid)
-            return copy.deepcopy(session) if session else None
+            if not session:
+                return None
+            payload = copy.deepcopy(session)
+            payload.pop("pending_instruction_queue", None)
+            return payload
 
     def update(self, sid: str, **kwargs):
         with self._lock:
@@ -162,6 +183,30 @@ class SessionStore:
         with self._lock:
             if sid in self._sessions:
                 self._sessions[sid]["messages"].extend(msgs)
+
+    def add_checkpoint(self, sid: str, checkpoint: dict):
+        with self._lock:
+            if sid in self._sessions:
+                self._sessions[sid]["checkpoints"].append(copy.deepcopy(checkpoint))
+                self._sessions[sid]["current_checkpoint_id"] = checkpoint.get("id")
+
+    def queue_instruction(self, sid: str, content: str) -> int:
+        with self._lock:
+            if sid not in self._sessions:
+                return 0
+            queue = self._sessions[sid]["pending_instruction_queue"]
+            queue.append(content)
+            self._sessions[sid]["pending_instructions"] = len(queue)
+            return len(queue)
+
+    def pop_pending_instructions(self, sid: str) -> list[str]:
+        with self._lock:
+            if sid not in self._sessions:
+                return []
+            queue = list(self._sessions[sid]["pending_instruction_queue"])
+            self._sessions[sid]["pending_instruction_queue"] = []
+            self._sessions[sid]["pending_instructions"] = 0
+            return queue
 
     def list_recent(self, limit: int = 50) -> list[dict]:
         with self._lock:

@@ -8,13 +8,14 @@ from typing import Annotated
 from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
 
-from orchestrator.modes.base import call_agent_cfg, make_message, strip_markdown_fence
+from orchestrator.modes.base import apply_user_instructions, call_agent_cfg, make_message, strip_markdown_fence
 
 
 class BoardState(TypedDict):
     task: str
     agents: list[dict]
     messages: Annotated[list[dict], operator.add]
+    user_messages: list[str]
     positions: list[dict]
     vote_round: int
     max_rounds: int
@@ -67,7 +68,7 @@ def directors_analyze(state: BoardState) -> dict:
             f"Respond with JSON: {{\"position\": \"your stance\", \"reasoning\": \"why\", "
             f"\"action_items\": [\"what to delegate to workers\"]}}\nReturn ONLY valid JSON."
         )
-        response = call_agent_cfg(d, prompt)
+        response = call_agent_cfg(d, apply_user_instructions(state, prompt))
         try:
             pos = json.loads(strip_markdown_fence(response))
         except json.JSONDecodeError:
@@ -153,7 +154,10 @@ def delegate_to_workers(state: BoardState) -> dict:
     for worker in workers:
         response = call_agent_cfg(
             worker,
-            f"The board decided:\n{state['decision']}\n\nExecute your part.\nOriginal task: {state['task']}",
+            apply_user_instructions(
+                state,
+                f"The board decided:\n{state['decision']}\n\nExecute your part.\nOriginal task: {state['task']}",
+            ),
         )
         results.append({"worker": worker["role"], "result": response})
         messages.append(make_message(worker["role"], response, "worker_execution"))
@@ -169,7 +173,7 @@ def finalize(state: BoardState) -> dict:
     return {"result": result, "messages": [make_message("system", "Session complete", "done")]}
 
 
-def build_board_graph() -> StateGraph:
+def build_board_graph(**compile_kwargs) -> StateGraph:
     builder = StateGraph(BoardState)
     builder.add_node("directors_analyze", directors_analyze)
     builder.add_node("check_consensus", check_consensus)
@@ -185,4 +189,4 @@ def build_board_graph() -> StateGraph:
     builder.add_edge("chairman_decides", "delegate_to_workers")
     builder.add_edge("delegate_to_workers", "finalize")
     builder.add_edge("finalize", END)
-    return builder.compile()
+    return builder.compile(**compile_kwargs)

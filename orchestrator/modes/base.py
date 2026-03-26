@@ -63,6 +63,20 @@ def call_agent_cfg(agent: dict, prompt: str) -> str:
     )
 
 
+def apply_user_instructions(state: dict, prompt: str) -> str:
+    """Append queued user instructions so the next node can react to them."""
+    user_messages = [msg.strip() for msg in state.get("user_messages", []) if str(msg).strip()]
+    if not user_messages:
+        return prompt
+    latest = user_messages[-3:]
+    instructions = "\n".join(f"- {item}" for item in latest)
+    return (
+        f"{prompt}\n\n"
+        f"ADDITIONAL USER INSTRUCTIONS:\n{instructions}\n\n"
+        f"Treat these as higher-priority guidance for this step."
+    )
+
+
 def strip_markdown_fence(text: str) -> str:
     """Remove markdown code fences (```json ... ```) from text."""
     stripped = re.sub(r"^```(?:\w+)?\s*\n?", "", text.strip())

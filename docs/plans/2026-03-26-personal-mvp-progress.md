@@ -23,6 +23,16 @@ Branch: `codex/personal-mvp-refine`
 - Fixed the Settings schema mismatch (`field.key` vs `field.name`) and added proper `select`/`textarea` rendering in the UI.
 - Fixed frontend API typing for settings/tool payloads.
 - Fixed local frontend/backend integration for dev/preview ports by expanding gateway CORS defaults used in this workflow.
+- Added checkpoint-safe interactive control for orchestration runs:
+  - LangGraph runs now execute one node per checkpoint using `MemorySaver` + `interrupt_after="*"`
+  - backend supports `pause`, `resume`, `inject_instruction`, and `cancel`
+  - queued instructions are injected into graph state at the next safe checkpoint
+  - sessions now expose `current_checkpoint_id`, `checkpoints`, `pending_instructions`, and `active_node`
+- Wired pause/resume UI into the chat view:
+  - pause/cancel actions in the header
+  - paused-state instruction composer in the bottom bar
+  - session/history views now reflect paused and cancelling states
+- Added regression coverage for interactive runtime control in `tests/test_interactive_runtime.py`
 
 ## UX pass
 
@@ -42,7 +52,8 @@ Branch: `codex/personal-mvp-refine`
 ## Validation
 
 - `python3 -m py_compile gateway.py orchestrator/api.py orchestrator/models.py orchestrator/tool_configs.py mcp_servers/configured_tools_server.py`
-- `python3 -m pytest tests/test_api_contracts.py tests/test_modes.py -q`
+- `python3 -m py_compile orchestrator/engine.py orchestrator/api.py orchestrator/models.py orchestrator/modes/*.py`
+- `python3 -m pytest tests/test_api_contracts.py tests/test_modes.py tests/test_interactive_runtime.py -q`
 - `cd frontend && npx tsc --noEmit`
 - `cd frontend && npm run build`
 
@@ -58,7 +69,7 @@ All of the above passed during this pass.
 
 ## Still not done
 
-- Interactive `pause / inject instruction / resume from checkpoint`
+- Restart from checkpoint / branch-from-checkpoint
 - Event-stream timeline / SSE session controls
 - Full scenario layer on top of raw modes
 - Real per-run MCP injection for `Gemini` and `Codex`
@@ -68,4 +79,4 @@ All of the above passed during this pass.
 
 - Do not assume `frontend/components/wizard/step-task.tsx`, `frontend/package.json`, `frontend/package-lock.json`, `.omc/`, or `.next/` belong to this pass. They were already dirty in the worktree.
 - The highest-value next backend slice is provider-aware custom tool support beyond `Claude`.
-- The highest-value next product slice is interactive session control (`pause/resume/checkpoints`).
+- The highest-value next product slice is `restart from checkpoint` + timeline/event-stream UX on top of the new runner.

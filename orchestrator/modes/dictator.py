@@ -8,13 +8,14 @@ from typing import Annotated
 from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
 
-from orchestrator.modes.base import call_agent, call_agent_cfg, make_message, strip_markdown_fence
+from orchestrator.modes.base import apply_user_instructions, call_agent, call_agent_cfg, make_message, strip_markdown_fence
 
 
 class DictatorState(TypedDict):
     task: str
     agents: list[dict]
     messages: Annotated[list[dict], operator.add]
+    user_messages: list[str]
     subtasks: list[dict]
     worker_results: list[dict]
     iteration: int
@@ -37,7 +38,7 @@ def director_plan(state: DictatorState) -> dict:
         f"Return ONLY valid JSON, no markdown."
     )
 
-    response = call_agent_cfg(director, prompt)
+    response = call_agent_cfg(director, apply_user_instructions(state, prompt))
 
     try:
         subtasks = json.loads(strip_markdown_fence(response))
@@ -66,7 +67,7 @@ def workers_execute(state: DictatorState) -> dict:
             f"Context — overall task: {state['task']}"
         )
 
-        response = call_agent_cfg(worker, prompt)
+        response = call_agent_cfg(worker, apply_user_instructions(state, prompt))
         results.append({"subtask": st["description"], "worker": worker["role"], "result": response})
         messages.append(make_message(worker["role"], response, "executing"))
 
@@ -90,7 +91,7 @@ def director_synthesize(state: DictatorState) -> dict:
         f"If results are insufficient, say NEEDS_MORE_WORK and explain what's missing."
     )
 
-    response = call_agent_cfg(director, prompt)
+    response = call_agent_cfg(director, apply_user_instructions(state, prompt))
 
     return {
         "result": response,
@@ -106,7 +107,7 @@ def route_after_synthesis(state: DictatorState) -> str:
     return END
 
 
-def build_dictator_graph() -> StateGraph:
+def build_dictator_graph(**compile_kwargs) -> StateGraph:
     builder = StateGraph(DictatorState)
 
     builder.add_node("director_plan", director_plan)
@@ -121,4 +122,4 @@ def build_dictator_graph() -> StateGraph:
         END: END,
     })
 
-    return builder.compile()
+    return builder.compile(**compile_kwargs)

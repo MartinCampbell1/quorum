@@ -74,12 +74,24 @@ export async function runSession(
 }
 
 export async function sendMessage(
-  _sessionId: string,
-  _content: string
+  sessionId: string,
+  content: string
 ): Promise<void> {
-  void _sessionId;
-  void _content;
-  throw new Error("Live user messages are not supported in this build.");
+  await request(`/orchestrate/session/${sessionId}/message`, {
+    method: "POST",
+    body: JSON.stringify({ content }),
+  });
+}
+
+export async function controlSession(
+  sessionId: string,
+  action: "pause" | "resume" | "inject_instruction" | "cancel",
+  content?: string
+): Promise<{ status: string; pending_instructions?: number }> {
+  return request(`/orchestrate/session/${sessionId}/control`, {
+    method: "POST",
+    body: JSON.stringify({ action, content: content ?? "" }),
+  });
 }
 
 // Settings API

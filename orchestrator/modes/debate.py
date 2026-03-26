@@ -7,13 +7,14 @@ from typing import Annotated
 from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
 
-from orchestrator.modes.base import call_agent_cfg, make_message
+from orchestrator.modes.base import apply_user_instructions, call_agent_cfg, make_message
 
 
 class DebateState(TypedDict):
     task: str
     agents: list[dict]
     messages: Annotated[list[dict], operator.add]
+    user_messages: list[str]
     rounds: list[dict]
     current_round: int
     max_rounds: int
@@ -36,7 +37,7 @@ def proponent_argues(state: DebateState) -> dict:
         f"Make your strongest argument. Be specific and evidence-based. "
         f"If this is round 2+, rebut the opponent's previous points."
     )
-    response = call_agent_cfg(pro, prompt)
+    response = call_agent_cfg(pro, apply_user_instructions(state, prompt))
     return {
         "messages": [make_message(pro["role"], response, f"round_{rnd + 1}_pro")],
         "rounds": [*state["rounds"], {"round": rnd + 1, "pro_arg": response, "con_arg": ""}],
@@ -60,7 +61,7 @@ def opponent_argues(state: DebateState) -> dict:
         f"Proponent's argument this round:\n{pro_arg}\n\n"
         f"Counter-argue. Be specific. Attack weak points."
     )
-    response = call_agent_cfg(opp, prompt)
+    response = call_agent_cfg(opp, apply_user_instructions(state, prompt))
     updated_rounds = list(state["rounds"])
     updated_rounds[-1] = {**updated_rounds[-1], "con_arg": response}
     return {
@@ -83,7 +84,7 @@ def judge_decides(state: DebateState) -> dict:
         f"2. The strongest argument from each side\n3. Your final recommendation\n\n"
         f"If you need one more round of debate, say NEED_MORE_ROUNDS."
     )
-    response = call_agent_cfg(judge, prompt)
+    response = call_agent_cfg(judge, apply_user_instructions(state, prompt))
     return {
         "verdict": response, "result": response,
         "messages": [make_message(judge["role"], response, "verdict")],
@@ -96,7 +97,7 @@ def route_after_judge(state: DebateState) -> str:
     return END
 
 
-def build_debate_graph() -> StateGraph:
+def build_debate_graph(**compile_kwargs) -> StateGraph:
     builder = StateGraph(DebateState)
     builder.add_node("proponent_argues", proponent_argues)
     builder.add_node("opponent_argues", opponent_argues)
@@ -107,4 +108,4 @@ def build_debate_graph() -> StateGraph:
     builder.add_conditional_edges("judge_decides", route_after_judge, {
         "proponent_argues": "proponent_argues", END: END,
     })
-    return builder.compile()
+    return builder.compile(**compile_kwargs)
