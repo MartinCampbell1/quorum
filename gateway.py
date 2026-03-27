@@ -413,9 +413,70 @@ def build_bridge_payload(provider: str, tool_keys: list[str]) -> str | None:
     return _write_temp_json({"tools": payload_tools}, "configured_tools_")
 
 
-def _bootstrap_cache_key(provider: str, env: dict, server_name: str) -> tuple[str, str, str]:
+def _registered_server_definition(provider: str, server_name: str) -> dict | None:
+    definition = REGISTERED_MCP_SERVERS.get(server_name)
+    if definition:
+        return definition
+
+    configured = tool_config_store.get(server_name)
+    if not configured or not configured.enabled or configured.tool_type != "mcp_server":
+        return None
+    if capability_for_tool(provider, server_name) != "native":
+        return None
+
+    transport = str(configured.config.get("transport", "stdio") or "stdio").strip().lower()
+    if transport == "http":
+        url = str(configured.config.get("url", "") or "").strip()
+        if not url:
+            return None
+        headers: dict[str, str] = {}
+        raw_headers = str(configured.config.get("headers", "") or "").strip()
+        if raw_headers:
+            try:
+                parsed_headers = json.loads(raw_headers)
+            except json.JSONDecodeError:
+                return None
+            if not isinstance(parsed_headers, dict):
+                return None
+            headers = {str(key): str(value) for key, value in parsed_headers.items()}
+        return {
+            "transport": "http",
+            "url": url,
+            "headers": headers,
+        }
+
+    command = str(configured.config.get("command", "") or "").strip()
+    if not command:
+        return None
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return None
+    if not parts:
+        return None
+    extra_args = shlex.split(str(configured.config.get("args", "") or "").strip()) if str(configured.config.get("args", "") or "").strip() else []
+    env_vars: dict[str, str] = {}
+    raw_env = str(configured.config.get("env", "") or "").strip()
+    if raw_env:
+        try:
+            parsed_env = json.loads(raw_env)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(parsed_env, dict):
+            return None
+        env_vars = {str(key): str(value) for key, value in parsed_env.items()}
+    return {
+        "transport": "stdio",
+        "command": parts[0],
+        "args": [*parts[1:], *extra_args],
+        "env": env_vars,
+    }
+
+
+def _bootstrap_cache_key(provider: str, env: dict, server_name: str, definition: dict) -> tuple[str, str, str]:
     profile_root = env.get("CODEX_HOME") or env.get("HOME") or REAL_HOME
-    return provider, profile_root, server_name
+    fingerprint = json.dumps(definition, sort_keys=True, ensure_ascii=True)
+    return provider, profile_root, f"{server_name}:{fingerprint}"
 
 
 async def ensure_registered_mcp_servers(
@@ -428,34 +489,46 @@ async def ensure_registered_mcp_servers(
         return
 
     for server_name in server_names:
-        definition = REGISTERED_MCP_SERVERS.get(server_name)
+        definition = _registered_server_definition(provider, server_name)
         if not definition:
             continue
-        cache_key = _bootstrap_cache_key(provider, env, server_name)
+        cache_key = _bootstrap_cache_key(provider, env, server_name, definition)
         if cache_key in BOOTSTRAPPED_MCP_SERVERS:
             continue
 
         if provider == "gemini":
-            cmd = [
-                GEMINI_BIN,
-                "mcp",
-                "add",
-                "--scope",
-                "user",
-                server_name,
-                definition["command"],
-                *definition["args"],
-            ]
+            transport = definition.get("transport", "stdio")
+            if server_name not in REGISTERED_MCP_SERVERS:
+                await run_cli(
+                    [GEMINI_BIN, "mcp", "remove", "--scope", "user", server_name],
+                    DEFAULT_WORKDIR,
+                    20,
+                    env,
+                )
+            cmd = [GEMINI_BIN, "mcp", "add", "--scope", "user", "--transport", transport]
+            if transport == "http":
+                cmd.extend([server_name, definition["url"]])
+                for key, value in definition.get("headers", {}).items():
+                    cmd.extend(["--header", f"{key}: {value}"])
+            else:
+                cmd.extend([server_name, definition["command"], *definition.get("args", [])])
+                for key, value in definition.get("env", {}).items():
+                    cmd.extend(["--env", f"{key}={value}"])
         else:
-            cmd = [
-                CODEX_BIN,
-                "mcp",
-                "add",
-                server_name,
-                "--",
-                definition["command"],
-                *definition["args"],
-            ]
+            if definition.get("transport") == "http":
+                cmd = [
+                    CODEX_BIN,
+                    "mcp",
+                    "add",
+                    server_name,
+                    "--url",
+                    definition["url"],
+                ]
+            else:
+                cmd = [CODEX_BIN, "mcp", "add"]
+                for key, value in definition.get("env", {}).items():
+                    cmd.extend(["--env", f"{key}={value}"])
+                cmd.extend([server_name, "--", definition["command"], *definition.get("args", [])])
 
         stdout, stderr, rc = await run_cli(cmd, DEFAULT_WORKDIR, 20, env)
         combined = f"{stdout}\n{stderr}".lower()

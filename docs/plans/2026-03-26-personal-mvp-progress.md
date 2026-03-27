@@ -41,6 +41,7 @@ Branch: `codex/personal-mvp-refine`
     - built-in `shell_exec`
     - built-in `http_request`
     - plus the existing configured search/API/SSH/Neo4j tools
+    - plus bridged proxying for external `mcp_server` tool profiles
 - Added workspace attachment to the actual CLI runtime:
   - `Claude` uses `--add-dir`
   - `Gemini` uses `--include-directories`
@@ -138,6 +139,16 @@ Branch: `codex/personal-mvp-refine`
   - restyled the left rail, sessions column, top app bar, scenario grid, and execution trace toward the approved white minimal layout
   - upgraded `MCP Server` settings to support both `stdio` and `http` transports in the model and gateway runtime
   - MCP forms now expose transport-aware fields and a clean handshake log panel matching the approved reference
+- Added screenshot regression baselines for the three approved premium screens using Playwright with mocked API data:
+  - mode selection
+  - connect MCP server
+  - session monitor
+- Added richer runtime event coverage in the engine:
+  - `vote_recorded`
+  - `round_started`
+  - `round_completed`
+  - `chunk_completed`
+  - current live monitor trace now reflects board/democracy/debate/map-reduce progress more explicitly instead of only checkpoints and messages
 
 ## Validation
 
@@ -145,9 +156,11 @@ Branch: `codex/personal-mvp-refine`
 - `python3 -m py_compile orchestrator/engine.py orchestrator/api.py orchestrator/models.py orchestrator/modes/*.py`
 - `python3 -m py_compile orchestrator/engine.py orchestrator/api.py orchestrator/models.py orchestrator/scenarios.py orchestrator/modes/*.py`
 - `python3 -m pytest tests/test_api_contracts.py tests/test_modes.py tests/test_interactive_runtime.py -q`
+- `python3 -m pytest -q`
 - `cd frontend && npx tsc --noEmit`
 - `cd frontend && npm run build`
 - `cd frontend && npx next build --webpack`
+- `cd frontend && npx playwright test e2e/premium-ui.spec.ts`
 
 All of the above passed during this pass.
 
@@ -156,20 +169,22 @@ Note:
 
 ## Important current limitation
 
-- External arbitrary `mcp_server` profiles are still `Claude native` only.
-- `Gemini` and `Codex` now have a truthful bridge path for configured/custom tools, but not every external MCP server can be bridged safely.
+- External arbitrary `mcp_server` profiles are now:
+  - `Claude`: native
+  - `Gemini`: native
+  - `Codex`: bridged through `configured-tools`
 - Tool-call-level event tracing (`tool_call_started` / `tool_call_finished`) is still not emitted from the runtime yet.
+- `Codex` does not yet have a native per-run restriction model for arbitrary external MCP servers; the honest fallback is still the bridge path.
 
 ## Still not done
 
-- Full screenshot regression automation / locked baselines
-- True “any MCP server on any provider” parity
 - Tool-call event streaming and deeper execution trace semantics
 - A more explicit topology canvas for the session monitor right/center split
 - Workspace preset editing UX beyond create/delete
+- Optional native external MCP path for `Codex` where bearer-token HTTP or stdio-only setups make sense
 
 ## Notes for the next agent
 
 - Do not assume `frontend/package.json`, `frontend/package-lock.json`, `.omc/`, or `.next/` belong to this pass. They were already dirty in the worktree.
-- The highest-value next backend slice is provider-aware custom tool support beyond `Claude`.
-- The highest-value next product slice is richer scenario-specific visualization and a checkpoint picker in the timeline.
+- The highest-value next backend slice is tool-call event tracing so the premium monitor can show real tool execution, not only mode-level progress.
+- The highest-value next product slice is a denser topology canvas and workspace preset editing.

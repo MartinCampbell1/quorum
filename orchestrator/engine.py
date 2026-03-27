@@ -168,6 +168,11 @@ class SessionRunner:
     checkpoint_index: int = 0
     last_graph_message_count: int = 0
     resume_from_checkpoint_id: str | None = None
+    last_vote_count: int = 0
+    last_board_position_count: int = 0
+    last_chunk_result_count: int = 0
+    last_round_started: int = 0
+    last_round_completed: int = 0
 
     def __post_init__(self) -> None:
         self.resume_event.set()
@@ -272,6 +277,7 @@ class SessionRunner:
                     phase=message.get("phase"),
                 )
         self.last_graph_message_count = len(graph_messages)
+        self._emit_mode_progress_events(values, snapshot.next[0] if snapshot.next else None)
 
         self.checkpoint_index += 1
         next_node = snapshot.next[0] if snapshot.next else None
@@ -301,6 +307,103 @@ class SessionRunner:
             elapsed_sec=round(time.time() - self.started_at, 2),
             active_node=next_node,
         )
+
+    def _emit_mode_progress_events(self, values: dict[str, Any], next_node: str | None) -> None:
+        if self.mode == "democracy":
+            votes = list(values.get("votes", []) or [])
+            for vote in votes[self.last_vote_count:]:
+                self._emit_event(
+                    "vote_recorded",
+                    "Голос зафиксирован",
+                    str(vote.get("position", "")).strip(),
+                    agent_id=str(vote.get("agent_id", "")).strip() or None,
+                    round=values.get("round", 0),
+                )
+            self.last_vote_count = len(votes)
+
+            round_number = int(values.get("round", 0) or 0)
+            if round_number > self.last_round_started and next_node == "tally_votes":
+                self.last_round_started = round_number
+                self._emit_event(
+                    "round_started",
+                    f"Раунд {round_number}",
+                    "Голоса собраны, начинается подсчёт.",
+                    round=round_number,
+                )
+            if round_number > self.last_round_completed and next_node in {None, "collect_votes", "force_decision"}:
+                self.last_round_completed = round_number
+                detail = str(values.get("majority_position") or values.get("result") or "Подсчёт завершён.")
+                self._emit_event(
+                    "round_completed",
+                    f"Раунд {round_number} завершён",
+                    detail[:240],
+                    round=round_number,
+                )
+            return
+
+        if self.mode == "board":
+            positions = list(values.get("positions", []) or [])
+            for position in positions[self.last_board_position_count:]:
+                self._emit_event(
+                    "vote_recorded",
+                    "Позиция директора",
+                    str(position.get("position", "")).strip(),
+                    agent_id=str(position.get("director", "")).strip() or None,
+                    round=values.get("vote_round", 0),
+                )
+            self.last_board_position_count = len(positions)
+
+            round_number = int(values.get("vote_round", 0) or 0)
+            if round_number > self.last_round_started and next_node == "check_consensus":
+                self.last_round_started = round_number
+                self._emit_event(
+                    "round_started",
+                    f"Board round {round_number}",
+                    "Собраны позиции директоров, начинается проверка консенсуса.",
+                    round=round_number,
+                )
+            if round_number > self.last_round_completed and next_node in {None, "directors_analyze", "chairman_decides", "delegate_to_workers", "finalize"}:
+                self.last_round_completed = round_number
+                detail = str(values.get("decision") or values.get("result") or "Раунд совета завершён.")
+                self._emit_event(
+                    "round_completed",
+                    f"Board round {round_number} завершён",
+                    detail[:240],
+                    round=round_number,
+                )
+            return
+
+        if self.mode == "debate":
+            round_number = int(values.get("current_round", 0) or 0)
+            if round_number > self.last_round_started and next_node == "judge_decides":
+                self.last_round_started = round_number
+                self._emit_event(
+                    "round_started",
+                    f"Debate round {round_number}",
+                    "Аргументы обеих сторон собраны, слово за судьёй.",
+                    round=round_number,
+                )
+            if round_number > self.last_round_completed and next_node in {None, "proponent_argues"}:
+                self.last_round_completed = round_number
+                detail = str(values.get("verdict") or values.get("result") or "Раунд дебатов завершён.")
+                self._emit_event(
+                    "round_completed",
+                    f"Debate round {round_number} завершён",
+                    detail[:240],
+                    round=round_number,
+                )
+            return
+
+        if self.mode == "map_reduce":
+            chunk_results = list(values.get("chunk_results", []) or [])
+            for chunk_result in chunk_results[self.last_chunk_result_count:]:
+                self._emit_event(
+                    "chunk_completed",
+                    "Chunk processed",
+                    str(chunk_result.get("chunk", "")).strip()[:240],
+                    agent_id=str(chunk_result.get("worker", "")).strip() or None,
+                )
+            self.last_chunk_result_count = len(chunk_results)
 
     async def run(self) -> None:
         next_input: Any = self.initial_state

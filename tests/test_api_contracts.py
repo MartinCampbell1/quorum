@@ -232,34 +232,61 @@ def test_run_accepts_configured_tool_for_claude():
         tool_config_store.delete("market_api")
 
 
-def test_run_rejects_configured_tool_for_codex():
+def test_run_accepts_configured_mcp_tool_for_codex_via_bridge():
     tool = ToolConfig(
         id="github_mcp",
         name="GitHub MCP",
         tool_type="mcp_server",
         icon="🔌",
-        config={"command": "npx -y @modelcontextprotocol/server-github"},
+        config={"transport": "stdio", "command": "npx -y @modelcontextprotocol/server-github"},
         enabled=True,
     )
     tool_config_store.add(tool)
     try:
-        response = client.post(
-            "/orchestrate/run",
-            json={
-                "mode": "creator_critic",
-                "task": "Open issue triage",
-                "agents": [
-                    _agent("creator", "codex", ["github_mcp"]),
-                    _agent("critic", "claude", []),
-                ],
-            },
-        )
+        with patch("orchestrator.api.run", new=AsyncMock(return_value="sess_mcp_bridge")) as mock_run:
+            response = client.post(
+                "/orchestrate/run",
+                json={
+                    "mode": "creator_critic",
+                    "task": "Open issue triage",
+                    "agents": [
+                        _agent("creator", "codex", ["github_mcp"]),
+                        _agent("critic", "claude", []),
+                    ],
+                },
+            )
 
-        assert response.status_code == 422
-        errors = response.json()["detail"]["errors"]
-        assert any("cannot use codex" in error for error in errors)
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["session_id"] == "sess_mcp_bridge"
+        assert (
+            payload["provider_capabilities_snapshot"]["creator"]["tools"]["github_mcp"]["capability"]
+            == "bridged"
+        )
+        mock_run.assert_awaited_once()
     finally:
         tool_config_store.delete("github_mcp")
+
+
+def test_provider_capabilities_report_external_mcp_native_for_gemini_and_bridged_for_codex():
+    tool = ToolConfig(
+        id="stitch_mcp",
+        name="Stitch MCP",
+        tool_type="mcp_server",
+        icon="🔌",
+        config={"transport": "http", "url": "https://stitch.googleapis.com/mcp", "headers": "{\"X-Goog-Api-Key\": \"token\"}"},
+        enabled=True,
+    )
+    tool_config_store.add(tool)
+    try:
+        response = client.get("/orchestrate/settings/providers/capabilities")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["tools"]["stitch_mcp"]["claude"] == "native"
+        assert payload["tools"]["stitch_mcp"]["gemini"] == "native"
+        assert payload["tools"]["stitch_mcp"]["codex"] == "bridged"
+    finally:
+        tool_config_store.delete("stitch_mcp")
 
 
 def test_workspace_preset_crud_round_trip(tmp_path):

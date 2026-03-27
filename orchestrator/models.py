@@ -311,6 +311,15 @@ def capability_for_tool(provider: str, tool_id: str) -> CapabilityLevel:
     configured = tool_config_store.get(canonical_tool_id)
     if not configured or not configured.enabled:
         return "unavailable"
+    if configured.tool_type == "mcp_server":
+        transport = str(configured.config.get("transport", "stdio") or "stdio").strip().lower()
+        if provider_key == "claude":
+            return "native"
+        if provider_key == "gemini":
+            return "native" if transport in {"stdio", "http", "sse"} else "unavailable"
+        if provider_key == "codex":
+            return "bridged"
+        return "unavailable"
     return CONFIGURED_TOOL_CAPABILITIES.get(configured.tool_type, {}).get(provider_key, "unavailable")
 
 
