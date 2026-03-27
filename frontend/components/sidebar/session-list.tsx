@@ -4,7 +4,9 @@ import { Plus, Search } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { useLocale } from "@/lib/locale";
 import { useSessions } from "@/hooks/use-sessions";
+import { cn } from "@/lib/utils";
 
 import { SessionItem } from "./session-item";
 
@@ -12,35 +14,43 @@ interface SessionListProps {
   activeSessionId: string | null;
   onSelectSession: (id: string) => void;
   onNewSession: () => void;
+  collapsed?: boolean;
 }
 
 export function SessionList({
   activeSessionId,
   onSelectSession,
   onNewSession,
+  collapsed = false,
 }: SessionListProps) {
+  const { copy } = useLocale();
   const { sessions, isLoading } = useSessions();
   const isEmpty = !isLoading && sessions.length === 0;
 
   return (
-    <aside className="flex h-full w-[228px] flex-col border-r border-[#e6e8ee] bg-white">
+    <aside
+      className={cn(
+        "flex h-full flex-col overflow-hidden border-r border-[#e6e8ee] bg-white transition-[width,opacity] duration-200",
+        collapsed ? "w-0 border-r-0 opacity-0" : "w-[228px] opacity-100"
+      )}
+    >
       <div className="border-b border-[#e6e8ee] px-4 py-3">
         <div className="relative">
           <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#09090b]/55" />
           <input
             readOnly
             value=""
-            placeholder="Search"
+            placeholder={copy.shell.searchPlaceholder}
             className="h-10 w-full rounded-[10px] border border-[#d9dde7] bg-white px-10 text-[13px] outline-none placeholder:text-[#09090b]/45"
           />
         </div>
         <div className="mt-5 flex items-center justify-between">
           <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-[#09090b]">
-            Сессии
+            {copy.shell.sessions}
           </span>
           <button
             type="button"
-            aria-label="Новая сессия"
+            aria-label={copy.shell.newSession}
             onClick={onNewSession}
             className="flex h-7 w-7 items-center justify-center rounded-full text-[#09090b] transition-colors hover:bg-[#f5f6fa]"
           >
@@ -51,7 +61,7 @@ export function SessionList({
 
       <ScrollArea className="flex-1 px-3 py-3">
         {isLoading ? (
-          <div className="px-4 py-8 text-[13px] text-[#09090b]/42">Загрузка...</div>
+          <div className="px-4 py-8 text-[13px] text-[#09090b]/42">{copy.shell.loading}</div>
         ) : null}
 
         {sessions.map((session) => (
@@ -65,7 +75,7 @@ export function SessionList({
 
         {isEmpty ? (
           <div className="px-4 py-10 text-[14px] leading-8 text-[#09090b]/78">
-            Пока нет сессий
+            {copy.shell.noSessions}
           </div>
         ) : null}
       </ScrollArea>
@@ -76,7 +86,7 @@ export function SessionList({
           variant="outline"
           className="h-10 w-full rounded-[12px] border-[#d9dde7] bg-white text-[14px] font-medium text-[#09090b] shadow-none hover:bg-[#f7f7fa]"
         >
-          2 Issues
+          {copy.shell.issues}
         </Button>
       </div>
     </aside>

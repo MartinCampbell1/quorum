@@ -5,6 +5,7 @@ import { Folder, Globe, HardDrive, Loader2, Sparkles, TerminalSquare } from "luc
 
 import { Button } from "@/components/ui/button";
 import { controlSession } from "@/lib/api";
+import { useLocale } from "@/lib/locale";
 import { useSession } from "@/hooks/use-session";
 import { useSessionEvents } from "@/hooks/use-session-events";
 import type { AttachedToolDetail } from "@/lib/types";
@@ -38,6 +39,7 @@ export function ChatView({
   onOpenHome,
   onOpenSessions,
 }: ChatViewProps) {
+  const { copy } = useLocale();
   const { session, isLoading, refresh } = useSession(sessionId);
   const { events } = useSessionEvents(session?.id ?? null, session?.events ?? [], refresh);
   const [isWorking, setIsWorking] = useState(false);
@@ -52,11 +54,11 @@ export function ChatView({
       id: toolId,
       name: toolId,
       transport: "unknown",
-      subtitle: "MCP connection",
+      subtitle: copy.monitor.genericConnection,
       icon: "folder",
       capability: "native" as const,
     }));
-  }, [session]);
+  }, [session, copy.monitor.genericConnection]);
 
   useEffect(() => {
     if (!session) return;
@@ -102,17 +104,17 @@ export function ChatView({
   }
 
   function primaryLabel() {
-    if (!session) return "Stop Session";
-    if (session.status === "paused") return "Resume Session";
-    if (["running", "pause_requested", "cancel_requested"].includes(session.status)) return "Stop Session";
-    if (selectedCheckpointId ?? session.current_checkpoint_id) return "Restart Branch";
-    return "New Session";
+    if (!session) return copy.monitor.stopSession;
+    if (session.status === "paused") return copy.monitor.resumeSession;
+    if (["running", "pause_requested", "cancel_requested"].includes(session.status)) return copy.monitor.stopSession;
+    if (selectedCheckpointId ?? session.current_checkpoint_id) return copy.monitor.restartBranch;
+    return copy.monitor.newSession;
   }
 
   if (isLoading || !session) {
     return (
       <div className="flex h-full items-center justify-center bg-white">
-        <div className="text-[14px] text-[#6b7280]">Loading session…</div>
+        <div className="text-[14px] text-[#6b7280]">{copy.monitor.loading}</div>
       </div>
     );
   }
@@ -142,7 +144,7 @@ export function ChatView({
             />
             <section className="rounded-[18px] border border-[#d6dbe6] bg-white p-4 shadow-[0_10px_24px_-18px_rgba(17,48,105,0.18)]">
               <h2 className="text-[19px] font-medium tracking-[-0.03em] text-[#111111]">
-                Active MCP Connections
+                {copy.monitor.activeConnections}
               </h2>
               <div className="mt-4 space-y-4">
                 {activeConnections.map((tool) => (
@@ -170,7 +172,7 @@ export function ChatView({
                 ))}
                 {activeConnections.length === 0 ? (
                   <div className="rounded-[16px] border border-[#d6dbe6] bg-white px-4 py-4 text-[14px] text-[#6b7280]">
-                    No active MCP connections yet.
+                    {copy.monitor.noActiveConnections}
                   </div>
                 ) : null}
               </div>
@@ -195,7 +197,7 @@ export function ChatView({
                   onClick={handleExport}
                   className="h-[46px] flex-1 rounded-[12px] border-[#111111] bg-white text-[15px] font-medium text-[#111111]"
                 >
-                  Export Results
+                  {copy.monitor.exportResults}
                 </Button>
               </div>
             </div>

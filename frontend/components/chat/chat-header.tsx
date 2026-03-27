@@ -1,4 +1,8 @@
-import { ChevronDown, UserCircle2 } from "lucide-react";
+"use client";
+
+import { Badge } from "@/components/ui/badge";
+import { MODE_LABELS } from "@/lib/constants";
+import { useLocale } from "@/lib/locale";
 
 import type { Session } from "@/lib/types";
 
@@ -9,45 +13,35 @@ interface ChatHeaderProps {
 }
 
 export function ChatHeader({ session, onOpenHome, onOpenSessions }: ChatHeaderProps) {
+  const { copy } = useLocale();
   const title = session.task.length > 56 ? `${session.task.slice(0, 56)}…` : session.task;
+  void onOpenHome;
+  void onOpenSessions;
 
   return (
-    <div className="flex items-center justify-between px-6 py-4">
+    <div className="border-b border-[#e6e8ee] px-6 py-5">
       <div>
-        <div className="text-[22px] font-medium tracking-[-0.03em] text-[#111111]">
-          Premium Session Monitor - White Edition: {title}
+        <div className="text-[24px] font-medium tracking-[-0.04em] text-[#111111]">
+          {title}
         </div>
-        <div className="mt-1 flex items-center gap-3 text-[11px] uppercase tracking-[0.14em] text-[#6b7280]">
-          <span>{session.mode}</span>
-          {session.active_scenario ? <span>scenario: {session.active_scenario}</span> : null}
-          {session.forked_from ? <span>branch of {session.forked_from}</span> : null}
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-[0.14em] text-[#6b7280]">
+          <Badge variant="outline" className="rounded-full border-[#d6dbe6] bg-white px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-[#6b7280]">
+            {copy.monitor.headerTitle}
+          </Badge>
+          <Badge variant="outline" className="rounded-full border-[#d6dbe6] bg-white px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-[#6b7280]">
+            {copy.monitor.mode}: {MODE_LABELS[session.mode] ?? session.mode}
+          </Badge>
+          {session.active_scenario ? (
+            <Badge variant="outline" className="rounded-full border-[#d6dbe6] bg-white px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-[#6b7280]">
+              {copy.monitor.scenario}: {session.active_scenario}
+            </Badge>
+          ) : null}
+          {session.forked_from ? (
+            <Badge variant="outline" className="rounded-full border-[#d6dbe6] bg-white px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-[#6b7280]">
+              {copy.monitor.branchOf}: {session.forked_from}
+            </Badge>
+          ) : null}
         </div>
-      </div>
-      <div className="flex items-center gap-5">
-        <button
-          type="button"
-          onClick={onOpenHome}
-          className="rounded-[10px] bg-[#edf0f5] px-4 py-2 text-[18px] text-[#111111]"
-        >
-          Home
-        </button>
-        <button type="button" className="text-[18px] text-[#6b7280]">
-          Agents
-        </button>
-        <button
-          type="button"
-          onClick={onOpenSessions}
-          className="text-[18px] text-[#6b7280]"
-        >
-          Sessions
-        </button>
-        <button
-          type="button"
-          className="flex h-10 w-10 items-center justify-center rounded-full bg-[#eef1f5] text-[#6b7280]"
-        >
-          <UserCircle2 className="h-6 w-6" />
-        </button>
-        <ChevronDown className="h-5 w-5 text-[#6b7280]" />
       </div>
     </div>
   );

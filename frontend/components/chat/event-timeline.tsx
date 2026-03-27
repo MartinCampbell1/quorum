@@ -1,6 +1,7 @@
 "use client";
 
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { useLocale } from "@/lib/locale";
 import type { SessionEvent } from "@/lib/types";
 
 interface EventTimelineProps {
@@ -15,16 +16,16 @@ function formatTime(timestamp: number): string {
   });
 }
 
-function formatEventLine(event: SessionEvent): string {
+function formatEventLine(event: SessionEvent, copy: ReturnType<typeof useLocale>["copy"]): string {
   if (event.type === "tool_call_started") {
     const actor = event.agent_id ? `${event.agent_id} | ` : "";
-    return `${actor}Tool Call: ${event.tool_name ?? event.detail}`.trim();
+    return `${actor}${copy.monitor.toolCall}: ${event.tool_name ?? event.detail}`.trim();
   }
   if (event.type === "tool_call_finished") {
     const actor = event.agent_id ? `${event.agent_id} | ` : "";
     const elapsed = typeof event.elapsed_sec === "number" ? ` | ${event.elapsed_sec}s` : "";
-    const status = event.success === false ? " | failed" : "";
-    return `${actor}Tool Result: ${event.tool_name ?? ""}${elapsed}${status} ${event.detail}`.trim();
+    const status = event.success === false ? ` | ${copy.monitor.failed}` : "";
+    return `${actor}${copy.monitor.toolResult}: ${event.tool_name ?? ""}${elapsed}${status} ${event.detail}`.trim();
   }
   const actor = event.agent_id ? `${event.agent_id} | ` : "";
   const detail = event.detail ? ` ${event.detail}` : "";
@@ -34,10 +35,11 @@ function formatEventLine(event: SessionEvent): string {
 }
 
 export function EventTimeline({ events }: EventTimelineProps) {
+  const { copy } = useLocale();
   return (
     <section className="rounded-[18px] border border-[#d6dbe6] bg-[#f8fafc] p-4 shadow-[0_10px_24px_-18px_rgba(17,48,105,0.18)]">
       <h2 className="text-[19px] font-medium tracking-[-0.03em] text-[#111111]">
-        Execution Trace
+        {copy.monitor.executionTrace}
       </h2>
       <div className="mt-3 rounded-[14px] border border-[#d6dbe6] bg-white">
         <ScrollArea className="h-[228px] px-4 py-3">
@@ -46,11 +48,11 @@ export function EventTimeline({ events }: EventTimelineProps) {
               <div key={event.id}>
                 <span className="text-[#6b7280]">{formatTime(event.timestamp)}</span>
                 {" | "}
-                <span>{formatEventLine(event)}</span>
+                <span>{formatEventLine(event, copy)}</span>
               </div>
             ))}
             {events.length === 0 ? (
-              <div className="text-[#6b7280]">Trace will appear after the session starts.</div>
+              <div className="text-[#6b7280]">{copy.monitor.traceEmpty}</div>
             ) : null}
           </div>
         </ScrollArea>

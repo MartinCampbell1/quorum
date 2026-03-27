@@ -5,6 +5,7 @@ import { GitBranch, Loader2, RotateCcw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { controlSession } from "@/lib/api";
+import { useLocale } from "@/lib/locale";
 import type { Session } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -30,6 +31,7 @@ export function CheckpointPanel({
   onForkSession,
   onRefresh,
 }: CheckpointPanelProps) {
+  const { copy } = useLocale();
   const [branchingCheckpointId, setBranchingCheckpointId] = useState<string | null>(null);
 
   const checkpoints = useMemo(
@@ -59,11 +61,11 @@ export function CheckpointPanel({
     <section className="rounded-[18px] border border-[#d6dbe6] bg-white p-4 shadow-[0_10px_24px_-18px_rgba(17,48,105,0.18)]">
       <div className="flex items-center justify-between">
         <h2 className="text-[19px] font-medium tracking-[-0.03em] text-[#111111]">
-          Checkpoints & Branches
+          {copy.monitor.checkpointsBranches}
         </h2>
         {session.forked_from ? (
           <span className="rounded-full border border-[#d6dbe6] bg-white px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-[#6b7280]">
-            branch
+            {copy.shell.branch}
           </span>
         ) : null}
       </div>
@@ -71,11 +73,11 @@ export function CheckpointPanel({
       <div className="mt-4 space-y-3">
         {session.forked_from ? (
           <div className="rounded-[14px] border border-[#d6dbe6] bg-[#fafbff] px-3 py-3">
-            <div className="text-[10px] uppercase tracking-[0.16em] text-[#7b8190]">Parent session</div>
+            <div className="text-[10px] uppercase tracking-[0.16em] text-[#7b8190]">{copy.monitor.parentSession}</div>
             <div className="mt-1 font-mono text-[12px] text-[#111111]">{session.forked_from}</div>
             {session.forked_checkpoint_id ? (
               <div className="mt-1 text-[11px] text-[#6b7280]">
-                from checkpoint {session.forked_checkpoint_id}
+                {copy.monitor.fromCheckpoint} {session.forked_checkpoint_id}
               </div>
             ) : null}
           </div>
@@ -83,7 +85,7 @@ export function CheckpointPanel({
 
         {session.branch_children && session.branch_children.length > 0 ? (
           <div className="rounded-[14px] border border-[#d6dbe6] bg-[#fafbff] px-3 py-3">
-            <div className="text-[10px] uppercase tracking-[0.16em] text-[#7b8190]">Child branches</div>
+            <div className="text-[10px] uppercase tracking-[0.16em] text-[#7b8190]">{copy.monitor.childBranches}</div>
             <div className="mt-2 space-y-1.5">
               {session.branch_children.map((child) => (
                 <div key={child.id} className="flex items-center justify-between text-[11px] text-[#111111]">
@@ -118,7 +120,7 @@ export function CheckpointPanel({
                       <span className="font-mono text-[12px] text-[#111111]">{checkpoint.id}</span>
                       {isCurrent ? (
                         <span className="rounded-full border border-[#d6dbe6] bg-[#fafbff] px-2 py-0.5 text-[10px] uppercase tracking-[0.14em] text-[#6b7280]">
-                          current
+                          {copy.monitor.current}
                         </span>
                       ) : null}
                     </div>
@@ -138,13 +140,13 @@ export function CheckpointPanel({
                     className="rounded-[10px] border-[#d6dbe6] bg-white text-[11px]"
                     onClick={() => branchFromCheckpoint(checkpoint.id)}
                     disabled={isBranching || ["running", "pause_requested", "cancel_requested"].includes(session.status)}
-                  >
-                    {isBranching ? (
-                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <GitBranch className="mr-1.5 h-3.5 w-3.5" />
-                    )}
-                    Fork
+                    >
+                      {isBranching ? (
+                        <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <GitBranch className="mr-1.5 h-3.5 w-3.5" />
+                      )}
+                    {copy.monitor.fork}
                   </Button>
                 </div>
               </div>
@@ -153,7 +155,7 @@ export function CheckpointPanel({
 
           {checkpoints.length === 0 ? (
             <div className="rounded-[14px] border border-[#d6dbe6] bg-white px-3 py-4 text-[12px] text-[#6b7280]">
-              Checkpoints появятся после первых graph transitions.
+              {copy.monitor.noCheckpoints}
             </div>
           ) : null}
         </div>
@@ -161,7 +163,7 @@ export function CheckpointPanel({
         {selectedCheckpointId && selectedCheckpointId !== session.current_checkpoint_id ? (
           <div className="flex items-center gap-2 rounded-[14px] border border-[#d6dbe6] bg-[#fafbff] px-3 py-3 text-[12px] text-[#6b7280]">
             <RotateCcw className="h-4 w-4" />
-            Выбран исторический checkpoint {selectedCheckpointId}. Resume всегда идёт с текущего checkpoint, branch — с выбранного.
+            {copy.monitor.selectedHistoricCheckpoint} {selectedCheckpointId}. {copy.monitor.selectedHistoricHint}
           </div>
         ) : null}
       </div>

@@ -3,6 +3,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Clock } from "lucide-react";
 import { MODE_LABELS, MODE_ICONS } from "@/lib/constants";
+import { useLocale } from "@/lib/locale";
 import { useSessions } from "@/hooks/use-sessions";
 import { cn } from "@/lib/utils";
 
@@ -10,33 +11,24 @@ interface HistoryViewProps {
   onSelectSession: (id: string) => void;
 }
 
-function timeAgo(ts: number): string {
+function timeAgo(ts: number, copy: ReturnType<typeof useLocale>["copy"]): string {
   const diff = Math.floor(Date.now() / 1000 - ts);
-  if (diff < 60) return "только что";
-  if (diff < 3600) return `${Math.floor(diff / 60)} мин назад`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)} ч назад`;
-  return `${Math.floor(diff / 86400)} д назад`;
+  if (diff < 60) return copy.shell.time.justNow;
+  if (diff < 3600) return `${Math.floor(diff / 60)} ${copy.shell.time.minutes}`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} ${copy.shell.time.hours}`;
+  return `${Math.floor(diff / 86400)} ${copy.shell.time.days}`;
 }
 
-const STATUS_LABELS: Record<string, string> = {
-  running: "работает",
-  pause_requested: "ставим на паузу",
-  paused: "на паузе",
-  cancel_requested: "останавливаем",
-  cancelled: "остановлено",
-  completed: "готово",
-  failed: "ошибка",
-};
-
 export function HistoryView({ onSelectSession }: HistoryViewProps) {
+  const { copy } = useLocale();
   const { sessions, isLoading } = useSessions();
 
   return (
     <div className="flex flex-col h-full">
       <div className="border-b bg-background px-8 py-4">
-        <h2 className="text-lg font-semibold tracking-tight">История сессий</h2>
+        <h2 className="text-lg font-semibold tracking-tight">{copy.history.title}</h2>
         <p className="text-sm text-muted-foreground mt-0.5">
-          {sessions.length} {sessions.length === 1 ? "сессия" : sessions.length < 5 ? "сессии" : "сессий"}
+          {sessions.length} {sessions.length === 1 ? copy.history.single : sessions.length < 5 ? copy.history.few : copy.history.many}
         </p>
       </div>
       <div className="flex-1 overflow-y-auto px-8 py-4">
@@ -47,7 +39,7 @@ export function HistoryView({ onSelectSession }: HistoryViewProps) {
         ) : sessions.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
             <Clock className="h-8 w-8 mb-3 opacity-30" />
-            <p className="text-sm">Пока нет сессий</p>
+            <p className="text-sm">{copy.history.empty}</p>
           </div>
         ) : (
           <div className="space-y-2 max-w-2xl">
@@ -65,7 +57,7 @@ export function HistoryView({ onSelectSession }: HistoryViewProps) {
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium truncate">{s.task}</p>
                     <div className="flex items-center gap-2 mt-1">
-                      <span className="text-[11px] text-muted-foreground/60 font-mono">{timeAgo(s.created_at)}</span>
+                      <span className="text-[11px] text-muted-foreground/60 font-mono">{timeAgo(s.created_at, copy)}</span>
                       <Badge variant="outline" className="text-[10px] px-1.5 py-0 font-normal">
                         {MODE_LABELS[s.mode]}
                       </Badge>
@@ -84,7 +76,7 @@ export function HistoryView({ onSelectSession }: HistoryViewProps) {
                       s.status === "failed" && "border-red-500/30 text-red-600"
                     )}
                   >
-                    {STATUS_LABELS[s.status] ?? s.status}
+                    {copy.statuses[s.status as keyof typeof copy.statuses] ?? s.status}
                   </Badge>
                 </button>
               );
