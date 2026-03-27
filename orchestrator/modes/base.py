@@ -42,12 +42,16 @@ def make_llm(
     mcp_tools: list[str] | None = None,
     workdir: str | None = None,
     workspace_paths: list[str] | None = None,
+    session_id: str | None = None,
+    agent_role: str | None = None,
 ) -> BaseChatModel:
     """Create a LangChain model for the given provider."""
     kwargs = {
         "mcp_tools": mcp_tools,
         "workdir": workdir or str(PROJECT_ROOT),
         "workspace_paths": workspace_paths or [],
+        "session_id": session_id,
+        "agent_role": agent_role,
     }
     if provider == "claude":
         return GatewayClaude(**kwargs)
@@ -68,9 +72,18 @@ def call_agent(
     tools: list[str] | None = None,
     workdir: str | None = None,
     workspace_paths: list[str] | None = None,
+    session_id: str | None = None,
+    agent_role: str | None = None,
 ) -> str:
     """Call an agent and return the text response."""
-    llm = make_llm(provider, mcp_tools=tools, workdir=workdir, workspace_paths=workspace_paths)
+    llm = make_llm(
+        provider,
+        mcp_tools=tools,
+        workdir=workdir,
+        workspace_paths=workspace_paths,
+        session_id=session_id,
+        agent_role=agent_role,
+    )
     messages = []
     if system_prompt:
         messages.append(SystemMessage(content=system_prompt))
@@ -95,6 +108,8 @@ def call_agent_cfg(agent: dict, prompt: str) -> str:
         tools=tools,
         workdir=agent.get("workdir") or str(PROJECT_ROOT),
         workspace_paths=list(agent.get("workspace_paths") or []),
+        session_id=agent.get("session_id"),
+        agent_role=agent.get("role"),
     )
 
 

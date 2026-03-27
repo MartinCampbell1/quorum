@@ -1,9 +1,9 @@
 "use client";
 
-import { ArrowRight, Folder, Globe, HardDrive, type LucideIcon } from "lucide-react";
+import { ArrowRight, Folder, Globe, HardDrive, Sparkles, TerminalSquare, type LucideIcon } from "lucide-react";
 
 import { PROVIDER_LABELS } from "@/lib/constants";
-import type { Message, Session } from "@/lib/types";
+import type { AttachedToolDetail, Message, Session } from "@/lib/types";
 
 interface TopologyPanelProps {
   session: Session;
@@ -15,9 +15,11 @@ function humanizeTool(tool: string) {
     .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
-function resolveToolIcon(tool: string): LucideIcon {
-  if (tool.includes("search")) return Globe;
-  if (tool.includes("shell") || tool.includes("code")) return HardDrive;
+function resolveToolIcon(tool: string, detail?: AttachedToolDetail): LucideIcon {
+  if (detail?.icon === "🔍" || tool.includes("search")) return Globe;
+  if (detail?.icon === "🧠" || tool.includes("perplexity")) return Sparkles;
+  if (detail?.icon === "⚡" || detail?.icon === "🐍" || tool.includes("shell") || tool.includes("code")) return TerminalSquare;
+  if (detail?.icon === "📊") return HardDrive;
   return Folder;
 }
 
@@ -58,6 +60,7 @@ function GenericView({ session }: { session: Session }) {
   const lowerWorker = workers[1] ?? null;
   const upperTools = (upperWorker?.tools ?? []).slice(0, 2);
   const lowerTools = (lowerWorker?.tools ?? []).slice(0, 1);
+  const attachedDetails = new Map((session.attached_tools ?? []).map((tool) => [tool.id, tool]));
 
   return (
     <div className="relative min-h-[360px] rounded-[18px] border border-[#d6dbe6] bg-white">
@@ -121,7 +124,8 @@ function GenericView({ session }: { session: Session }) {
       ) : null}
 
       {upperTools.map((tool, index) => {
-        const Icon = resolveToolIcon(tool);
+        const detail = attachedDetails.get(tool);
+        const Icon = resolveToolIcon(tool, detail);
         return (
           <div
             key={`upper-${tool}-${index}`}
@@ -132,14 +136,15 @@ function GenericView({ session }: { session: Session }) {
               <Icon className="h-8 w-8 text-[#7b8190]" />
             </div>
             <div className="mt-2 text-center text-[18px] leading-tight text-[#111111]">
-              {humanizeTool(tool)}
+              {detail?.name ?? humanizeTool(tool)}
             </div>
           </div>
         );
       })}
 
       {lowerTools.map((tool, index) => {
-        const Icon = resolveToolIcon(tool);
+        const detail = attachedDetails.get(tool);
+        const Icon = resolveToolIcon(tool, detail);
         return (
           <div
             key={`lower-${tool}-${index}`}
@@ -150,7 +155,7 @@ function GenericView({ session }: { session: Session }) {
               <Icon className="h-8 w-8 text-[#7b8190]" />
             </div>
             <div className="mt-2 text-center text-[18px] leading-tight text-[#111111]">
-              {humanizeTool(tool)}
+              {detail?.name ?? humanizeTool(tool)}
             </div>
           </div>
         );

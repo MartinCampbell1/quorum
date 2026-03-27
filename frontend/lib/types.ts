@@ -109,6 +109,19 @@ export interface SessionEvent {
   mode?: string;
   forked_from?: string;
   branch_to?: string;
+  tool_name?: string;
+  elapsed_sec?: number;
+  success?: boolean;
+}
+
+export interface AttachedToolDetail {
+  id: string;
+  name: string;
+  tool_type?: string | null;
+  transport: string;
+  subtitle: string;
+  icon: string;
+  capability: "native" | "bridged" | "unavailable";
 }
 
 export interface Session {
@@ -141,6 +154,7 @@ export interface Session {
   workspace_preset_ids?: string[];
   workspace_paths?: string[];
   attached_tool_ids?: string[];
+  attached_tools?: AttachedToolDetail[];
   provider_capabilities_snapshot?: Record<string, {
     provider: string;
     tools: Record<string, {

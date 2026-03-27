@@ -30,6 +30,8 @@ from orchestrator.tools.builtin.shell_exec import ShellExecTool
 
 LOG_DIR = Path(__file__).parent.parent / ".tool_logs"
 LOG_DIR.mkdir(exist_ok=True)
+EVENT_STREAM_PATH = os.getenv("CONFIGURED_TOOLS_EVENT_STREAM", "").strip()
+EVENT_AGENT_ROLE = os.getenv("CONFIGURED_TOOLS_AGENT_ROLE", "").strip() or "agent"
 
 
 def _load_tools(config_path: str | None) -> dict[str, dict[str, Any]]:
@@ -66,6 +68,22 @@ def log_tool_call(tool_name: str, arguments: dict, result: str, elapsed: float) 
     log_file = LOG_DIR / "configured-tools.jsonl"
     with open(log_file, "a") as handle:
         handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def emit_runtime_event(event_type: str, title: str, detail: str = "", **extra: Any) -> None:
+    if not EVENT_STREAM_PATH:
+        return
+    payload = {
+        "type": event_type,
+        "title": title,
+        "detail": detail,
+        "agent_id": EVENT_AGENT_ROLE,
+        **extra,
+    }
+    event_path = Path(EVENT_STREAM_PATH)
+    event_path.parent.mkdir(parents=True, exist_ok=True)
+    with event_path.open("a") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
 def _schema_for(tool_cfg: dict[str, Any]) -> dict[str, Any]:
@@ -627,11 +645,19 @@ async def list_tools() -> list[Tool]:
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     t0 = time.time()
+    emit_runtime_event(
+        "tool_call_started",
+        "Tool call started",
+        name,
+        tool_name=name,
+    )
     await _ensure_external_tool_cache()
     tool_cfg = TOOLS.get(name)
+    success = False
     if tool_cfg:
         try:
             result = await _dispatch(tool_cfg, arguments)
+            success = not result.lstrip().startswith(f"[{name}] Error:")
         except Exception as exc:
             result = f"[{name}] Error: {exc}"
     elif name in EXTERNAL_MCP_LOOKUP:
@@ -645,11 +671,20 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     result = f"[{name}] {result}"
                 else:
                     result = f"[{name}] Tool executed successfully."
+                success = True
             except Exception as exc:
                 result = f"[{name}] Error: {exc}"
     else:
         result = f"Unknown configured tool: {name}"
     log_tool_call(name, arguments, result, round(time.time() - t0, 2))
+    emit_runtime_event(
+        "tool_call_finished",
+        "Tool call finished",
+        sanitize_result_preview(result),
+        tool_name=name,
+        elapsed_sec=round(time.time() - t0, 2),
+        success=success,
+    )
     return [TextContent(type="text", text=result)]
 
 

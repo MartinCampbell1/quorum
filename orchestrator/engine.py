@@ -91,6 +91,7 @@ def _build_initial_state(
             **agent.model_dump(),
             "workspace_paths": list(workspace_paths),
             "workdir": str(config.get("workdir", "")) or None,
+            "session_id": session_id,
         }
         for agent in agents
     ]

@@ -1,6 +1,8 @@
 """Regression coverage for checkpoint-safe pause/resume control."""
 
 import asyncio
+import json
+from pathlib import Path
 import time
 
 import orchestrator.modes.creator_critic as creator_critic
@@ -144,3 +146,54 @@ def test_democracy_emits_vote_and_round_events(monkeypatch):
         assert completed["result"] == "Ship the strategy"
 
     asyncio.run(scenario())
+
+
+def test_store_ingests_bridge_tool_events_from_runtime_file():
+    session_id = store.create(
+        mode="creator_critic",
+        task="Bridge tool event ingestion",
+        agents=[
+            AgentConfig(role="creator", provider="claude", tools=[]),
+            AgentConfig(role="critic", provider="claude", tools=[]),
+        ],
+        config={},
+    )
+
+    runtime_dir = Path.home() / ".multi-agent" / "runtime_events"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    runtime_file = runtime_dir / f"{session_id}.jsonl"
+    runtime_file.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "tool_call_started",
+                        "title": "Tool call started",
+                        "detail": "stitch_mcp__search",
+                        "agent_id": "creator",
+                        "tool_name": "stitch_mcp__search",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "tool_call_finished",
+                        "title": "Tool call finished",
+                        "detail": "ok",
+                        "agent_id": "creator",
+                        "tool_name": "stitch_mcp__search",
+                        "success": True,
+                    }
+                ),
+            ]
+        )
+        + "\n"
+    )
+
+    events = store.list_events(session_id)
+    event_types = [event["type"] for event in events]
+    assert "tool_call_started" in event_types
+    assert "tool_call_finished" in event_types
+
+    session = store.get(session_id)
+    assert any(event["type"] == "tool_call_finished" for event in session["events"])
+    assert runtime_file.exists() is False
