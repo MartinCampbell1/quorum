@@ -232,6 +232,7 @@ async function mockApi(page: Page, options?: { sessions?: unknown[] }) {
 }
 
 test.beforeEach(async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
   await mockApi(page);
 });
 

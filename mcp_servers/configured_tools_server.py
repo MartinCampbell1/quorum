@@ -86,6 +86,31 @@ def emit_runtime_event(event_type: str, title: str, detail: str = "", **extra: A
         handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
+def _runtime_argument_preview(arguments: dict[str, Any]) -> str:
+    if not arguments:
+        return ""
+    preferred_keys = [
+        "cypher",
+        "query",
+        "command",
+        "path",
+        "url",
+        "input",
+        "body",
+        "params",
+        "code",
+    ]
+    for key in preferred_keys:
+        value = arguments.get(key)
+        if value is None:
+            continue
+        text = str(value).replace("\n", " ").strip()
+        if not text:
+            continue
+        return sanitize_result_preview(f"{key}: {text}")
+    return sanitize_result_preview(json.dumps(sanitize_log_arguments(arguments), ensure_ascii=False))
+
+
 def _schema_for(tool_cfg: dict[str, Any]) -> dict[str, Any]:
     tool_type = tool_cfg["tool_type"]
     if tool_type == "brave_search":
@@ -645,10 +670,11 @@ async def list_tools() -> list[Tool]:
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     t0 = time.time()
+    preview = _runtime_argument_preview(arguments)
     emit_runtime_event(
         "tool_call_started",
         "Tool call started",
-        name,
+        preview or name,
         tool_name=name,
     )
     await _ensure_external_tool_cache()

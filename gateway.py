@@ -27,6 +27,7 @@ import asyncio
 import json
 import os
 import shlex
+import shutil
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -261,6 +262,50 @@ def build_env(profile: Profile) -> dict:
 def default_env() -> dict:
     """Environment по умолчанию (без подмены HOME)."""
     return os.environ.copy()
+
+
+def _strip_mcp_sections_from_toml(raw_toml: str) -> str:
+    """Remove persisted MCP sections so a temp CODEX_HOME starts with a clean server registry."""
+    output: list[str] = []
+    skipping = False
+    for line in raw_toml.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            skipping = stripped.startswith("[mcp_servers.")
+            if not skipping:
+                output.append(line)
+            continue
+        if skipping:
+            continue
+        output.append(line)
+    rendered = "\n".join(output).strip()
+    return f"{rendered}\n" if rendered else 'cli_auth_credentials_store = "file"\n'
+
+
+def prepare_isolated_codex_home(env: dict) -> tuple[dict, str | None]:
+    """Create a per-run CODEX_HOME so native MCP servers don't leak between sessions."""
+    source_home = Path(env.get("CODEX_HOME") or (Path(REAL_HOME) / ".codex"))
+    if not source_home.exists():
+        return env, None
+
+    temp_home = Path(tempfile.mkdtemp(prefix="codex_home_"))
+
+    for item in source_home.iterdir():
+        if item.name == "config.toml":
+            continue
+        if item.is_file():
+            shutil.copy2(item, temp_home / item.name)
+
+    config_path = source_home / "config.toml"
+    if config_path.exists():
+        sanitized = _strip_mcp_sections_from_toml(config_path.read_text(encoding="utf-8"))
+    else:
+        sanitized = 'cli_auth_credentials_store = "file"\n'
+    (temp_home / "config.toml").write_text(sanitized, encoding="utf-8")
+
+    isolated_env = env.copy()
+    isolated_env["CODEX_HOME"] = str(temp_home)
+    return isolated_env, str(temp_home)
 
 
 # ---- Rate limit detection ----
@@ -740,10 +785,18 @@ async def call_agent(
     selected_tools = [normalize_tool_id(tool) for tool in (mcp_tools or []) if str(tool).strip()]
     native_tools = [tool for tool in selected_tools if capability_for_tool(provider, tool) == "native"]
     bridged_tools = [tool for tool in selected_tools if capability_for_tool(provider, tool) == "bridged"]
+    codex_native_external_servers = [
+        tool
+        for tool in native_tools
+        if (configured := tool_config_store.get(tool))
+        and configured.enabled
+        and configured.tool_type == "mcp_server"
+    ]
     allowed_mcp_servers = resolve_mcp_servers(native_tools)
     bridge_payload_path = build_bridge_payload(provider, bridged_tools) if bridged_tools else None
     mcp_config_path = build_mcp_config(native_tools) if provider == "claude" and native_tools else None
     runtime_event_stream_path = _runtime_event_stream_path(session_id)
+    temp_codex_home: str | None = None
     try:
         cmd = build_cmd(
             provider,
@@ -762,6 +815,8 @@ async def call_agent(
         if not pool or not pool.profiles:
             try:
                 env = default_env()
+                if provider == "codex" and codex_native_external_servers:
+                    env, temp_codex_home = prepare_isolated_codex_home(env)
                 if bridge_payload_path:
                     env["CONFIGURED_TOOLS_PAYLOAD"] = bridge_payload_path
                 if runtime_event_stream_path:
@@ -814,6 +869,11 @@ async def call_agent(
                 }
 
             env = build_env(profile)
+            if temp_codex_home:
+                shutil.rmtree(temp_codex_home, ignore_errors=True)
+                temp_codex_home = None
+            if provider == "codex" and codex_native_external_servers:
+                env, temp_codex_home = prepare_isolated_codex_home(env)
             if bridge_payload_path:
                 env["CONFIGURED_TOOLS_PAYLOAD"] = bridge_payload_path
             if runtime_event_stream_path:
@@ -878,6 +938,8 @@ async def call_agent(
                 os.unlink(mcp_config_path)
             except OSError:
                 pass
+        if temp_codex_home:
+            shutil.rmtree(temp_codex_home, ignore_errors=True)
         if bridge_payload_path:
             try:
                 os.unlink(bridge_payload_path)

@@ -182,6 +182,20 @@ Branch: `codex/personal-mvp-refine`
   - replaced the cramped vertical stack with a wider layered canvas: `task -> primary agent -> secondary agents`
   - pulled clipped right-side nodes back into the usable canvas area
   - removed the old standalone monitor header language (`Premium Session Monitor - White Edition`) entirely
+- Reworked the premium monitor canvas into mode-aware communication diagrams:
+  - `board` now renders as a real peer triangle instead of a boss-worker stack
+  - `debate`, `creator_critic`, `map_reduce`, and default orchestration states now use distinct flow geometries
+  - active communication edges now pulse with subtle directional signal markers during live runs
+  - the monitor respects `prefers-reduced-motion`, so screenshot regression stays stable while the live UI still feels alive
+- Upgraded the execution trace from a flat text log to a packet-style timeline:
+  - timeline now merges runtime events with actual agent messages
+  - tool-call rows now show a compact preview of the live query/request payload
+  - recent agent exchanges render as structured cards instead of monospaced text spam
+- Added a safer native path for `Codex` external MCP on `stdio`:
+  - configured external `mcp_server` profiles with `transport=stdio` are now `native` for Codex
+  - each Codex run gets an isolated temporary `CODEX_HOME`
+  - existing persisted MCP registrations are stripped from the temporary config before the selected run-scoped servers are registered
+  - `http`/`sse` external MCP for Codex remain bridged
 
 ## Validation
 
@@ -208,16 +222,17 @@ Note:
 - External arbitrary `mcp_server` profiles are now:
   - `Claude`: native
   - `Gemini`: native
-  - `Codex`: bridged through `configured-tools`
-- `Codex` still does not have a native per-run restriction model for arbitrary external MCP servers; the honest fallback remains the bridge path.
+  - `Codex`: native for `stdio`, bridged for `http`/`sse`
+- `Codex` still does not have native per-run arbitrary-header HTTP MCP parity here; the honest fallback for those transports remains the bridge path.
 
 ## Still not done
 
-- A more explicit topology canvas for the session monitor right/center split
-- Optional native external MCP path for `Codex` where bearer-token HTTP or stdio-only setups make sense
+- A denser topology canvas/right rail closer to the approved premium monitor spacing
+- Optional native external MCP path for `Codex` HTTP servers with bearer-token-only flows
 
 ## Notes for the next agent
 
-- Do not assume `frontend/package.json`, `frontend/package-lock.json`, `.omc/`, or `.next/` belong to this pass. They were already dirty in the worktree.
+- `frontend/package.json` and `frontend/package-lock.json` now intentionally belong to this pass because Playwright screenshot regression is part of the repo.
+- `.omc/`, `.next/`, and `frontend/test-results/` are generated/local state and should not be committed.
 - The highest-value next product slice is polishing the monitor toward an even closer pixel match with the approved mockups, especially spacing, micro-typography, and the right-side MCP/tool card density.
 - `tsc --noEmit` depends on `.next/types`; run `npx next build --webpack` first in this repo before treating bare `tsc` failures as real regressions.
