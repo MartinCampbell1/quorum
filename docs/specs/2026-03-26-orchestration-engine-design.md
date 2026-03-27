@@ -264,7 +264,7 @@ MiniMax does NOT go through CLI gateway. It uses OpenRouter API directly
 via OpenAI-compatible endpoint.
 
 ```
-API key: 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
+API key: read from OPENROUTER_API_KEY
 Model: minimax/minimax-m2.7
 Base URL: https://openrouter.ai/api/v1
 ```

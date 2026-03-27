@@ -531,7 +531,7 @@ async def route_tools(task: str, tool_keys: list[str], context: str = "") -> lis
     try:
         router_llm = ChatOpenAI(
             model="minimax/minimax-m2.7",
-            api_key="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",
+            api_key=os.environ.get("OPENROUTER_API_KEY", ""),
             base_url="https://openrouter.ai/api/v1",
             temperature=0,
         )
