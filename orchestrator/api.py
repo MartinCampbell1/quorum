@@ -31,6 +31,8 @@ from orchestrator.models import (
 )
 from orchestrator.engine import (
     fork_from_checkpoint,
+    has_checkpoint_runtime,
+    has_live_runtime,
     inject_instruction,
     request_cancel,
     request_pause,
@@ -45,6 +47,12 @@ from orchestrator.tool_configs import tool_config_store, ToolConfig, TOOL_TYPES,
 router = APIRouter(prefix="/orchestrate", tags=["orchestrate"])
 
 SETTINGS_PROVIDERS = ["claude", "gemini", "codex", "minimax"]
+PAUSEABLE_STATUSES = {"running", "pause_requested"}
+RESUMABLE_STATUSES = {"paused", "pause_requested"}
+MESSAGEABLE_STATUSES = {"paused", "pause_requested"}
+INSTRUCTIONABLE_STATUSES = {"running", "pause_requested", "paused"}
+CANCELLABLE_STATUSES = {"running", "pause_requested", "paused", "cancel_requested"}
+BRANCHABLE_STATUSES = {"paused", "completed", "failed", "cancelled"}
 
 
 def _workspace_preset_to_dict(preset: WorkspacePreset) -> dict:
@@ -66,6 +74,42 @@ def _tool_payload(tool: ToolConfig) -> dict:
         provider: capability_for_tool(provider, tool.id)
         for provider in SETTINGS_PROVIDERS
     }
+    return payload
+
+
+def _has_checkpoint_history(session: dict) -> bool:
+    checkpoints = session.get("checkpoints")
+    if isinstance(checkpoints, list):
+        return bool(checkpoints)
+    return bool(session.get("current_checkpoint_id"))
+
+
+def _session_runtime_state(session: dict) -> dict:
+    session_id = str(session.get("id", "")).strip()
+    status = str(session.get("status", "")).strip().lower()
+    live_runtime_available = bool(session_id) and has_live_runtime(session_id)
+    checkpoint_runtime_available = bool(session_id) and has_checkpoint_runtime(session_id)
+    has_checkpoints = _has_checkpoint_history(session)
+    return {
+        "live_runtime_available": live_runtime_available,
+        "checkpoint_runtime_available": checkpoint_runtime_available,
+        "has_checkpoints": has_checkpoints,
+        "can_pause": status in PAUSEABLE_STATUSES and live_runtime_available,
+        "can_resume": status in RESUMABLE_STATUSES and live_runtime_available,
+        "can_send_message": status in MESSAGEABLE_STATUSES and live_runtime_available,
+        "can_inject_instruction": status in INSTRUCTIONABLE_STATUSES and live_runtime_available,
+        "can_cancel": status in CANCELLABLE_STATUSES and live_runtime_available,
+        "can_branch_from_checkpoint": (
+            status in BRANCHABLE_STATUSES
+            and has_checkpoints
+            and checkpoint_runtime_available
+        ),
+    }
+
+
+def _session_payload(session: dict) -> dict:
+    payload = dict(session)
+    payload["runtime_state"] = _session_runtime_state(session)
     return payload
 
 
@@ -290,7 +334,7 @@ async def ep_session(session_id: str):
     session = store.get(session_id)
     if not session:
         raise HTTPException(404, f"Session not found: {session_id}")
-    return session
+    return _session_payload(session)
 
 
 @router.get("/session/{session_id}/events")
@@ -328,7 +372,7 @@ async def ep_session_events(
 
 @router.get("/sessions")
 async def ep_sessions():
-    return store.list_recent()
+    return [_session_payload(session) for session in store.list_recent()]
 
 
 @router.get("/scenarios")
@@ -341,14 +385,21 @@ async def ep_user_message(session_id: str, req: MessageRequest):
     session = store.get(session_id)
     if not session:
         raise HTTPException(404, f"Session not found: {session_id}")
-    if session["status"] not in {"paused", "pause_requested"}:
+    if session["status"] not in MESSAGEABLE_STATUSES:
         raise HTTPException(
             409,
             "Pause the run first, then send an instruction so it can be applied at the next checkpoint.",
         )
-    queued = inject_instruction(session_id, req.content)
-    if not queued:
+    if not req.content.strip():
         raise HTTPException(422, "Instruction content cannot be empty.")
+    if not has_live_runtime(session_id):
+        raise HTTPException(
+            409,
+            "Session runtime is unavailable. The backend was likely restarted, so this paused run can no longer accept new instructions.",
+        )
+    queued = inject_instruction(session_id, req.content.strip())
+    if not queued:
+        raise HTTPException(409, "Instruction could not be queued because session runtime is unavailable.")
     return {"status": "queued", "pending_instructions": queued}
 
 
@@ -360,27 +411,59 @@ async def ep_session_control(session_id: str, req: ControlRequest):
 
     action = req.action.strip().lower()
     if action == "pause":
+        if session["status"] in PAUSEABLE_STATUSES and not has_live_runtime(session_id):
+            raise HTTPException(
+                409,
+                "Session runtime is unavailable. The backend was likely restarted, so this run can no longer be paused or resumed.",
+            )
         if not request_pause(session_id):
             raise HTTPException(409, f"Session '{session_id}' cannot be paused from status '{session['status']}'.")
         return {"status": "pause_requested"}
     if action == "resume":
+        if session["status"] in RESUMABLE_STATUSES and not has_live_runtime(session_id):
+            raise HTTPException(
+                409,
+                "Session runtime is unavailable. The backend was likely restarted, so this paused run can no longer be resumed.",
+            )
         if not request_resume(session_id, req.content):
             raise HTTPException(409, f"Session '{session_id}' cannot be resumed from status '{session['status']}'.")
         return {"status": "running"}
     if action == "inject_instruction":
-        queued = inject_instruction(session_id, req.content)
-        if not queued:
+        if session["status"] not in INSTRUCTIONABLE_STATUSES:
+            raise HTTPException(
+                409,
+                f"Session '{session_id}' cannot accept instructions from status '{session['status']}'.",
+            )
+        if not req.content.strip():
             raise HTTPException(422, "Instruction content cannot be empty.")
+        if not has_live_runtime(session_id):
+            raise HTTPException(
+                409,
+                "Session runtime is unavailable. The backend was likely restarted, so queued instructions can no longer be applied to this run.",
+            )
+        queued = inject_instruction(session_id, req.content.strip())
+        if not queued:
+            raise HTTPException(409, "Instruction could not be queued because session runtime is unavailable.")
         return {"status": "queued", "pending_instructions": queued}
     if action == "cancel":
+        if session["status"] in CANCELLABLE_STATUSES and not has_live_runtime(session_id):
+            raise HTTPException(
+                409,
+                "Session runtime is unavailable. The backend was likely restarted, so this run is no longer cancellable in place.",
+            )
         if not request_cancel(session_id):
             raise HTTPException(409, f"Session '{session_id}' cannot be cancelled from status '{session['status']}'.")
         return {"status": "cancel_requested"}
     if action == "restart_from_checkpoint":
-        if session["status"] in {"running", "pause_requested", "cancel_requested"}:
+        if session["status"] not in BRANCHABLE_STATUSES:
             raise HTTPException(
                 409,
                 f"Session '{session_id}' must be paused or finished before creating a branch from a checkpoint.",
+            )
+        if not has_checkpoint_runtime(session_id):
+            raise HTTPException(
+                409,
+                "Checkpoint runtime is unavailable. The backend was likely restarted, so this session can no longer branch from its in-memory checkpoint state.",
             )
         new_session_id = fork_from_checkpoint(session_id, req.checkpoint_id, req.content)
         if not new_session_id:
