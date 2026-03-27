@@ -16,6 +16,9 @@ from neo4j import GraphDatabase
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from mcp.client.session import ClientSession
+from mcp.client.stdio import StdioServerParameters, stdio_client
+from mcp.client.streamable_http import streamable_http_client
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
@@ -46,6 +49,9 @@ server = Server("configured-tools")
 code_exec = CodeExecTool()
 shell_exec = ShellExecTool()
 http_request = HttpRequestTool()
+EXTERNAL_MCP_TOOLS: dict[str, Tool] = {}
+EXTERNAL_MCP_LOOKUP: dict[str, dict[str, Any]] = {}
+EXTERNAL_MCP_INITIALIZED = False
 
 
 def log_tool_call(tool_name: str, arguments: dict, result: str, elapsed: float) -> None:
@@ -166,6 +172,159 @@ def _description_for(tool_cfg: dict[str, Any]) -> str:
     if tool_type == "shell":
         return f"{name}: execute shell commands in a restricted /tmp workspace."
     return name
+
+
+def _proxy_tool_name(server_id: str, remote_name: str) -> str:
+    return f"{server_id}__{remote_name}"
+
+
+def _parse_json_object(raw_value: str, field_name: str) -> tuple[dict[str, str], str | None]:
+    text = raw_value.strip()
+    if not text:
+        return {}, None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return {}, f"invalid {field_name} JSON: {exc}"
+    if not isinstance(parsed, dict):
+        return {}, f"{field_name} must be a JSON object"
+    return {str(key): str(value) for key, value in parsed.items()}, None
+
+
+async def _list_remote_tools(tool_cfg: dict[str, Any]) -> list[Tool]:
+    cfg = tool_cfg.get("config", {})
+    transport = str(cfg.get("transport", "stdio") or "stdio").strip().lower()
+    if transport == "http":
+        url = str(cfg.get("url", "") or "").strip()
+        if not url:
+            raise ValueError("HTTP MCP URL is required")
+        headers, error = _parse_json_object(str(cfg.get("headers", "") or ""), "headers")
+        if error:
+            raise ValueError(error)
+        async with httpx.AsyncClient(headers=headers, timeout=10) as http_client:
+            async with streamable_http_client(url, http_client=http_client) as (read_stream, write_stream, _):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await asyncio.wait_for(session.initialize(), timeout=10)
+                    result = await asyncio.wait_for(session.list_tools(), timeout=10)
+        return list(getattr(result, "tools", []) or [])
+
+    command = str(cfg.get("command", "") or "").strip()
+    if not command:
+        raise ValueError("stdio MCP command is required")
+    parts = shlex.split(command)
+    extra_args = shlex.split(str(cfg.get("args", "") or "").strip()) if str(cfg.get("args", "") or "").strip() else []
+    env_vars, error = _parse_json_object(str(cfg.get("env", "") or ""), "env")
+    if error:
+        raise ValueError(error)
+    params = StdioServerParameters(
+        command=parts[0],
+        args=[*parts[1:], *extra_args],
+        env=env_vars or None,
+    )
+    async with stdio_client(params) as (read_stream, write_stream):
+        async with ClientSession(read_stream, write_stream) as session:
+            await asyncio.wait_for(session.initialize(), timeout=10)
+            result = await asyncio.wait_for(session.list_tools(), timeout=10)
+    return list(getattr(result, "tools", []) or [])
+
+
+def _result_to_text(result: Any) -> str:
+    chunks: list[str] = []
+    for item in getattr(result, "content", []) or []:
+        text = getattr(item, "text", None)
+        if text is not None:
+            chunks.append(str(text))
+            continue
+        if hasattr(item, "model_dump"):
+            chunks.append(json.dumps(item.model_dump(), ensure_ascii=False))
+            continue
+        chunks.append(str(item))
+    structured = getattr(result, "structuredContent", None)
+    if structured:
+        chunks.append(json.dumps(structured, ensure_ascii=False, indent=2))
+    if not chunks:
+        return ""
+    return "\n\n".join(chunk for chunk in chunks if str(chunk).strip()).strip()
+
+
+async def _call_remote_tool(tool_cfg: dict[str, Any], remote_name: str, arguments: dict[str, Any]) -> str:
+    cfg = tool_cfg.get("config", {})
+    transport = str(cfg.get("transport", "stdio") or "stdio").strip().lower()
+    if transport == "http":
+        url = str(cfg.get("url", "") or "").strip()
+        headers, error = _parse_json_object(str(cfg.get("headers", "") or ""), "headers")
+        if error:
+            raise ValueError(error)
+        async with httpx.AsyncClient(headers=headers, timeout=30) as http_client:
+            async with streamable_http_client(url, http_client=http_client) as (read_stream, write_stream, _):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await asyncio.wait_for(session.initialize(), timeout=10)
+                    result = await asyncio.wait_for(session.call_tool(remote_name, arguments or {}), timeout=45)
+        return _result_to_text(result)
+
+    command = str(cfg.get("command", "") or "").strip()
+    parts = shlex.split(command)
+    extra_args = shlex.split(str(cfg.get("args", "") or "").strip()) if str(cfg.get("args", "") or "").strip() else []
+    env_vars, error = _parse_json_object(str(cfg.get("env", "") or ""), "env")
+    if error:
+        raise ValueError(error)
+    params = StdioServerParameters(
+        command=parts[0],
+        args=[*parts[1:], *extra_args],
+        env=env_vars or None,
+    )
+    async with stdio_client(params) as (read_stream, write_stream):
+        async with ClientSession(read_stream, write_stream) as session:
+            await asyncio.wait_for(session.initialize(), timeout=10)
+            result = await asyncio.wait_for(session.call_tool(remote_name, arguments or {}), timeout=45)
+    return _result_to_text(result)
+
+
+async def _ensure_external_tool_cache() -> None:
+    global EXTERNAL_MCP_INITIALIZED
+    if EXTERNAL_MCP_INITIALIZED:
+        return
+
+    external_tools: dict[str, Tool] = {}
+    external_lookup: dict[str, dict[str, Any]] = {}
+    for tool_cfg in TOOLS.values():
+        if tool_cfg.get("tool_type") != "mcp_server":
+            continue
+        try:
+            remote_tools = await _list_remote_tools(tool_cfg)
+        except Exception as exc:
+            fallback_name = _proxy_tool_name(tool_cfg["id"], "connection_error")
+            external_tools[fallback_name] = Tool(
+                name=fallback_name,
+                description=f"{tool_cfg['name']}: MCP connection failed ({exc})",
+                inputSchema={"type": "object", "properties": {}},
+            )
+            external_lookup[fallback_name] = {
+                "tool_cfg": tool_cfg,
+                "remote_name": "__connection_error__",
+                "error": str(exc),
+            }
+            continue
+
+        for remote_tool in remote_tools:
+            wrapped_name = _proxy_tool_name(tool_cfg["id"], remote_tool.name)
+            description = (remote_tool.description or remote_tool.name or "").strip()
+            external_tools[wrapped_name] = Tool(
+                name=wrapped_name,
+                description=f"{tool_cfg['name']} · {description}",
+                inputSchema=remote_tool.inputSchema or {"type": "object", "properties": {}},
+                annotations=getattr(remote_tool, "annotations", None),
+            )
+            external_lookup[wrapped_name] = {
+                "tool_cfg": tool_cfg,
+                "remote_name": remote_tool.name,
+            }
+
+    EXTERNAL_MCP_TOOLS.clear()
+    EXTERNAL_MCP_TOOLS.update(external_tools)
+    EXTERNAL_MCP_LOOKUP.clear()
+    EXTERNAL_MCP_LOOKUP.update(external_lookup)
+    EXTERNAL_MCP_INITIALIZED = True
 
 
 def _merge_headers(tool_cfg: dict[str, Any], extra_headers: str) -> tuple[dict[str, str], str | None]:
@@ -452,27 +611,44 @@ async def _dispatch(tool_cfg: dict[str, Any], arguments: dict[str, Any]) -> str:
 
 @server.list_tools()
 async def list_tools() -> list[Tool]:
-    return [
+    await _ensure_external_tool_cache()
+    base_tools = [
         Tool(
             name=tool_cfg["id"],
             description=_description_for(tool_cfg),
             inputSchema=_schema_for(tool_cfg),
         )
         for tool_cfg in TOOLS.values()
+        if tool_cfg.get("tool_type") != "mcp_server"
     ]
+    return [*base_tools, *EXTERNAL_MCP_TOOLS.values()]
 
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-    tool_cfg = TOOLS.get(name)
     t0 = time.time()
-    if not tool_cfg:
-        result = f"Unknown configured tool: {name}"
-    else:
+    await _ensure_external_tool_cache()
+    tool_cfg = TOOLS.get(name)
+    if tool_cfg:
         try:
             result = await _dispatch(tool_cfg, arguments)
         except Exception as exc:
             result = f"[{name}] Error: {exc}"
+    elif name in EXTERNAL_MCP_LOOKUP:
+        remote = EXTERNAL_MCP_LOOKUP[name]
+        if remote.get("remote_name") == "__connection_error__":
+            result = f"[{name}] Error: {remote.get('error', 'MCP connection failed')}"
+        else:
+            try:
+                result = await _call_remote_tool(remote["tool_cfg"], remote["remote_name"], arguments)
+                if result:
+                    result = f"[{name}] {result}"
+                else:
+                    result = f"[{name}] Tool executed successfully."
+            except Exception as exc:
+                result = f"[{name}] Error: {exc}"
+    else:
+        result = f"Unknown configured tool: {name}"
     log_tool_call(name, arguments, result, round(time.time() - t0, 2))
     return [TextContent(type="text", text=result)]
 

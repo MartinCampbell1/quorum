@@ -29,13 +29,13 @@ LEGACY_TOOL_ID_ALIASES = {
 TOOL_TYPE_PROVIDER_ALLOWLIST: dict[str, set[str]] = {
     "code_exec": {"claude", "codex"},
     "shell": {"claude", "codex"},
-    "brave_search": {"claude"},
-    "perplexity": {"claude"},
-    "http_api": {"claude"},
-    "custom_api": {"claude"},
-    "ssh": {"claude"},
-    "neo4j": {"claude"},
-    "mcp_server": {"claude"},
+    "brave_search": {"claude", "gemini", "codex"},
+    "perplexity": {"claude", "gemini", "codex"},
+    "http_api": {"claude", "gemini", "codex"},
+    "custom_api": {"claude", "gemini", "codex"},
+    "ssh": {"claude", "gemini", "codex"},
+    "neo4j": {"claude", "gemini", "codex"},
+    "mcp_server": {"claude", "gemini", "codex"},
 }
 
 

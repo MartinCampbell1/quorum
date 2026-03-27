@@ -4,6 +4,7 @@ import asyncio
 import time
 
 import orchestrator.modes.creator_critic as creator_critic
+import orchestrator.modes.democracy as democracy
 from orchestrator.engine import (
     fork_from_checkpoint,
     inject_instruction,
@@ -113,5 +114,33 @@ def test_fork_from_checkpoint_creates_independent_branch(monkeypatch):
 
         original = store.get(session_id)
         assert original["status"] == "paused"
+
+    asyncio.run(scenario())
+
+
+def test_democracy_emits_vote_and_round_events(monkeypatch):
+    def fake_call_agent_cfg(agent: dict, prompt: str) -> str:
+        return f'{{"position": "Ship the strategy", "reasoning": "{agent["role"]} agrees"}}'
+
+    monkeypatch.setattr(democracy, "call_agent_cfg", fake_call_agent_cfg)
+
+    async def scenario() -> None:
+        session_id = await run(
+            mode="democracy",
+            task="Decide whether to ship the strategy report",
+            agents=[
+                AgentConfig(role="voter_1", provider="claude", tools=[]),
+                AgentConfig(role="voter_2", provider="claude", tools=[]),
+                AgentConfig(role="voter_3", provider="claude", tools=[]),
+            ],
+            config={"max_rounds": 2},
+        )
+
+        completed = await _wait_for_status(session_id, "completed")
+        event_types = [event["type"] for event in completed["events"]]
+        assert event_types.count("vote_recorded") == 3
+        assert "round_started" in event_types
+        assert "round_completed" in event_types
+        assert completed["result"] == "Ship the strategy"
 
     asyncio.run(scenario())
