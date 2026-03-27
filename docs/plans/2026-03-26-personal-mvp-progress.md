@@ -187,6 +187,12 @@ Branch: `codex/personal-mvp-refine`
   - `debate`, `creator_critic`, `map_reduce`, and default orchestration states now use distinct flow geometries
   - active communication edges now pulse with subtle directional signal markers during live runs
   - the monitor respects `prefers-reduced-motion`, so screenshot regression stays stable while the live UI still feels alive
+- Refactored the canvas again after visual review to reduce the "spider web" effect:
+  - `board` and `democracy` no longer draw peer-to-peer line meshes
+  - both now route through a shared hub node (`Совет` / `Голосование`) so the topology reads as a clean structured system instead of random crossing curves
+  - the under-canvas area now prioritizes `Живой обмен`, showing the latest packet/message handoff directly below the diagram
+  - the old oversized signal cards were compressed into smaller status pills so the live exchange stays visible on first screen
+  - this is a better handoff baseline, but the board canvas still needs one more dedicated geometry pass for near-pixel-match quality
 - Upgraded the execution trace from a flat text log to a packet-style timeline:
   - timeline now merges runtime events with actual agent messages
   - tool-call rows now show a compact preview of the live query/request payload
@@ -227,12 +233,22 @@ Note:
 
 ## Still not done
 
+- Final geometry polish for the premium monitor canvas:
+  - board/democracy line routing still needs one more pass
+  - node label spacing and anchor points need micro-adjustments to avoid visual crowding
 - A denser topology canvas/right rail closer to the approved premium monitor spacing
 - Optional native external MCP path for `Codex` HTTP servers with bearer-token-only flows
+- A richer packet inspector below the canvas:
+  - the latest live exchange is already visible
+  - a fuller per-hop payload viewer for JSON/Cypher/tool packets is still not implemented
 
 ## Notes for the next agent
 
 - `frontend/package.json` and `frontend/package-lock.json` now intentionally belong to this pass because Playwright screenshot regression is part of the repo.
 - `.omc/`, `.next/`, and `frontend/test-results/` are generated/local state and should not be committed.
 - The highest-value next product slice is polishing the monitor toward an even closer pixel match with the approved mockups, especially spacing, micro-typography, and the right-side MCP/tool card density.
+- The immediate UX priority is the board canvas:
+  - keep the new shared-hub structure
+  - replace the remaining loose curves with cleaner anchored routing
+  - preserve the `Живой обмен` block directly under the canvas
 - `tsc --noEmit` depends on `.next/types`; run `npx next build --webpack` first in this repo before treating bare `tsc` failures as real regressions.
