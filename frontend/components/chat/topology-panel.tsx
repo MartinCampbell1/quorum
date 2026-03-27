@@ -109,7 +109,7 @@ function fallbackToolDetail(toolId: string): AttachedToolDetail {
 
 interface CanvasNode {
   id: string;
-  kind: "task" | "agent" | "tool";
+  kind: "task" | "agent" | "tool" | "hub";
   x: number;
   y: number;
   size: number;
@@ -188,15 +188,15 @@ function resolveActiveEdgeIds(session: Session, edges: CanvasEdge[]): Set<string
     return new Set();
   }
 
-  if ((signal.type === "tool_call_started" || signal.type === "tool_call_finished") && signal.tool_name) {
-    const byTool = edges.find((edge) => edge.id === `agent:${signal.agent_id}->tool:${signal.tool_name}`);
-    if (byTool) {
-      return new Set([byTool.id + (signal.type === "tool_call_finished" ? ":reverse" : "")]);
+  if ((signal.type === "tool_call_started" || signal.type === "tool_call_finished") && signal.agent_id) {
+    const direct = edges.find((edge) => edge.id.endsWith(`->agent:${signal.agent_id}`) || edge.id.startsWith(`hub->agent:${signal.agent_id}`));
+    if (direct) {
+      return new Set([direct.id + (signal.type === "tool_call_finished" ? ":reverse" : "")]);
     }
   }
 
   if (signal.type === "vote_recorded" && signal.agent_id) {
-    return new Set([`task->agent:${signal.agent_id}`]);
+    return new Set([`hub->agent:${signal.agent_id}`]);
   }
 
   if (signal.type === "chunk_completed" && signal.agent_id) {
@@ -205,10 +205,12 @@ function resolveActiveEdgeIds(session: Session, edges: CanvasEdge[]): Set<string
 
   if (signal.type === "round_started" || signal.type === "round_completed") {
     if (session.mode === "board") {
-      return new Set(["board:peer:a", "board:peer:b", "board:peer:c"]);
+      return new Set(
+        session.agents.slice(0, 3).map((agent) => `hub->agent:${agent.role}`)
+      );
     }
     if (session.mode === "democracy") {
-      return new Set(["democracy:vote:0", "democracy:vote:1", "democracy:vote:2"]);
+      return new Set(session.agents.map((agent) => `agent:${agent.role}->hub`));
     }
     if (session.mode === "debate") {
       return new Set(["debate:judge:pro", "debate:judge:opp"]);
@@ -238,10 +240,59 @@ function signalCards(session: Session, copy: ReturnType<typeof useLocale>["copy"
   ];
 }
 
+function inferMessageTarget(session: Session, message: Message, copy: ReturnType<typeof useLocale>["copy"]) {
+  if (session.mode === "creator_critic") {
+    return message.phase.startsWith("critique_")
+      ? session.agents[0]?.role ?? copy.monitor.sharedContexts.creator_critic
+      : session.agents[1]?.role ?? copy.monitor.sharedContexts.creator_critic;
+  }
+  if (session.mode === "map_reduce") {
+    const synthesizer = session.agents[session.agents.length - 1];
+    if (message.agent_id === session.agents[0]?.role) {
+      return copy.monitor.workers;
+    }
+    return synthesizer?.role ?? copy.monitor.sharedContexts.map_reduce;
+  }
+  if (session.mode === "debate") {
+    if (message.agent_id === session.agents[0]?.role) return session.agents[1]?.role ?? copy.monitor.sharedContexts.default;
+    if (message.agent_id === session.agents[1]?.role) return session.agents[2]?.role ?? copy.monitor.sharedContexts.default;
+    return copy.monitor.sharedContexts.default;
+  }
+  if (session.mode === "board") return copy.monitor.sharedContexts.board;
+  if (session.mode === "democracy") return copy.monitor.sharedContexts.democracy;
+  return copy.monitor.sharedContexts.default;
+}
+
+function buildLiveExchange(session: Session, copy: ReturnType<typeof useLocale>["copy"]) {
+  const eventItems = (session.events ?? [])
+    .filter((event) => ["tool_call_started", "tool_call_finished", "vote_recorded", "round_completed", "chunk_completed"].includes(event.type))
+    .map((event) => ({
+      id: `event-${event.id}`,
+      timestamp: event.timestamp,
+      from: event.agent_id ?? copy.monitor.sharedContexts.default,
+      to: event.tool_name ?? copy.monitor.sharedContexts.default,
+      title: event.type === "tool_call_started" ? copy.monitor.toolCall : event.type === "tool_call_finished" ? copy.monitor.toolResult : event.title,
+      preview: (event.detail || event.tool_name || event.title).replace(/\s+/g, " ").slice(0, 132),
+    }));
+
+  const messageItems = session.messages.map((message) => ({
+    id: `message-${message.agent_id}-${message.timestamp}`,
+    timestamp: message.timestamp,
+    from: message.agent_id,
+    to: inferMessageTarget(session, message, copy),
+    title: copy.monitor.agentMessage,
+    preview: message.content.replace(/\s+/g, " ").slice(0, 132),
+  }));
+
+  return [...eventItems, ...messageItems]
+    .sort((a, b) => b.timestamp - a.timestamp)
+    .slice(0, 3);
+}
+
 function renderNode(node: CanvasNode, activeAgentId?: string) {
   const isActiveAgent = node.kind === "agent" && activeAgentId === node.id.replace(/^agent:/, "");
-  const left = `calc(${(node.x / 760) * 100}% - ${node.kind === "task" ? 61 : node.kind === "tool" ? 55 : 59}px)`;
-  const top = `calc(${(node.y / 364) * 100}% - ${node.kind === "tool" ? 32 : 40}px)`;
+  const left = `calc(${(node.x / 760) * 100}% - ${node.kind === "task" ? 61 : node.kind === "tool" ? 55 : node.kind === "hub" ? 66 : 59}px)`;
+  const top = `calc(${(node.y / 364) * 100}% - ${node.kind === "tool" ? 32 : node.kind === "hub" ? 48 : 40}px)`;
   if (node.kind === "task") {
     return (
       <div
@@ -274,6 +325,23 @@ function renderNode(node: CanvasNode, activeAgentId?: string) {
         <div className="mt-2 text-center text-[14px] font-medium tracking-[-0.02em] text-[#111111]">
           {node.label}
         </div>
+      </div>
+    );
+  }
+
+  if (node.kind === "hub") {
+    return (
+      <div
+        key={node.id}
+        className="absolute flex w-[132px] flex-col items-center"
+        style={{ left, top }}
+      >
+        <div className="flex h-[96px] w-[96px] items-center justify-center rounded-[26px] border border-[#d6dbe6] bg-[#fbfcff] px-3 text-center shadow-[0_12px_30px_-26px_rgba(17,48,105,0.22)]">
+          <div className="text-[18px] font-medium tracking-[-0.03em] text-[#111111]">{node.label}</div>
+        </div>
+        {node.subtitle ? (
+          <div className="mt-2 text-center text-[11px] uppercase tracking-[0.12em] text-[#7b8190]">{node.subtitle}</div>
+        ) : null}
       </div>
     );
   }
@@ -315,8 +383,6 @@ function buildCanvasGraph(session: Session, copy: ReturnType<typeof useLocale>["
     label: copy.monitor.sessionTask,
     subtitle: session.task.slice(0, 44),
   };
-
-  const toolsRight = buildToolNodes(session, 650, [66, 180, 294]);
   const getAgent = (index: number, x: number, y: number): CanvasNode | null => {
     const agent = agents[index];
     if (!agent) return null;
@@ -333,83 +399,65 @@ function buildCanvasGraph(session: Session, copy: ReturnType<typeof useLocale>["
   };
 
   if (session.mode === "board") {
+    const hubNode: CanvasNode = {
+      id: "hub",
+      kind: "hub",
+      x: 318,
+      y: 184,
+      size: 96,
+      label: copy.monitor.sharedContexts.board,
+    };
     const boardAgents = [
-      getAgent(0, 394, 86),
-      getAgent(1, 302, 240),
-      getAgent(2, 548, 240),
+      getAgent(0, 528, 84),
+      getAgent(1, 648, 196),
+      getAgent(2, 528, 296),
     ].filter((node): node is CanvasNode => Boolean(node));
     const edges: CanvasEdge[] = [
-      ...(boardAgents[0]
-        ? [
-            {
-              id: `task->${boardAgents[0].id}`,
-              path: connectionPath([144, 176], [228, 176], [294, 116], [boardAgents[0].x - 40, boardAgents[0].y + 2]),
-            },
-          ]
-        : []),
-      ...(boardAgents[1]
-        ? [
-            {
-              id: `task->${boardAgents[1].id}`,
-              path: connectionPath([144, 176], [218, 182], [252, 226], [boardAgents[1].x - 40, boardAgents[1].y]),
-            },
-          ]
-        : []),
-      ...(boardAgents[2]
-        ? [
-            {
-              id: `task->${boardAgents[2].id}`,
-              path: connectionPath([144, 176], [246, 176], [404, 234], [boardAgents[2].x - 40, boardAgents[2].y]),
-            },
-          ]
-        : []),
-      ...(boardAgents.length >= 3
-        ? [
-            {
-              id: "board:peer:a",
-              path: connectionPath([boardAgents[0].x - 22, boardAgents[0].y + 40], [360, 152], [334, 190], [boardAgents[1].x + 24, boardAgents[1].y - 40]),
-            },
-            {
-              id: "board:peer:b",
-              path: connectionPath([boardAgents[0].x + 22, boardAgents[0].y + 40], [432, 150], [480, 188], [boardAgents[2].x - 24, boardAgents[2].y - 40]),
-            },
-            {
-              id: "board:peer:c",
-              path: connectionPath([boardAgents[1].x + 44, boardAgents[1].y - 8], [390, 192], [456, 192], [boardAgents[2].x - 44, boardAgents[2].y - 8]),
-            },
-          ]
-        : []),
+      {
+        id: "task->hub",
+        path: connectionPath([144, 176], [212, 176], [240, 182], [270, 182]),
+      },
+      ...boardAgents.map((node, index) => ({
+        id: `hub->${node.id}`,
+        path: index === 0
+          ? connectionPath([366, 152], [418, 128], [458, 110], [node.x - 42, node.y])
+          : index === 1
+            ? connectionPath([366, 184], [430, 184], [492, 184], [node.x - 42, node.y])
+            : connectionPath([366, 216], [418, 240], [458, 260], [node.x - 42, node.y]),
+      })),
     ];
-    return { nodes: [taskNode, ...boardAgents], edges };
+    return { nodes: [taskNode, hubNode, ...boardAgents], edges };
   }
 
   if (session.mode === "democracy") {
-    const voteAgents = [
-      getAgent(0, 260, 158),
-      getAgent(1, 410, 96),
-      getAgent(2, 560, 158),
-    ].filter((node): node is CanvasNode => Boolean(node));
-    const tallyNode: CanvasNode = {
-      id: "tool:majority",
-      kind: "tool",
-      x: 410,
-      y: 284,
-      size: 64,
-      label: copy.monitor.majorityState,
-      subtitle: copy.monitor.waitingVote,
-      tool: fallbackToolDetail("majority"),
+    const hubNode: CanvasNode = {
+      id: "hub",
+      kind: "hub",
+      x: 366,
+      y: 184,
+      size: 96,
+      label: copy.monitor.sharedContexts.democracy,
     };
+    const voteAgents = [
+      getAgent(0, 548, 92),
+      getAgent(1, 612, 184),
+      getAgent(2, 548, 276),
+    ].filter((node): node is CanvasNode => Boolean(node));
     const edges: CanvasEdge[] = [
+      {
+        id: "task->hub",
+        path: connectionPath([144, 176], [224, 176], [258, 184], [318, 184]),
+      },
       ...voteAgents.map((node, index) => ({
-        id: `task->${node.id}`,
-        path: connectionPath([144, 176], [194, 176], [212 + index * 18, node.y], [node.x - 40, node.y]),
-      })),
-      ...voteAgents.map((node, index) => ({
-        id: `democracy:vote:${index}`,
-        path: connectionPath([node.x, node.y + 40], [node.x, 212], [410, 222], [410, 252]),
+        id: `agent:${node.subtitle}->hub`,
+        path: index === 0
+          ? connectionPath([node.x - 42, node.y], [492, 110], [446, 140], [414, 152])
+          : index === 1
+            ? connectionPath([node.x - 42, node.y], [548, 184], [472, 184], [414, 184])
+            : connectionPath([node.x - 42, node.y], [492, 258], [446, 226], [414, 216]),
       })),
     ];
-    return { nodes: [taskNode, ...voteAgents, tallyNode], edges };
+    return { nodes: [taskNode, hubNode, ...voteAgents], edges };
   }
 
   if (session.mode === "debate") {
@@ -525,8 +573,7 @@ function buildCanvasGraph(session: Session, copy: ReturnType<typeof useLocale>["
   const primaryAgent = getAgent(0, 286, 176);
   const upperAgent = getAgent(1, 492, 88);
   const lowerAgent = getAgent(2, 492, 264);
-  const toolNodes = toolsRight;
-  const nodes = [taskNode, primaryAgent, upperAgent, lowerAgent, ...toolNodes].filter((node): node is CanvasNode => Boolean(node));
+  const nodes = [taskNode, primaryAgent, upperAgent, lowerAgent].filter((node): node is CanvasNode => Boolean(node));
   const edges: CanvasEdge[] = [];
   if (primaryAgent) {
     edges.push({
@@ -546,14 +593,6 @@ function buildCanvasGraph(session: Session, copy: ReturnType<typeof useLocale>["
       path: connectionPath([primaryAgent.x + 40, primaryAgent.y + 16], [360, 204], [404, 264], [lowerAgent.x - 42, lowerAgent.y]),
     });
   }
-  toolNodes.forEach((toolNode, index) => {
-    const owner = index === 0 ? upperAgent : index === 1 ? primaryAgent : lowerAgent;
-    if (!owner) return;
-    edges.push({
-      id: `${owner.id}->${toolNode.id}`,
-      path: connectionPath([owner.x + 42, owner.y], [owner.x + 96, owner.y], [toolNode.x - 88, toolNode.y], [toolNode.x - 42, toolNode.y]),
-    });
-  });
   return { nodes, edges };
 }
 
@@ -565,11 +604,12 @@ function ConnectionCanvas({ session }: { session: Session }) {
   const activeSignal = latestSignal(session);
   const activeAgentId = activeSignal?.agent_id;
   const cards = signalCards(session, copy);
+  const exchanges = buildLiveExchange(session, copy);
 
   return (
     <div className="overflow-hidden rounded-[20px] border border-[#d6dbe6] bg-white">
       <div className="absolute inset-x-0 top-0 h-[96px] bg-[radial-gradient(circle_at_top,rgba(226,231,247,0.58),rgba(255,255,255,0))]" />
-      <div className="relative h-[364px] bg-[radial-gradient(circle_at_top,rgba(226,231,247,0.58),rgba(255,255,255,0))]">
+      <div className="relative h-[326px] bg-[radial-gradient(circle_at_top,rgba(226,231,247,0.58),rgba(255,255,255,0))]">
         <svg className="absolute inset-0 h-full w-full" viewBox="0 0 760 364" preserveAspectRatio="none">
           {graph.edges.map((edge) => {
             const reverse = activeEdgeIds.has(`${edge.id}:reverse`);
@@ -610,13 +650,39 @@ function ConnectionCanvas({ session }: { session: Session }) {
         {graph.nodes.map((node) => renderNode(node, activeAgentId))}
       </div>
 
-      <div className="grid gap-3 border-t border-[#e6e8ee] bg-white p-4 md:grid-cols-3">
-        {cards.map((card) => (
-          <div key={card.label} className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-3">
-            <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190]">{card.label}</div>
-            <div className="mt-1 text-[15px] font-medium tracking-[-0.03em] text-[#111111]">{card.value}</div>
-          </div>
-        ))}
+      <div className="border-t border-[#e6e8ee] bg-white p-4">
+        <div className="rounded-[18px] border border-[#d6dbe6] bg-[#fafbff] p-4">
+          <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190]">{copy.monitor.liveExchange}</div>
+          {exchanges[0] ? (
+            <div className="mt-3 rounded-[14px] border border-[#d6dbe6] bg-white px-3 py-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[11px] uppercase tracking-[0.14em] text-[#7b8190]">{exchanges[0].title}</div>
+                <div className="text-[10px] text-[#9aa3b2]">
+                  {new Date(exchanges[0].timestamp * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                </div>
+              </div>
+              <div className="mt-2 text-[13px] font-medium tracking-[-0.02em] text-[#111111]">
+                {exchanges[0].from} <span className="text-[#9aa3b2]">→</span> {exchanges[0].to}
+              </div>
+              <div className="mt-2 rounded-[12px] border border-[#e5e7eb] bg-[#fbfcff] px-3 py-2 font-mono text-[11px] leading-5 text-[#344054]">
+                {exchanges[0].preview}
+              </div>
+            </div>
+          ) : (
+            <div className="mt-3 rounded-[14px] border border-[#d6dbe6] bg-white px-3 py-4 text-[13px] text-[#6b7280]">
+              {copy.monitor.noExchangeYet}
+            </div>
+          )}
+        </div>
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          {cards.map((card) => (
+            <div key={card.label} className="rounded-full border border-[#d6dbe6] bg-[#fafbff] px-3 py-1.5">
+              <span className="text-[10px] uppercase tracking-[0.14em] text-[#7b8190]">{card.label}</span>
+              <span className="ml-2 text-[12px] font-medium tracking-[-0.02em] text-[#111111]">{card.value}</span>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
