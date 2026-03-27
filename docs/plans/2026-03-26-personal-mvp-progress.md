@@ -165,6 +165,11 @@ Branch: `codex/personal-mvp-refine`
   - `debate` now shows current round context and verdict detail from round events
   - `map_reduce` now shows chunk-completion activity directly in the worker lane
   - screenshot baseline for the premium session monitor was refreshed to match the richer center panel
+- Added a denser session wiring canvas to the premium monitor:
+  - the monitor now renders a shared `Session Task -> Agents -> MCP/Tool connections` graph above the mode-specific intelligence panel
+  - the canvas shows real attached-tool cards with capability badges instead of generic placeholders
+  - a small live-signal strip now surfaces active node, checkpoint, and latest tool activity inside the canvas
+  - premium monitor screenshot baseline was refreshed again to match the new topology-first center layout
 
 ## Validation
 
@@ -202,5 +207,5 @@ Note:
 ## Notes for the next agent
 
 - Do not assume `frontend/package.json`, `frontend/package-lock.json`, `.omc/`, or `.next/` belong to this pass. They were already dirty in the worktree.
-- The highest-value next product slice is an even denser topology canvas and tool-aware visual wiring between agents and live connections.
+- The highest-value next product slice is polishing the monitor toward an even closer pixel match with the approved mockups, especially spacing and connection geometry.
 - `tsc --noEmit` depends on `.next/types`; run `npx next build --webpack` first in this repo before treating bare `tsc` failures as real regressions.

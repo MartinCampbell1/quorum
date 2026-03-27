@@ -61,6 +61,152 @@ function shellTitle(session: Session) {
   return "Agent & MCP Server Topology";
 }
 
+function providerMark(provider: string) {
+  return PROVIDER_LABELS[provider]?.[0] ?? provider.slice(0, 1).toUpperCase();
+}
+
+function fallbackToolDetail(toolId: string): AttachedToolDetail {
+  return {
+    id: toolId,
+    name: humanizeTool(toolId),
+    tool_type: null,
+    transport: "unknown",
+    subtitle: "MCP connection",
+    icon: "folder",
+    capability: "native",
+  };
+}
+
+function ConnectionCanvas({ session }: { session: Session }) {
+  const detailMap = new Map((session.attached_tools ?? []).map((tool) => [tool.id, tool]));
+  const agents = session.agents.slice(0, 3);
+  const toolNodes = (session.attached_tools ?? []).slice(0, 4);
+  const latestToolEvent = latestEvent(session.events ?? [], "tool_call_finished") ?? latestEvent(session.events ?? [], "tool_call_started");
+  const signalCards = [
+    {
+      label: "Active Node",
+      value: session.active_node || "idle",
+    },
+    {
+      label: "Checkpoint",
+      value: session.current_checkpoint_id || "pending",
+    },
+    {
+      label: "Live Tool",
+      value: latestToolEvent?.tool_name || latestToolEvent?.detail || "No tool activity yet",
+    },
+  ];
+
+  const agentY = agents.length === 1
+    ? [150]
+    : agents.length === 2
+      ? [92, 228]
+      : [42, 150, 258];
+  const toolY = toolNodes.length <= 1
+    ? [142]
+    : toolNodes.length === 2
+      ? [82, 210]
+      : toolNodes.length === 3
+        ? [36, 146, 254]
+        : [18, 110, 202, 294];
+
+  return (
+    <div className="relative min-h-[438px] overflow-hidden rounded-[20px] border border-[#d6dbe6] bg-white">
+      <div className="absolute inset-x-0 top-0 h-[96px] bg-[radial-gradient(circle_at_top,rgba(226,231,247,0.58),rgba(255,255,255,0))]" />
+      <svg className="absolute inset-0 h-full w-full" viewBox="0 0 940 438" preserveAspectRatio="none">
+        {agents.map((_, index) => (
+          <path
+            key={`input-agent-${index}`}
+            d={`M130 168 C 220 168, 250 ${agentY[index] + 35}, 332 ${agentY[index] + 35}`}
+            fill="none"
+            stroke="#a8b0c2"
+            strokeWidth="2"
+          />
+        ))}
+        {agents.map((agent, index) => {
+          const toolId = agent.tools?.[0];
+          const toolIndex = toolId
+            ? toolNodes.findIndex((tool) => tool.id === toolId)
+            : Math.min(index, toolNodes.length - 1);
+          if (toolIndex < 0) return null;
+          return (
+            <path
+              key={`agent-tool-${agent.role}`}
+              d={`M462 ${agentY[index] + 35} C 552 ${agentY[index] + 35}, 608 ${toolY[toolIndex] + 31}, 706 ${toolY[toolIndex] + 31}`}
+              fill="none"
+              stroke="#a8b0c2"
+              strokeWidth="2"
+            />
+          );
+        })}
+      </svg>
+
+      <div className="absolute left-[34px] top-[132px] flex w-[108px] flex-col items-center">
+        <div className="flex h-[78px] w-[78px] items-center justify-center rounded-[18px] border border-[#d1d5db] bg-white shadow-[0_12px_32px_-24px_rgba(17,48,105,0.35)]">
+          <Folder className="h-8 w-8 text-[#7b8190]" />
+        </div>
+        <div className="mt-3 text-center text-[22px] leading-tight tracking-[-0.04em] text-[#111111]">
+          Session
+          <br />
+          Task
+        </div>
+        <div className="mt-1 text-center text-[12px] leading-5 text-[#7b8190]">
+          {session.task.slice(0, 46)}
+        </div>
+      </div>
+
+      {agents.map((agent, index) => (
+        <div
+          key={agent.role}
+          className="absolute left-[332px] flex w-[132px] flex-col items-center"
+          style={{ top: `${agentY[index]}px` }}
+        >
+          <div className="flex h-[78px] w-[78px] items-center justify-center rounded-[18px] border border-[#d1d5db] bg-white text-[40px] font-semibold text-[#6b7280] shadow-[0_12px_32px_-24px_rgba(17,48,105,0.35)]">
+            {providerMark(agent.provider)}
+          </div>
+          <div className="mt-3 text-center text-[22px] leading-tight tracking-[-0.04em] text-[#111111]">
+            {PROVIDER_LABELS[agent.provider] ?? agent.provider}
+          </div>
+          <div className="mt-1 text-center text-[13px] leading-5 text-[#6b7280]">
+            {agent.role}
+          </div>
+        </div>
+      ))}
+
+      {toolNodes.map((tool, index) => {
+        const Icon = resolveToolIcon(tool.id, tool);
+        return (
+          <div
+            key={tool.id}
+            className="absolute left-[706px] flex w-[178px] items-start gap-3 rounded-[18px] border border-[#d6dbe6] bg-white px-4 py-4 shadow-[0_12px_32px_-24px_rgba(17,48,105,0.28)]"
+            style={{ top: `${toolY[index]}px` }}
+          >
+            <div className="flex h-[58px] w-[58px] shrink-0 items-center justify-center rounded-[16px] border border-[#d6dbe6] bg-[#fafbff]">
+              <Icon className="h-7 w-7 text-[#7b8190]" />
+            </div>
+            <div className="min-w-0">
+              <div className="text-[17px] font-medium tracking-[-0.03em] text-[#111111]">{tool.name}</div>
+              <div className="mt-1 text-[12px] leading-5 text-[#6b7280]">{tool.subtitle}</div>
+              <div className="mt-2 inline-flex rounded-full border border-[#d6dbe6] bg-[#fafbff] px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-[#6b7280]">
+                {tool.capability}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+
+      <div className="absolute inset-x-4 bottom-4 grid gap-3 md:grid-cols-3">
+        {signalCards.map((card) => (
+          <div key={card.label} className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-3">
+            <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190]">{card.label}</div>
+            <div className="mt-1 text-[15px] font-medium tracking-[-0.03em] text-[#111111]">{card.value}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function AgentPill({
   label,
   subtitle,
@@ -365,7 +511,10 @@ export function TopologyPanel({ session }: TopologyPanelProps) {
       <h2 className="text-[19px] font-medium tracking-[-0.03em] text-[#111111]">
         {shellTitle(session)}
       </h2>
-      <div className="mt-5">{content}</div>
+      <div className="mt-5 space-y-4">
+        <ConnectionCanvas session={session} />
+        {session.mode === "dictator" || session.mode === "tournament" ? null : content}
+      </div>
     </section>
   );
 }
