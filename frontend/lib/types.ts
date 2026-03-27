@@ -112,6 +112,7 @@ export interface SessionEvent {
   tool_name?: string;
   elapsed_sec?: number;
   success?: boolean;
+  round?: number;
 }
 
 export interface AttachedToolDetail {

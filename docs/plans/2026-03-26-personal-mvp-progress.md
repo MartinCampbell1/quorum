@@ -160,6 +160,11 @@ Branch: `codex/personal-mvp-refine`
 - Removed guessed tool labels from the premium monitor:
   - session payloads now include `attached_tools` with runtime-safe metadata
   - monitor/right-rail cards now use real tool name, transport, subtitle, icon, and capability from backend data instead of inferring from tool ids
+- Upgraded mode-specific premium monitor panels to read real session events:
+  - `board` and `democracy` now surface latest recorded positions/votes and round summaries from runtime events
+  - `debate` now shows current round context and verdict detail from round events
+  - `map_reduce` now shows chunk-completion activity directly in the worker lane
+  - screenshot baseline for the premium session monitor was refreshed to match the richer center panel
 
 ## Validation
 
@@ -197,5 +202,5 @@ Note:
 ## Notes for the next agent
 
 - Do not assume `frontend/package.json`, `frontend/package-lock.json`, `.omc/`, or `.next/` belong to this pass. They were already dirty in the worktree.
-- The highest-value next product slice is a denser topology canvas and deeper session visualization driven by the now richer event stream.
+- The highest-value next product slice is an even denser topology canvas and tool-aware visual wiring between agents and live connections.
 - `tsc --noEmit` depends on `.next/types`; run `npx next build --webpack` first in this repo before treating bare `tsc` failures as real regressions.

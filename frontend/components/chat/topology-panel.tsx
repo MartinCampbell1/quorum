@@ -3,7 +3,7 @@
 import { ArrowRight, Folder, Globe, HardDrive, Sparkles, TerminalSquare, type LucideIcon } from "lucide-react";
 
 import { PROVIDER_LABELS } from "@/lib/constants";
-import type { AttachedToolDetail, Message, Session } from "@/lib/types";
+import type { AttachedToolDetail, Message, Session, SessionEvent } from "@/lib/types";
 
 interface TopologyPanelProps {
   session: Session;
@@ -29,6 +29,29 @@ function latestMessage(messages: Message[], agentId: string, phasePrefix?: strin
     .find((message) => message.agent_id === agentId && (!phasePrefix || message.phase.startsWith(phasePrefix)));
 }
 
+function latestEvent(
+  events: SessionEvent[],
+  type: string,
+  predicate?: (event: SessionEvent) => boolean
+) {
+  return [...events].reverse().find((event) => event.type === type && (!predicate || predicate(event)));
+}
+
+function recentEvents(events: SessionEvent[], type: string, limit: number = 3) {
+  return events.filter((event) => event.type === type).slice(-limit).reverse();
+}
+
+function latestRoundLabel(events: SessionEvent[]) {
+  const latestRoundEvent = [...events]
+    .reverse()
+    .find((event) => event.type === "round_completed" || event.type === "round_started");
+  if (!latestRoundEvent) return null;
+  if (typeof latestRoundEvent.round === "number" && latestRoundEvent.round > 0) {
+    return `Round ${latestRoundEvent.round}`;
+  }
+  return latestRoundEvent.title;
+}
+
 function shellTitle(session: Session) {
   if (session.mode === "board") return "Board Consensus Canvas";
   if (session.mode === "democracy") return "Voting Chamber";
@@ -41,13 +64,22 @@ function shellTitle(session: Session) {
 function AgentPill({
   label,
   subtitle,
+  accent,
 }: {
   label: string;
   subtitle: string;
+  accent?: string;
 }) {
   return (
     <div className="rounded-[16px] border border-[#d6dbe6] bg-white px-4 py-3">
-      <div className="text-[16px] font-medium tracking-[-0.03em] text-[#111111]">{label}</div>
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-[16px] font-medium tracking-[-0.03em] text-[#111111]">{label}</div>
+        {accent ? (
+          <div className="rounded-full border border-[#d6dbe6] bg-[#fafbff] px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-[#6b7280]">
+            {accent}
+          </div>
+        ) : null}
+      </div>
       <div className="mt-1 text-[13px] leading-5 text-[#6b7280]">{subtitle}</div>
     </div>
   );
@@ -166,19 +198,27 @@ function GenericView({ session }: { session: Session }) {
 
 function BoardView({ session }: { session: Session }) {
   const directors = session.agents.slice(0, 3);
+  const events = session.events ?? [];
+  const roundLabel = latestRoundLabel(events);
+  const latestDecision = latestEvent(events, "round_completed");
   return (
     <div className="grid gap-4 rounded-[18px] border border-[#d6dbe6] bg-white p-5 lg:grid-cols-[repeat(3,minmax(0,1fr))]">
       {directors.map((director) => (
         <AgentPill
           key={director.role}
           label={director.role}
-          subtitle={latestMessage(session.messages, director.role)?.content?.slice(0, 160) || "Waiting for board position…"}
+          subtitle={
+            latestEvent(events, "vote_recorded", (event) => event.agent_id === director.role)?.detail ||
+            latestMessage(session.messages, director.role)?.content?.slice(0, 160) ||
+            "Waiting for board position…"
+          }
+          accent={roundLabel ?? undefined}
         />
       ))}
       <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 lg:col-span-3">
         <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190]">Consensus state</div>
         <div className="mt-2 text-[16px] leading-7 text-[#111111]">
-          {session.result || "Board is still discussing and aligning positions."}
+          {latestDecision?.detail || session.result || "Board is still discussing and aligning positions."}
         </div>
       </div>
     </div>
@@ -186,19 +226,27 @@ function BoardView({ session }: { session: Session }) {
 }
 
 function DemocracyView({ session }: { session: Session }) {
+  const events = session.events ?? [];
+  const roundLabel = latestRoundLabel(events);
+  const latestMajority = latestEvent(events, "round_completed");
   return (
     <div className="grid gap-4 rounded-[18px] border border-[#d6dbe6] bg-white p-5 lg:grid-cols-[repeat(3,minmax(0,1fr))]">
       {session.agents.map((agent) => (
         <AgentPill
           key={agent.role}
           label={agent.role}
-          subtitle={latestMessage(session.messages, agent.role)?.content?.replace(/^Vote:\s*/i, "").slice(0, 140) || "Waiting for vote…"}
+          subtitle={
+            latestEvent(events, "vote_recorded", (event) => event.agent_id === agent.role)?.detail ||
+            latestMessage(session.messages, agent.role)?.content?.replace(/^Vote:\s*/i, "").slice(0, 140) ||
+            "Waiting for vote…"
+          }
+          accent={roundLabel ?? undefined}
         />
       ))}
       <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 lg:col-span-3">
         <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190]">Majority state</div>
         <div className="mt-2 text-[16px] leading-7 text-[#111111]">
-          {session.result || "No majority yet. Additional rounds may be required."}
+          {latestMajority?.detail || session.result || "No majority yet. Additional rounds may be required."}
         </div>
       </div>
     </div>
@@ -207,11 +255,15 @@ function DemocracyView({ session }: { session: Session }) {
 
 function DebateView({ session }: { session: Session }) {
   const [proponent, opponent, judge] = session.agents;
+  const events = session.events ?? [];
+  const roundLabel = latestRoundLabel(events);
+  const latestVerdict = latestEvent(events, "round_completed");
   return (
     <div className="grid gap-4 rounded-[18px] border border-[#d6dbe6] bg-white p-5 lg:grid-cols-[minmax(0,1fr)_48px_minmax(0,1fr)]">
       <AgentPill
         label={proponent?.role ?? "proponent"}
         subtitle={proponent ? latestMessage(session.messages, proponent.role)?.content?.slice(0, 180) || "Awaiting argument…" : "—"}
+        accent={roundLabel ?? undefined}
       />
       <div className="flex items-center justify-center text-[#9ca3af]">
         <ArrowRight className="h-6 w-6" />
@@ -219,11 +271,12 @@ function DebateView({ session }: { session: Session }) {
       <AgentPill
         label={opponent?.role ?? "opponent"}
         subtitle={opponent ? latestMessage(session.messages, opponent.role)?.content?.slice(0, 180) || "Awaiting rebuttal…" : "—"}
+        accent={roundLabel ?? undefined}
       />
       <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 lg:col-span-3">
         <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190]">Judge verdict</div>
         <div className="mt-2 text-[16px] leading-7 text-[#111111]">
-          {judge ? latestMessage(session.messages, judge.role)?.content || session.result || "Judge has not ruled yet." : session.result}
+          {latestVerdict?.detail || (judge ? latestMessage(session.messages, judge.role)?.content || session.result || "Judge has not ruled yet." : session.result)}
         </div>
       </div>
     </div>
@@ -259,6 +312,7 @@ function MapReduceView({ session }: { session: Session }) {
   const planner = session.agents[0];
   const workers = session.agents.slice(1, -1);
   const synthesizer = session.agents[session.agents.length - 1];
+  const chunkEvents = recentEvents(session.events ?? [], "chunk_completed", 4);
   return (
     <div className="grid gap-4 rounded-[18px] border border-[#d6dbe6] bg-white p-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)]">
       <AgentPill
@@ -271,10 +325,24 @@ function MapReduceView({ session }: { session: Session }) {
           <div key={worker.role} className="rounded-[14px] border border-[#d6dbe6] bg-white px-3 py-3">
             <div className="text-[14px] font-medium text-[#111111]">{worker.role}</div>
             <div className="mt-1 text-[12px] leading-5 text-[#6b7280]">
-              {latestMessage(session.messages, worker.role)?.content?.slice(0, 120) || "Waiting for chunk output…"}
+              {latestEvent(session.events ?? [], "chunk_completed", (event) => event.agent_id === worker.role)?.detail ||
+                latestMessage(session.messages, worker.role)?.content?.slice(0, 120) ||
+                "Waiting for chunk output…"}
             </div>
           </div>
         ))}
+        {chunkEvents.length > 0 ? (
+          <div className="space-y-2 rounded-[14px] border border-dashed border-[#d6dbe6] bg-white px-3 py-3">
+            <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190]">Recent chunks</div>
+            {chunkEvents.map((event) => (
+              <div key={event.id} className="text-[12px] leading-5 text-[#6b7280]">
+                <span className="font-medium text-[#111111]">{event.agent_id || "worker"}</span>
+                {" · "}
+                {event.detail}
+              </div>
+            ))}
+          </div>
+        ) : null}
       </div>
       <AgentPill
         label={synthesizer?.role ?? "synthesizer"}
