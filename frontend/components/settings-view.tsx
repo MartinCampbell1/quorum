@@ -35,6 +35,7 @@ import {
   getPromptTemplates,
   getWorkspacePresets,
   addWorkspacePreset,
+  updateWorkspacePreset,
   deleteWorkspacePreset,
   validateConfiguredTool,
 } from "@/lib/api";
@@ -656,6 +657,7 @@ export function SettingsView() {
   const [workspaceName, setWorkspaceName] = useState("");
   const [workspaceDescription, setWorkspaceDescription] = useState("");
   const [workspacePathsDraft, setWorkspacePathsDraft] = useState("");
+  const [editingWorkspaceId, setEditingWorkspaceId] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -741,21 +743,50 @@ export function SettingsView() {
       .map((item) => item.trim())
       .filter(Boolean);
     if (!name || paths.length === 0) return;
-    await addWorkspacePreset({
-      id: slugify(name),
-      name,
-      description: workspaceDescription.trim() || null,
-      paths,
-    });
+    if (editingWorkspaceId) {
+      await updateWorkspacePreset(editingWorkspaceId, {
+        name,
+        description: workspaceDescription.trim() || null,
+        paths,
+      });
+    } else {
+      await addWorkspacePreset({
+        id: slugify(name),
+        name,
+        description: workspaceDescription.trim() || null,
+        paths,
+      });
+    }
     setWorkspaceName("");
     setWorkspaceDescription("");
     setWorkspacePathsDraft("");
+    setEditingWorkspaceId(null);
     await refreshWorkspaces();
   }
 
   async function handleDeleteWorkspacePreset(id: string) {
     await deleteWorkspacePreset(id);
+    if (editingWorkspaceId === id) {
+      setWorkspaceName("");
+      setWorkspaceDescription("");
+      setWorkspacePathsDraft("");
+      setEditingWorkspaceId(null);
+    }
     await refreshWorkspaces();
+  }
+
+  function handleEditWorkspacePreset(preset: WorkspacePreset) {
+    setEditingWorkspaceId(preset.id);
+    setWorkspaceName(preset.name);
+    setWorkspaceDescription(preset.description ?? "");
+    setWorkspacePathsDraft(preset.paths.join("\n"));
+  }
+
+  function resetWorkspaceForm() {
+    setWorkspaceName("");
+    setWorkspaceDescription("");
+    setWorkspacePathsDraft("");
+    setEditingWorkspaceId(null);
   }
 
   const templateKeys = Object.keys(templates);
@@ -1062,14 +1093,24 @@ export function SettingsView() {
                             ))}
                           </div>
                         </div>
-                        <Button
-                          variant="ghost"
-                          size="icon-xs"
-                          onClick={() => handleDeleteWorkspacePreset(preset.id)}
-                          aria-label="Удалить workspace preset"
-                        >
-                          <Trash2 size={12} />
-                        </Button>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            variant="ghost"
+                            size="icon-xs"
+                            onClick={() => handleEditWorkspacePreset(preset)}
+                            aria-label="Редактировать workspace preset"
+                          >
+                            <Pencil size={12} />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon-xs"
+                            onClick={() => handleDeleteWorkspacePreset(preset.id)}
+                            aria-label="Удалить workspace preset"
+                          >
+                            <Trash2 size={12} />
+                          </Button>
+                        </div>
                       </div>
                     </div>
                   ))
@@ -1080,8 +1121,18 @@ export function SettingsView() {
                 <CardContent className="space-y-3 px-5 py-4">
                   <div className="flex items-center justify-between">
                     <span className="text-[11px] font-medium uppercase tracking-[0.16em] text-[#4b5563]">
-                      Новый preset
+                      {editingWorkspaceId ? "Редактировать preset" : "Новый preset"}
                     </span>
+                    {editingWorkspaceId ? (
+                      <button
+                        type="button"
+                        onClick={resetWorkspaceForm}
+                        className="cursor-pointer rounded-md p-1 text-muted-foreground hover:text-foreground"
+                        aria-label="Сбросить workspace preset"
+                      >
+                        <X size={14} />
+                      </button>
+                    ) : null}
                   </div>
                   <div>
                     <label className="mb-1 block text-[11px] text-muted-foreground">Название</label>
@@ -1118,7 +1169,7 @@ export function SettingsView() {
                     onClick={handleAddWorkspacePreset}
                     disabled={!workspaceName.trim() || !workspacePathsDraft.trim()}
                   >
-                    <Plus size={12} className="mr-1.5" /> Сохранить preset
+                    <Plus size={12} className="mr-1.5" /> {editingWorkspaceId ? "Обновить preset" : "Сохранить preset"}
                   </Button>
                 </CardContent>
               </Card>

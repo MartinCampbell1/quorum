@@ -58,6 +58,8 @@ class GatewayChatModel(BaseChatModel):
     model_override: Optional[str] = None
     timeout: int = 300
     mcp_tools: Optional[list[str]] = None
+    session_id: Optional[str] = None
+    agent_role: Optional[str] = None
 
     @property
     def _llm_type(self) -> str:
@@ -96,6 +98,8 @@ class GatewayChatModel(BaseChatModel):
                     "timeout": self.timeout,
                     "mcp_tools": self.mcp_tools,
                     "workspace_paths": self.workspace_paths,
+                    "session_id": self.session_id,
+                    "agent_role": self.agent_role,
                 },
             )
             resp.raise_for_status()
@@ -145,6 +149,8 @@ class GatewayChatModel(BaseChatModel):
                     "timeout": self.timeout,
                     "mcp_tools": self.mcp_tools,
                     "workspace_paths": self.workspace_paths,
+                    "session_id": self.session_id,
+                    "agent_role": self.agent_role,
                 },
             )
             resp.raise_for_status()

@@ -262,6 +262,7 @@ class SessionResponse(BaseModel):
     workspace_preset_ids: list[str] = Field(default_factory=list)
     workspace_paths: list[str] = Field(default_factory=list)
     attached_tool_ids: list[str] = Field(default_factory=list)
+    attached_tools: list[dict] = Field(default_factory=list)
     provider_capabilities_snapshot: dict = Field(default_factory=dict)
     branch_children: list[dict] = Field(default_factory=list)
 
@@ -298,6 +299,126 @@ def _tool_metadata(tool_id: str) -> tuple[str | None, str | None]:
     if configured:
         return configured.tool_type, configured.name
     return None, None
+
+
+def _tool_icon(tool_id: str) -> str:
+    canonical = normalize_tool_id(tool_id)
+    builtin_icons = {
+        "web_search": "globe",
+        "perplexity": "sparkles",
+        "code_exec": "terminal",
+        "shell_exec": "terminal",
+        "http_request": "globe",
+    }
+    if canonical in builtin_icons:
+        return builtin_icons[canonical]
+    configured = tool_config_store.get(canonical)
+    if configured and configured.icon:
+        return configured.icon
+    return TOOL_TYPES.get(configured.tool_type if configured else "", {}).get("icon", "folder")
+
+
+def _tool_transport(tool_id: str) -> str:
+    canonical = normalize_tool_id(tool_id)
+    builtin_transport = {
+        "web_search": "mcp",
+        "perplexity": "mcp",
+        "code_exec": "builtin",
+        "shell_exec": "builtin",
+        "http_request": "bridge",
+    }
+    if canonical in builtin_transport:
+        return builtin_transport[canonical]
+    configured = tool_config_store.get(canonical)
+    if not configured:
+        return "unknown"
+    if configured.tool_type == "mcp_server":
+        return str(configured.config.get("transport", "stdio") or "stdio").strip().lower()
+    if configured.tool_type in {"code_exec", "shell"}:
+        return "builtin"
+    return "bridge"
+
+
+def _tool_subtitle(tool_id: str) -> str:
+    canonical = normalize_tool_id(tool_id)
+    builtin_subtitles = {
+        "web_search": "Provider: Brave",
+        "perplexity": "Provider: Perplexity",
+        "code_exec": "Runtime: python",
+        "shell_exec": "Path: local shell",
+        "http_request": "Service: remote API",
+    }
+    if canonical in builtin_subtitles:
+        return builtin_subtitles[canonical]
+    configured = tool_config_store.get(canonical)
+    if not configured:
+        return "MCP connection"
+    if configured.tool_type == "neo4j":
+        database = str(configured.config.get("database", "")).strip()
+        bolt_url = str(configured.config.get("bolt_url", "")).strip()
+        if database:
+            return f"DB: {database}"
+        if bolt_url:
+            return f"URL: {bolt_url}"
+    if configured.tool_type == "ssh":
+        host = str(configured.config.get("host", "")).strip()
+        port = str(configured.config.get("port", "")).strip() or "22"
+        return f"Host: {host}:{port}" if host else "Remote shell"
+    if configured.tool_type in {"http_api", "custom_api"}:
+        base_url = str(configured.config.get("base_url", "")).strip()
+        return f"Base URL: {base_url}" if base_url else "Service: remote API"
+    if configured.tool_type == "mcp_server":
+        transport = _tool_transport(canonical)
+        if transport == "http":
+            url = str(configured.config.get("url", "")).strip()
+            return f"URL: {url}" if url else "Remote MCP"
+        command = str(configured.config.get("command", "")).strip()
+        return f"Command: {command}" if command else "Stdio MCP"
+    if configured.tool_type == "brave_search":
+        return "Provider: Brave"
+    if configured.tool_type == "perplexity":
+        return "Provider: Perplexity"
+    return "MCP connection"
+
+
+def build_attached_tool_details(
+    attached_tool_ids: list[str],
+    agents: list[dict] | None = None,
+    provider_capabilities_snapshot: dict | None = None,
+) -> list[dict]:
+    details: list[dict] = []
+    capability_map: dict[str, CapabilityLevel] = {}
+    if agents:
+        for agent in agents:
+            provider = str(agent.get("provider", "")).strip().lower()
+            for raw_tool_id in attached_tool_ids:
+                tool_id = normalize_tool_id(raw_tool_id)
+                capability = capability_for_tool(provider, tool_id)
+                previous = capability_map.get(tool_id)
+                if capability == "native" or previous != "native":
+                    capability_map[tool_id] = capability
+    for agent in (provider_capabilities_snapshot or {}).values():
+        for tool_id, info in agent.get("tools", {}).items():
+            capability = info.get("capability", "unavailable")
+            previous = capability_map.get(tool_id)
+            if capability == "native" or previous != "native":
+                capability_map[tool_id] = capability
+
+    for raw_tool_id in attached_tool_ids:
+        tool_id = normalize_tool_id(raw_tool_id)
+        tool_type, name = _tool_metadata(tool_id)
+        details.append(
+            {
+                "id": tool_id,
+                "name": name or tool_id,
+                "tool_type": tool_type,
+                "transport": _tool_transport(tool_id),
+                "subtitle": _tool_subtitle(tool_id),
+                "icon": _tool_icon(tool_id),
+                "capability": capability_map.get(tool_id, "native"),
+            }
+        )
+    return details
 
 
 def capability_for_tool(provider: str, tool_id: str) -> CapabilityLevel:
@@ -510,7 +631,9 @@ class SessionStore:
         self._lock = threading.RLock()
         raw_db_path = db_path or os.getenv("MULTI_AGENT_STATE_DB")
         self._db_path = Path(raw_db_path) if raw_db_path else Path.home() / ".multi-agent" / "state.db"
+        self._runtime_events_dir = self._db_path.parent / "runtime_events"
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._runtime_events_dir.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -617,6 +740,75 @@ class SessionStore:
         conn.executemany("DELETE FROM events WHERE session_id = ?", [(sid,) for sid in stale_ids])
         conn.executemany("DELETE FROM checkpoints WHERE session_id = ?", [(sid,) for sid in stale_ids])
         conn.executemany("DELETE FROM runs WHERE id = ?", [(sid,) for sid in stale_ids])
+        for sid in stale_ids:
+            for candidate in self._runtime_events_dir.glob(f"{sid}*.jsonl"):
+                candidate.unlink(missing_ok=True)
+
+    def _runtime_event_path(self, sid: str) -> Path:
+        return self._runtime_events_dir / f"{sid}.jsonl"
+
+    def _append_event_conn(
+        self,
+        conn: sqlite3.Connection,
+        sid: str,
+        event_type: str,
+        title: str,
+        detail: str = "",
+        **extra: object,
+    ) -> Optional[dict]:
+        row = conn.execute(
+            "SELECT next_event_seq FROM runs WHERE id = ?",
+            (sid,),
+        ).fetchone()
+        if not row:
+            return None
+        event_id = int(row["next_event_seq"])
+        event = {
+            "id": event_id,
+            "timestamp": time.time(),
+            "type": event_type,
+            "title": title,
+            "detail": detail,
+            **extra,
+        }
+        conn.execute(
+            "INSERT INTO events (session_id, event_id, timestamp, payload_json) VALUES (?, ?, ?, ?)",
+            (sid, event_id, event["timestamp"], self._encode(event)),
+        )
+        conn.execute(
+            "UPDATE runs SET next_event_seq = ? WHERE id = ?",
+            (event_id + 1, sid),
+        )
+        return copy.deepcopy(event)
+
+    def _ingest_runtime_events(self, conn: sqlite3.Connection, sid: str) -> None:
+        path = self._runtime_event_path(sid)
+        if not path.exists():
+            return
+
+        draining_path = path.with_name(f"{path.stem}.{uuid.uuid4().hex}.drain.jsonl")
+        try:
+            path.rename(draining_path)
+        except FileNotFoundError:
+            return
+
+        try:
+            with draining_path.open() as handle:
+                lines = [line.strip() for line in handle if line.strip()]
+        finally:
+            draining_path.unlink(missing_ok=True)
+
+        for line in lines:
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            event_type = str(payload.pop("type", "")).strip()
+            title = str(payload.pop("title", "")).strip()
+            detail = str(payload.pop("detail", "")).strip()
+            if not event_type or not title:
+                continue
+            self._append_event_conn(conn, sid, event_type, title, detail, **payload)
 
     def create(
         self,
@@ -701,6 +893,7 @@ class SessionStore:
 
     def _row_to_session(self, row: sqlite3.Row, conn: sqlite3.Connection) -> dict:
         sid = row["id"]
+        self._ingest_runtime_events(conn, sid)
         checkpoints = [
             self._decode(cp["payload_json"], {})
             for cp in conn.execute(
@@ -733,11 +926,16 @@ class SessionStore:
                 (sid,),
             ).fetchall()
         ]
+        agents = self._decode(row["agents_json"], [])
+        attached_tool_ids = self._decode(row["attached_tool_ids_json"], [])
+        provider_capabilities_snapshot = self._decode(
+            row["provider_capabilities_snapshot_json"], {}
+        )
         return {
             "id": sid,
             "mode": row["mode"],
             "task": row["task"],
-            "agents": self._decode(row["agents_json"], []),
+            "agents": agents,
             "messages": self._decode(row["messages_json"], []),
             "result": row["result"],
             "status": row["status"],
@@ -755,9 +953,12 @@ class SessionStore:
             "active_node": row["active_node"],
             "workspace_preset_ids": self._decode(row["workspace_preset_ids_json"], []),
             "workspace_paths": self._decode(row["workspace_paths_json"], []),
-            "attached_tool_ids": self._decode(row["attached_tool_ids_json"], []),
-            "provider_capabilities_snapshot": self._decode(
-                row["provider_capabilities_snapshot_json"], {}
+            "attached_tool_ids": attached_tool_ids,
+            "provider_capabilities_snapshot": provider_capabilities_snapshot,
+            "attached_tools": build_attached_tool_details(
+                attached_tool_ids,
+                agents,
+                provider_capabilities_snapshot,
             ),
             "branch_children": branch_children,
         }
@@ -866,33 +1067,11 @@ class SessionStore:
         **extra: object,
     ) -> Optional[dict]:
         with self._lock, self._connect() as conn:
-            row = conn.execute(
-                "SELECT next_event_seq FROM runs WHERE id = ?",
-                (sid,),
-            ).fetchone()
-            if not row:
-                return None
-            event_id = int(row["next_event_seq"])
-            event = {
-                "id": event_id,
-                "timestamp": time.time(),
-                "type": event_type,
-                "title": title,
-                "detail": detail,
-                **extra,
-            }
-            conn.execute(
-                "INSERT INTO events (session_id, event_id, timestamp, payload_json) VALUES (?, ?, ?, ?)",
-                (sid, event_id, event["timestamp"], self._encode(event)),
-            )
-            conn.execute(
-                "UPDATE runs SET next_event_seq = ? WHERE id = ?",
-                (event_id + 1, sid),
-            )
-            return copy.deepcopy(event)
+            return self._append_event_conn(conn, sid, event_type, title, detail, **extra)
 
     def list_events(self, sid: str, since: int = 0) -> list[dict]:
         with self._lock, self._connect() as conn:
+            self._ingest_runtime_events(conn, sid)
             rows = conn.execute(
                 """
                 SELECT payload_json

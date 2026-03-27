@@ -16,6 +16,16 @@ function formatTime(timestamp: number): string {
 }
 
 function formatEventLine(event: SessionEvent): string {
+  if (event.type === "tool_call_started") {
+    const actor = event.agent_id ? `${event.agent_id} | ` : "";
+    return `${actor}Tool Call: ${event.tool_name ?? event.detail}`.trim();
+  }
+  if (event.type === "tool_call_finished") {
+    const actor = event.agent_id ? `${event.agent_id} | ` : "";
+    const elapsed = typeof event.elapsed_sec === "number" ? ` | ${event.elapsed_sec}s` : "";
+    const status = event.success === false ? " | failed" : "";
+    return `${actor}Tool Result: ${event.tool_name ?? ""}${elapsed}${status} ${event.detail}`.trim();
+  }
   const actor = event.agent_id ? `${event.agent_id} | ` : "";
   const detail = event.detail ? ` ${event.detail}` : "";
   const phase = event.phase ? ` | ${event.phase}` : "";

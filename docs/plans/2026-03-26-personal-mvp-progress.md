@@ -149,6 +149,17 @@ Branch: `codex/personal-mvp-refine`
   - `round_completed`
   - `chunk_completed`
   - current live monitor trace now reflects board/democracy/debate/map-reduce progress more explicitly instead of only checkpoints and messages
+- Added bridge-observable tool-call tracing:
+  - gateway now passes `session_id` and `agent_role` into provider requests
+  - the configured-tools MCP bridge writes runtime `tool_call_started` / `tool_call_finished` events to a per-session event stream under `~/.multi-agent/runtime_events/`
+  - the SQLite session store ingests those runtime event files lazily and merges them into the canonical event timeline
+  - the premium monitor trace now renders tool-call rows with tool name, elapsed time, and failure state
+- Added workspace preset editing in Settings:
+  - workspace presets now support create, edit, cancel/reset, and delete from the same surface
+  - deleting an actively edited preset resets the form cleanly
+- Removed guessed tool labels from the premium monitor:
+  - session payloads now include `attached_tools` with runtime-safe metadata
+  - monitor/right-rail cards now use real tool name, transport, subtitle, icon, and capability from backend data instead of inferring from tool ids
 
 ## Validation
 
@@ -161,6 +172,9 @@ Branch: `codex/personal-mvp-refine`
 - `cd frontend && npm run build`
 - `cd frontend && npx next build --webpack`
 - `cd frontend && npx playwright test e2e/premium-ui.spec.ts`
+- `python3 -m py_compile orchestrator/models.py orchestrator/engine.py orchestrator/modes/base.py langchain_gateway.py gateway.py mcp_servers/configured_tools_server.py`
+- `python3 -m pytest tests/test_interactive_runtime.py tests/test_api_contracts.py -q`
+- `cd frontend && npx tsc --noEmit` (after `next build --webpack`, because `.next/types` are generated there in this setup)
 
 All of the above passed during this pass.
 
@@ -173,18 +187,15 @@ Note:
   - `Claude`: native
   - `Gemini`: native
   - `Codex`: bridged through `configured-tools`
-- Tool-call-level event tracing (`tool_call_started` / `tool_call_finished`) is still not emitted from the runtime yet.
-- `Codex` does not yet have a native per-run restriction model for arbitrary external MCP servers; the honest fallback is still the bridge path.
+- `Codex` still does not have a native per-run restriction model for arbitrary external MCP servers; the honest fallback remains the bridge path.
 
 ## Still not done
 
-- Tool-call event streaming and deeper execution trace semantics
 - A more explicit topology canvas for the session monitor right/center split
-- Workspace preset editing UX beyond create/delete
 - Optional native external MCP path for `Codex` where bearer-token HTTP or stdio-only setups make sense
 
 ## Notes for the next agent
 
 - Do not assume `frontend/package.json`, `frontend/package-lock.json`, `.omc/`, or `.next/` belong to this pass. They were already dirty in the worktree.
-- The highest-value next backend slice is tool-call event tracing so the premium monitor can show real tool execution, not only mode-level progress.
-- The highest-value next product slice is a denser topology canvas and workspace preset editing.
+- The highest-value next product slice is a denser topology canvas and deeper session visualization driven by the now richer event stream.
+- `tsc --noEmit` depends on `.next/types`; run `npx next build --webpack` first in this repo before treating bare `tsc` failures as real regressions.

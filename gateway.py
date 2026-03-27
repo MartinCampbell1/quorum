@@ -371,6 +371,14 @@ def _write_temp_json(payload: dict, prefix: str) -> str:
     return path
 
 
+def _runtime_event_stream_path(session_id: str | None) -> str | None:
+    if not session_id:
+        return None
+    runtime_dir = Path(REAL_HOME) / ".multi-agent" / "runtime_events"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    return str(runtime_dir / f"{session_id}.jsonl")
+
+
 def _bridge_tool_definition(tool_id: str) -> dict | None:
     canonical = normalize_tool_id(tool_id)
     configured = tool_config_store.get(canonical)
@@ -715,6 +723,8 @@ async def call_agent(
     timeout: int = DEFAULT_TIMEOUT,
     mcp_tools: list[str] = None,
     workspace_paths: list[str] | None = None,
+    session_id: str | None = None,
+    agent_role: str | None = None,
 ) -> dict:
     """
     Вызвать агента с автоматической ротацией аккаунтов.
@@ -733,6 +743,7 @@ async def call_agent(
     allowed_mcp_servers = resolve_mcp_servers(native_tools)
     bridge_payload_path = build_bridge_payload(provider, bridged_tools) if bridged_tools else None
     mcp_config_path = build_mcp_config(native_tools) if provider == "claude" and native_tools else None
+    runtime_event_stream_path = _runtime_event_stream_path(session_id)
     try:
         cmd = build_cmd(
             provider,
@@ -753,6 +764,10 @@ async def call_agent(
                 env = default_env()
                 if bridge_payload_path:
                     env["CONFIGURED_TOOLS_PAYLOAD"] = bridge_payload_path
+                if runtime_event_stream_path:
+                    env["CONFIGURED_TOOLS_EVENT_STREAM"] = runtime_event_stream_path
+                if agent_role:
+                    env["CONFIGURED_TOOLS_AGENT_ROLE"] = agent_role
                 bootstrap_servers = list(dict.fromkeys(allowed_mcp_servers + (["configured-tools"] if bridge_payload_path and provider in {"gemini", "codex"} else [])))
                 await ensure_registered_mcp_servers(provider, env, bootstrap_servers)
                 stdout, stderr, rc = await run_cli(cmd, workdir, timeout, env)
@@ -801,6 +816,10 @@ async def call_agent(
             env = build_env(profile)
             if bridge_payload_path:
                 env["CONFIGURED_TOOLS_PAYLOAD"] = bridge_payload_path
+            if runtime_event_stream_path:
+                env["CONFIGURED_TOOLS_EVENT_STREAM"] = runtime_event_stream_path
+            if agent_role:
+                env["CONFIGURED_TOOLS_AGENT_ROLE"] = agent_role
             bootstrap_servers = list(
                 dict.fromkeys(
                     allowed_mcp_servers
@@ -907,6 +926,8 @@ class AgentRequest(BaseModel):
     timeout: Optional[int] = DEFAULT_TIMEOUT
     mcp_tools: Optional[list[str]] = None
     workspace_paths: Optional[list[str]] = None
+    session_id: Optional[str] = None
+    agent_role: Optional[str] = None
 
 
 class MultiRequest(BaseModel):
@@ -935,19 +956,22 @@ class ConsensusRequest(BaseModel):
 async def ep_claude(req: AgentRequest):
     return await call_agent("claude", req.prompt, req.workdir, req.model,
                             req.system_prompt, req.timeout or DEFAULT_TIMEOUT,
-                            mcp_tools=req.mcp_tools, workspace_paths=req.workspace_paths)
+                            mcp_tools=req.mcp_tools, workspace_paths=req.workspace_paths,
+                            session_id=req.session_id, agent_role=req.agent_role)
 
 @app.post("/gemini")
 async def ep_gemini(req: AgentRequest):
     return await call_agent("gemini", req.prompt, req.workdir, req.model,
                             req.system_prompt, req.timeout or DEFAULT_TIMEOUT,
-                            mcp_tools=req.mcp_tools, workspace_paths=req.workspace_paths)
+                            mcp_tools=req.mcp_tools, workspace_paths=req.workspace_paths,
+                            session_id=req.session_id, agent_role=req.agent_role)
 
 @app.post("/codex")
 async def ep_codex(req: AgentRequest):
     return await call_agent("codex", req.prompt, req.workdir, req.model,
                             req.system_prompt, req.timeout or DEFAULT_TIMEOUT,
-                            mcp_tools=req.mcp_tools, workspace_paths=req.workspace_paths)
+                            mcp_tools=req.mcp_tools, workspace_paths=req.workspace_paths,
+                            session_id=req.session_id, agent_role=req.agent_role)
 
 @app.post("/ask")
 async def ep_ask(req: AgentRequest):
@@ -955,7 +979,8 @@ async def ep_ask(req: AgentRequest):
         raise HTTPException(400, "Specify 'agent': 'claude' | 'gemini' | 'codex'")
     return await call_agent(req.agent, req.prompt, req.workdir, req.model,
                             req.system_prompt, req.timeout or DEFAULT_TIMEOUT,
-                            mcp_tools=req.mcp_tools, workspace_paths=req.workspace_paths)
+                            mcp_tools=req.mcp_tools, workspace_paths=req.workspace_paths,
+                            session_id=req.session_id, agent_role=req.agent_role)
 
 
 # ---- Endpoint: Fan-out to multiple agents ----

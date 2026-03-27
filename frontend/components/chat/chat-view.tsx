@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Folder, Globe, HardDrive, Loader2 } from "lucide-react";
+import { Folder, Globe, HardDrive, Loader2, Sparkles, TerminalSquare } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { controlSession } from "@/lib/api";
-import { useSessionEvents } from "@/hooks/use-session-events";
 import { useSession } from "@/hooks/use-session";
+import { useSessionEvents } from "@/hooks/use-session-events";
+import type { AttachedToolDetail } from "@/lib/types";
 
 import { ChatHeader } from "./chat-header";
 import { CheckpointPanel } from "./checkpoint-panel";
@@ -21,23 +22,13 @@ interface ChatViewProps {
   onOpenSessions?: () => void;
 }
 
-function humanizeTool(tool: string) {
-  return tool
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (char) => char.toUpperCase());
-}
-
-function toolSubtitle(tool: string) {
-  if (tool.includes("search")) return "Provider: Brave";
-  if (tool.includes("shell")) return "Path: local shell";
-  if (tool.includes("code")) return "Runtime: python";
-  if (tool.includes("http")) return "Service: remote API";
-  return "MCP connection";
-}
-
-function ToolIcon({ tool }: { tool: string }) {
-  if (tool.includes("search")) return <Globe className="h-7 w-7 text-[#7b8190]" />;
-  if (tool.includes("shell") || tool.includes("code")) return <HardDrive className="h-7 w-7 text-[#7b8190]" />;
+function ToolIcon({ tool }: { tool: AttachedToolDetail }) {
+  if (tool.icon === "🔍" || tool.id.includes("search")) return <Globe className="h-7 w-7 text-[#7b8190]" />;
+  if (tool.icon === "🧠" || tool.id.includes("perplexity")) return <Sparkles className="h-7 w-7 text-[#7b8190]" />;
+  if (tool.icon === "⚡" || tool.icon === "🐍" || tool.id.includes("shell") || tool.id.includes("code")) {
+    return <TerminalSquare className="h-7 w-7 text-[#7b8190]" />;
+  }
+  if (tool.icon === "📊") return <HardDrive className="h-7 w-7 text-[#7b8190]" />;
   return <Folder className="h-7 w-7 text-[#7b8190]" />;
 }
 
@@ -54,24 +45,18 @@ export function ChatView({
 
   const activeConnections = useMemo(() => {
     if (!session) return [];
+    if (session.attached_tools?.length) return session.attached_tools;
     return Array.from(
       new Set(session.attached_tool_ids?.length ? session.attached_tool_ids : session.agents.flatMap((agent) => agent.tools ?? []))
-    );
+    ).map((toolId) => ({
+      id: toolId,
+      name: toolId,
+      transport: "unknown",
+      subtitle: "MCP connection",
+      icon: "folder",
+      capability: "native" as const,
+    }));
   }, [session]);
-
-  const connectionCapabilities = useMemo(() => {
-    const map = new Map<string, "native" | "bridged" | "unavailable">();
-    if (!session?.provider_capabilities_snapshot) return map;
-    Object.values(session.provider_capabilities_snapshot).forEach((agent) => {
-      Object.entries(agent.tools).forEach(([toolId, info]) => {
-        const previous = map.get(toolId);
-        if (info.capability === "native" || previous !== "native") {
-          map.set(toolId, info.capability);
-        }
-      });
-    });
-    return map;
-  }, [session?.provider_capabilities_snapshot]);
 
   useEffect(() => {
     if (!session) return;
@@ -162,7 +147,7 @@ export function ChatView({
               <div className="mt-4 space-y-4">
                 {activeConnections.map((tool) => (
                   <div
-                    key={tool}
+                    key={tool.id}
                     className="rounded-[16px] border border-[#d6dbe6] bg-white px-4 py-4"
                   >
                     <div className="flex items-start gap-3">
@@ -171,13 +156,13 @@ export function ChatView({
                       </div>
                       <div>
                         <div className="text-[18px] font-medium tracking-[-0.03em] text-[#111111]">
-                          {humanizeTool(tool)}
+                          {tool.name}
                         </div>
                         <div className="mt-2 text-[14px] text-[#6b7280]">
-                          {toolSubtitle(tool)}
+                          {tool.subtitle}
                         </div>
                         <div className="mt-2 inline-flex rounded-full border border-[#d6dbe6] bg-[#fafbff] px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-[#6b7280]">
-                          {connectionCapabilities.get(tool) ?? "native"}
+                          {tool.capability}
                         </div>
                       </div>
                     </div>
