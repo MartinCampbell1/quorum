@@ -267,7 +267,7 @@ test("session monitor matches premium board monitor", async ({ page }) => {
   await mockApi(page, { sessions: sessionSummary });
   await page.goto("/");
   await page.getByRole("button", { name: /Project Alpha/i }).click();
-  await expect(page.getByText("Active MCP Connections")).toBeVisible();
+  await expect(page.getByText("Активные MCP-подключения")).toBeVisible();
   await expect(page).toHaveScreenshot("premium-session-monitor.png", {
     fullPage: true,
     animations: "disabled",

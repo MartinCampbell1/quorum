@@ -4,6 +4,7 @@ import { useState } from "react";
 import { AlertCircle, Loader2, Play, SendHorizonal } from "lucide-react";
 
 import { controlSession, sendMessage } from "@/lib/api";
+import { useLocale } from "@/lib/locale";
 import type { Session } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 
@@ -24,6 +25,7 @@ export function InputBar({
   onForkSession,
   onRefresh,
 }: InputBarProps) {
+  const { copy } = useLocale();
   const [draft, setDraft] = useState("");
   const [isWorking, setIsWorking] = useState(false);
 
@@ -78,23 +80,23 @@ export function InputBar({
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-orange-600 dark:text-orange-400" />
             <div className="min-w-0 flex-1">
               <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-orange-700 dark:text-orange-300">
-                Checkpoint Control
+                {copy.input.checkpointControl}
               </p>
               <p className="mt-2 text-[14px] font-semibold text-foreground/90">
-                Сессия остановлена на checkpoint.
+                {copy.input.sessionPaused}
               </p>
               <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground/80">
-                Добавь инструкцию, если хочешь скорректировать следующий шаг, или просто продолжи выполнение.
+                {copy.input.sessionPausedHint}
               </p>
               {pendingInstructions > 0 && (
                 <p className="mt-1 text-[12px] text-orange-700 dark:text-orange-300">
-                  В очереди инструкций: {pendingInstructions}
+                  {copy.input.queuedInstructions}: {pendingInstructions}
                 </p>
               )}
               <textarea
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
-                placeholder="Например: проверь гипотезу глубже и опирайся на последние новости по BTC"
+                placeholder={copy.input.instructionPlaceholder}
                 rows={3}
                 className="mt-4 w-full resize-none rounded-2xl border border-orange-200/70 bg-white/85 px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground/50 shadow-inner focus:outline-none focus:ring-2 focus:ring-orange-400/25 dark:border-orange-900/60 dark:bg-slate-950/50"
               />
@@ -107,7 +109,7 @@ export function InputBar({
                   disabled={isWorking || !draft.trim()}
                 >
                   {isWorking ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <SendHorizonal className="mr-1.5 h-3.5 w-3.5" />}
-                  Сохранить инструкцию
+                  {copy.input.saveInstruction}
                 </Button>
                 <Button
                   size="sm"
@@ -116,7 +118,7 @@ export function InputBar({
                   disabled={isWorking}
                 >
                   {isWorking ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Play className="mr-1.5 h-3.5 w-3.5" />}
-                  {draft.trim() ? "Продолжить с инструкцией" : "Продолжить"}
+                  {draft.trim() ? copy.input.resumeWithInstruction : copy.input.resume}
                 </Button>
                 <Button
                   variant="secondary"
@@ -126,7 +128,7 @@ export function InputBar({
                   disabled={isWorking || !checkpointId}
                 >
                   {isWorking ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Play className="mr-1.5 h-3.5 w-3.5" />}
-                  Новая ветка
+                  {copy.input.newBranch}
                 </Button>
               </div>
             </div>

@@ -9,6 +9,7 @@ import { HistoryView } from "@/components/history-view";
 import { IconBar } from "@/components/sidebar/icon-bar";
 import { SessionList } from "@/components/sidebar/session-list";
 import { Wizard } from "@/components/wizard/wizard";
+import { LocaleProvider, useLocale } from "@/lib/locale";
 
 type View = "chat" | "history" | "settings";
 
@@ -31,10 +32,12 @@ function BrandMark() {
   );
 }
 
-export default function Home() {
+function HomeShell() {
+  const { locale, setLocale, copy } = useLocale();
   const [view, setView] = useState<View>("chat");
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [showWizard, setShowWizard] = useState(true);
+  const [isSessionListCollapsed, setIsSessionListCollapsed] = useState(false);
 
   function handleViewChange(nextView: View) {
     setView(nextView);
@@ -62,20 +65,7 @@ export default function Home() {
   }
 
   const isMonitorView = view === "chat" && !showWizard && !!activeSessionId;
-  const shellView: View = showWizard ? "settings" : view;
-
-  if (isMonitorView && activeSessionId) {
-    return (
-      <div className="h-screen overflow-hidden bg-white text-[#09090b]">
-        <ChatView
-          sessionId={activeSessionId}
-          onForkSession={handleSelectSession}
-          onOpenHome={handleOpenHome}
-          onOpenSessions={handleOpenHome}
-        />
-      </div>
-    );
-  }
+  const shellView: View = view;
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-white text-[#09090b]">
@@ -83,7 +73,7 @@ export default function Home() {
         <div className="flex w-[300px] shrink-0 items-center gap-4">
           <BrandMark />
           <div className="text-[17px] font-semibold tracking-[-0.03em]">
-            AGENT ORCHESTRATOR
+            {copy.shell.appTitle}
           </div>
         </div>
         <div className="flex flex-1 justify-center px-6">
@@ -92,28 +82,51 @@ export default function Home() {
             <input
               readOnly
               value=""
-              placeholder="Search"
+              placeholder={copy.shell.searchPlaceholder}
               className="h-10 w-full rounded-[12px] border border-[#d9dde7] bg-white px-11 text-[13px] outline-none placeholder:text-[#09090b]/45"
             />
           </div>
         </div>
-        <div className="flex w-[300px] shrink-0 items-center justify-end gap-4">
+        <div className="flex w-[340px] shrink-0 items-center justify-end gap-4">
+          <div className="inline-flex rounded-[12px] border border-[#d9dde7] bg-white p-1">
+            {(["ru", "en"] as const).map((item) => (
+              <button
+                key={item}
+                type="button"
+                onClick={() => setLocale(item)}
+                className={`rounded-[8px] px-2.5 py-1 text-[12px] font-medium uppercase tracking-[0.08em] ${
+                  locale === item ? "bg-[#111111] text-white" : "text-[#6b7280]"
+                }`}
+              >
+                {item}
+              </button>
+            ))}
+          </div>
           <div className="flex items-center gap-2 text-[13px] text-[#09090b]/88">
-            <span>Localhost Status: Connected</span>
+            <span>{copy.shell.localhostStatus}</span>
             <Circle className="h-2.5 w-2.5 fill-current text-[#4b5563]" />
           </div>
-          <button className="flex h-10 w-10 items-center justify-center rounded-full border border-[#d9dde7] bg-white text-[#09090b]">
+          <button
+            aria-label={copy.shell.account}
+            className="flex h-10 w-10 items-center justify-center rounded-full border border-[#d9dde7] bg-white text-[#09090b]"
+          >
             <UserCircle2 className="h-5 w-5" />
           </button>
         </div>
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <IconBar activeView={shellView} onViewChange={handleViewChange} />
+        <IconBar
+          activeView={shellView}
+          onViewChange={handleViewChange}
+          sessionsCollapsed={isSessionListCollapsed}
+          onToggleSessions={() => setIsSessionListCollapsed((value) => !value)}
+        />
         <SessionList
           activeSessionId={activeSessionId}
           onSelectSession={handleSelectSession}
           onNewSession={handleNewSession}
+          collapsed={isSessionListCollapsed}
         />
         <main className="min-w-0 flex-1 overflow-hidden bg-white">
           {view === "history" ? (
@@ -127,15 +140,28 @@ export default function Home() {
                 setShowWizard(false);
               }}
             />
+          ) : isMonitorView && activeSessionId ? (
+            <ChatView
+              sessionId={activeSessionId}
+              onForkSession={handleSelectSession}
+              onOpenHome={handleOpenHome}
+              onOpenSessions={handleOpenHome}
+            />
           ) : (
             <div className="flex h-full items-center justify-center">
-              <div className="text-center text-[13px] text-[#09090b]/52">
-                Выберите сессию или создайте новую.
-              </div>
+              <div className="text-center text-[13px] text-[#09090b]/52">{copy.shell.noSessionSelected}</div>
             </div>
           )}
         </main>
       </div>
     </div>
+  );
+}
+
+export default function Home() {
+  return (
+    <LocaleProvider>
+      <HomeShell />
+    </LocaleProvider>
   );
 }

@@ -1,6 +1,9 @@
+"use client";
+
 import { RefreshCcw } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { useLocale } from "@/lib/locale";
 import { cn } from "@/lib/utils";
 import type { SessionSummary } from "@/lib/types";
 
@@ -10,25 +13,16 @@ interface SessionItemProps {
   onClick: () => void;
 }
 
-const STATUS_LABELS: Record<string, string> = {
-  running: "работает",
-  pause_requested: "пауза",
-  paused: "пауза",
-  cancel_requested: "стоп",
-  cancelled: "остановлено",
-  completed: "готово",
-  failed: "ошибка",
-};
-
-function timeAgo(timestamp: number): string {
+function timeAgo(timestamp: number, localeCopy: ReturnType<typeof useLocale>["copy"]): string {
   const diff = Math.floor(Date.now() / 1000 - timestamp);
-  if (diff < 60) return "1 мин";
-  if (diff < 3600) return `${Math.max(1, Math.floor(diff / 60))} мин`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)} ч`;
-  return `${Math.floor(diff / 86400)} д`;
+  if (diff < 60) return localeCopy.shell.time.justNow;
+  if (diff < 3600) return `${Math.max(1, Math.floor(diff / 60))} ${localeCopy.shell.time.minutes}`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} ${localeCopy.shell.time.hours}`;
+  return `${Math.floor(diff / 86400)} ${localeCopy.shell.time.days}`;
 }
 
 export function SessionItem({ session, isActive, onClick }: SessionItemProps) {
+  const { copy } = useLocale();
   return (
     <button
       type="button"
@@ -47,19 +41,19 @@ export function SessionItem({ session, isActive, onClick }: SessionItemProps) {
             {session.task}
           </div>
           <div className="mt-3 flex items-center gap-2">
-            <span className="text-[11px] text-[#7b8190]">{timeAgo(session.created_at)}</span>
+            <span className="text-[11px] text-[#7b8190]">{timeAgo(session.created_at, copy)}</span>
             <Badge
               variant="outline"
               className="rounded-full border-[#e2e6ef] bg-white px-2 py-0 text-[10px] font-normal text-[#4b5563]"
             >
-              {STATUS_LABELS[session.status] ?? session.status}
+              {copy.statuses[session.status as keyof typeof copy.statuses] ?? session.status}
             </Badge>
             {session.forked_from ? (
               <Badge
                 variant="outline"
                 className="rounded-full border-[#e2e6ef] bg-white px-2 py-0 text-[10px] font-normal text-[#4b5563]"
               >
-                branch
+                {copy.shell.branch}
               </Badge>
             ) : null}
           </div>

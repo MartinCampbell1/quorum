@@ -170,6 +170,18 @@ Branch: `codex/personal-mvp-refine`
   - the canvas shows real attached-tool cards with capability badges instead of generic placeholders
   - a small live-signal strip now surfaces active node, checkpoint, and latest tool activity inside the canvas
   - premium monitor screenshot baseline was refreshed again to match the new topology-first center layout
+- Reintegrated the monitor into the main application shell:
+  - session monitor no longer renders as a standalone premium demo screen detached from the rest of the app
+  - the standard top header and left-side navigation now remain visible while monitoring a live run
+  - the session list can now be collapsed from the left icon rail, closer to the ChatGPT/Gemini shell model
+- Added `RU/EN` locale switching with Russian as the default:
+  - introduced a frontend locale provider with persisted shell language preference
+  - shell, monitor, checkpoints, trace, history, and paused-state control copy now switch between Russian and English
+  - premium screenshot baselines were refreshed to match the new RU-first shell
+- Tightened the session monitor geometry after UX review:
+  - replaced the cramped vertical stack with a wider layered canvas: `task -> primary agent -> secondary agents`
+  - pulled clipped right-side nodes back into the usable canvas area
+  - removed the old standalone monitor header language (`Premium Session Monitor - White Edition`) entirely
 
 ## Validation
 
@@ -207,5 +219,5 @@ Note:
 ## Notes for the next agent
 
 - Do not assume `frontend/package.json`, `frontend/package-lock.json`, `.omc/`, or `.next/` belong to this pass. They were already dirty in the worktree.
-- The highest-value next product slice is polishing the monitor toward an even closer pixel match with the approved mockups, especially spacing and connection geometry.
+- The highest-value next product slice is polishing the monitor toward an even closer pixel match with the approved mockups, especially spacing, micro-typography, and the right-side MCP/tool card density.
 - `tsc --noEmit` depends on `.next/types`; run `npx next build --webpack` first in this repo before treating bare `tsc` failures as real regressions.
