@@ -131,7 +131,7 @@ export function ChatView({
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_356px]">
           <div className="space-y-4">
             <TopologyPanel session={session} />
-            <EventTimeline events={events} />
+            <EventTimeline events={events} messages={session.messages} />
           </div>
 
           <div className="flex flex-col gap-4">

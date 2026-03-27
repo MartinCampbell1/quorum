@@ -84,6 +84,11 @@
   50% { opacity: 0.4; }
 }
 
+@keyframes flow-dash {
+  from { stroke-dashoffset: 140; }
+  to { stroke-dashoffset: 0; }
+}
+
 :root {
   --background: #ffffff;
   --foreground: #09090b;
@@ -179,4 +184,9 @@
   html {
     @apply font-sans;
   }
+}
+
+.flow-path-active {
+  stroke-dasharray: 10 18;
+  animation: flow-dash 2.4s linear infinite;
 }

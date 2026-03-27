@@ -439,7 +439,11 @@ def capability_for_tool(provider: str, tool_id: str) -> CapabilityLevel:
         if provider_key == "gemini":
             return "native" if transport in {"stdio", "http", "sse"} else "unavailable"
         if provider_key == "codex":
-            return "bridged"
+            if transport == "stdio":
+                return "native"
+            if transport in {"http", "sse"}:
+                return "bridged"
+            return "unavailable"
         return "unavailable"
     return CONFIGURED_TOOL_CAPABILITIES.get(configured.tool_type, {}).get(provider_key, "unavailable")
 

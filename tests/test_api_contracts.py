@@ -232,7 +232,7 @@ def test_run_accepts_configured_tool_for_claude():
         tool_config_store.delete("market_api")
 
 
-def test_run_accepts_configured_mcp_tool_for_codex_via_bridge():
+def test_run_accepts_configured_stdio_mcp_tool_for_codex_natively():
     tool = ToolConfig(
         id="github_mcp",
         name="GitHub MCP",
@@ -261,7 +261,7 @@ def test_run_accepts_configured_mcp_tool_for_codex_via_bridge():
         assert payload["session_id"] == "sess_mcp_bridge"
         assert (
             payload["provider_capabilities_snapshot"]["creator"]["tools"]["github_mcp"]["capability"]
-            == "bridged"
+            == "native"
         )
         mock_run.assert_awaited_once()
     finally:
