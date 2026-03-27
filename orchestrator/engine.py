@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import os
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -152,6 +153,28 @@ def _build_graph(mode: str, **compile_kwargs):
 
 RUNNERS: dict[str, "SessionRunner"] = {}
 CHECKPOINT_SAVERS: dict[str, MemorySaver] = {}
+TRANSIENT_RUNTIME_STATUSES = {"running", "pause_requested", "cancel_requested"}
+
+
+def _checkpoint_runtime_limit() -> int:
+    raw_value = str(os.getenv("MULTI_AGENT_MAX_CHECKPOINT_RUNTIMES", "16")).strip()
+    try:
+        return max(int(raw_value), 1)
+    except ValueError:
+        return 16
+
+
+MAX_CHECKPOINT_RUNTIMES = _checkpoint_runtime_limit()
+
+
+def _prune_checkpoint_savers(limit: int = MAX_CHECKPOINT_RUNTIMES) -> None:
+    if limit < 1:
+        limit = 1
+    keep_ids = {item["id"] for item in store.list_recent(limit)}
+    keep_ids.update(RUNNERS.keys())
+    for session_id in list(CHECKPOINT_SAVERS.keys()):
+        if session_id not in keep_ids:
+            CHECKPOINT_SAVERS.pop(session_id, None)
 
 
 @dataclass
@@ -264,6 +287,9 @@ class SessionRunner:
         )
 
     async def _sync_from_snapshot(self, snapshot: Any) -> None:
+        # Tool bridge events are written during the just-finished graph node; ingest them now
+        # so the canonical session timeline is up to date before the next checkpoint is persisted.
+        store.ingest_runtime_events(self.session_id)
         values = snapshot.values or {}
         graph_messages = list(values.get("messages", []))
         new_messages = graph_messages[self.last_graph_message_count:]
@@ -515,6 +541,7 @@ class SessionRunner:
             )
         finally:
             RUNNERS.pop(self.session_id, None)
+            _prune_checkpoint_savers()
 
 
 async def run(
@@ -569,12 +596,54 @@ async def run(
     )
     RUNNERS[session_id] = runner
     CHECKPOINT_SAVERS[session_id] = saver
+    _prune_checkpoint_savers()
     asyncio.create_task(runner.run())
     return session_id
 
 
 def get_runner(session_id: str) -> Optional[SessionRunner]:
     return RUNNERS.get(session_id)
+
+
+def has_live_runtime(session_id: str) -> bool:
+    return session_id in RUNNERS
+
+
+def has_checkpoint_runtime(session_id: str) -> bool:
+    return session_id in CHECKPOINT_SAVERS
+
+
+def reconcile_orphaned_sessions() -> int:
+    recovered = 0
+    for session in store.list_by_statuses(sorted(TRANSIENT_RUNTIME_STATUSES)):
+        status = session["status"]
+        new_status = "cancelled" if status == "cancel_requested" else "failed"
+        detail = (
+            "Backend restarted before cancellation completed; session was finalized as cancelled."
+            if status == "cancel_requested"
+            else "Backend restarted while the in-memory runtime was active; session was finalized because execution state was lost."
+        )
+        result = (
+            "Execution cancelled after backend restart."
+            if new_status == "cancelled"
+            else "Execution interrupted by backend restart. Restart the run from scratch or create a new session."
+        )
+        store.update(
+            session["id"],
+            status=new_status,
+            result=result,
+            active_node=None,
+        )
+        store.append_event(
+            session["id"],
+            "runtime_recovered",
+            "Состояние восстановлено после рестарта backend",
+            detail,
+            status=new_status,
+            checkpoint_id=session.get("current_checkpoint_id"),
+        )
+        recovered += 1
+    return recovered
 
 
 def request_pause(session_id: str) -> bool:
@@ -683,5 +752,6 @@ def fork_from_checkpoint(session_id: str, checkpoint_id: str = "", content: str 
 
     RUNNERS[new_session_id] = runner
     CHECKPOINT_SAVERS[new_session_id] = saver
+    _prune_checkpoint_savers()
     asyncio.create_task(runner.run())
     return new_session_id

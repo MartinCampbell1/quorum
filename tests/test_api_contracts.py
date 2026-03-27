@@ -102,9 +102,17 @@ def test_scenarios_endpoint_returns_personal_catalog():
 
     assert response.status_code == 200
     payload = response.json()
-    assert {"repo_audit", "pattern_mining", "news_context", "strategy_review"} == {
+    assert {"repo_audit", "pattern_mining", "news_context", "consensus_vote", "structured_debate", "strategy_review"} == {
         item["id"] for item in payload
     }
+
+
+def test_scenarios_endpoint_covers_all_primary_wizard_modes():
+    response = client.get("/orchestrate/scenarios")
+
+    assert response.status_code == 200
+    modes = {item["mode"] for item in response.json()}
+    assert {"dictator", "board", "democracy", "debate", "map_reduce", "creator_critic"}.issubset(modes)
 
 
 def test_custom_tools_are_honestly_disabled():
@@ -201,6 +209,123 @@ def test_checkpoint_restart_requires_non_running_session():
     assert "must be paused or finished" in response.json()["detail"]
 
 
+def test_resume_reports_missing_runtime_state_after_restart():
+    session_id = store.create(
+        "creator_critic",
+        "Resume after restart",
+        [
+            AgentConfig(role="creator", provider="claude", tools=[]),
+            AgentConfig(role="critic", provider="claude", tools=[]),
+        ],
+        {},
+    )
+    store.update(session_id, status="paused")
+
+    response = client.post(
+        f"/orchestrate/session/{session_id}/control",
+        json={"action": "resume"},
+    )
+
+    assert response.status_code == 409
+    assert "runtime is unavailable" in response.json()["detail"]
+
+
+def test_session_endpoint_exposes_runtime_state_flags():
+    session_id = store.create(
+        "creator_critic",
+        "Paused session snapshot",
+        [
+            AgentConfig(role="creator", provider="claude", tools=[]),
+            AgentConfig(role="critic", provider="claude", tools=[]),
+        ],
+        {},
+    )
+    store.update(session_id, status="paused")
+    store.add_checkpoint(
+        session_id,
+        {
+            "id": "cp_1",
+            "timestamp": 1.0,
+            "next_node": "critic_reviews",
+            "status": "ready",
+            "result_preview": "",
+            "graph_checkpoint_id": "graph_cp_1",
+        },
+    )
+
+    response = client.get(f"/orchestrate/session/{session_id}")
+
+    assert response.status_code == 200
+    runtime_state = response.json()["runtime_state"]
+    assert runtime_state["live_runtime_available"] is False
+    assert runtime_state["checkpoint_runtime_available"] is False
+    assert runtime_state["has_checkpoints"] is True
+    assert runtime_state["can_resume"] is False
+    assert runtime_state["can_branch_from_checkpoint"] is False
+
+
+def test_sessions_list_exposes_runtime_state_flags():
+    session_id = store.create(
+        "dictator",
+        "Recent session card",
+        [
+            AgentConfig(role="director", provider="claude", tools=[]),
+            AgentConfig(role="worker", provider="codex", tools=[]),
+        ],
+        {},
+    )
+    store.update(session_id, status="failed", current_checkpoint_id="cp_last")
+
+    response = client.get("/orchestrate/sessions")
+
+    assert response.status_code == 200
+    payload = next(item for item in response.json() if item["id"] == session_id)
+    assert payload["runtime_state"]["has_checkpoints"] is True
+    assert payload["runtime_state"]["can_branch_from_checkpoint"] is False
+
+
+def test_cancel_reports_missing_runtime_for_paused_session():
+    session_id = store.create(
+        "creator_critic",
+        "Cancel after restart",
+        [
+            AgentConfig(role="creator", provider="claude", tools=[]),
+            AgentConfig(role="critic", provider="claude", tools=[]),
+        ],
+        {},
+    )
+    store.update(session_id, status="paused")
+
+    response = client.post(
+        f"/orchestrate/session/{session_id}/control",
+        json={"action": "cancel"},
+    )
+
+    assert response.status_code == 409
+    assert "runtime is unavailable" in response.json()["detail"]
+
+
+def test_inject_instruction_rejects_terminal_session_status():
+    session_id = store.create(
+        "dictator",
+        "Finished run",
+        [
+            AgentConfig(role="director", provider="claude", tools=[]),
+            AgentConfig(role="worker", provider="codex", tools=[]),
+        ],
+        {},
+    )
+    store.update(session_id, status="completed")
+
+    response = client.post(
+        f"/orchestrate/session/{session_id}/control",
+        json={"action": "inject_instruction", "content": "Continue with more detail"},
+    )
+
+    assert response.status_code == 409
+    assert "cannot accept instructions" in response.json()["detail"]
+
+
 def test_run_accepts_configured_tool_for_claude():
     tool = ToolConfig(
         id="market_api",
@@ -274,7 +399,7 @@ def test_provider_capabilities_report_external_mcp_native_for_gemini_and_bridged
         name="Stitch MCP",
         tool_type="mcp_server",
         icon="🔌",
-        config={"transport": "http", "url": "https://stitch.googleapis.com/mcp", "headers": "{\"X-Goog-Api-Key\": \"token\"}"},
+        config={"transport": "http", "url": "https://stitch.googleapis.com/mcp", "headers": "{\"Authorization\": \"Bearer token\"}"},
         enabled=True,
     )
     tool_config_store.add(tool)
@@ -284,9 +409,64 @@ def test_provider_capabilities_report_external_mcp_native_for_gemini_and_bridged
         payload = response.json()
         assert payload["tools"]["stitch_mcp"]["claude"] == "native"
         assert payload["tools"]["stitch_mcp"]["gemini"] == "native"
-        assert payload["tools"]["stitch_mcp"]["codex"] == "bridged"
+        assert payload["tools"]["stitch_mcp"]["codex"] == "native"
     finally:
         tool_config_store.delete("stitch_mcp")
+
+
+def test_provider_capabilities_keep_codex_http_mcp_bridged_for_non_bearer_headers():
+    tool = ToolConfig(
+        id="custom_header_mcp",
+        name="Custom Header MCP",
+        tool_type="mcp_server",
+        icon="🔌",
+        config={"transport": "http", "url": "https://example.com/mcp", "headers": "{\"X-Api-Key\": \"token\"}"},
+        enabled=True,
+    )
+    tool_config_store.add(tool)
+    try:
+        response = client.get("/orchestrate/settings/providers/capabilities")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["tools"]["custom_header_mcp"]["codex"] == "bridged"
+    finally:
+        tool_config_store.delete("custom_header_mcp")
+
+
+def test_run_accepts_configured_http_mcp_tool_for_codex_natively_when_bearer_only():
+    tool = ToolConfig(
+        id="bearer_http_mcp",
+        name="Bearer HTTP MCP",
+        tool_type="mcp_server",
+        icon="🔌",
+        config={"transport": "http", "url": "https://example.com/mcp", "headers": "{\"Authorization\": \"Bearer token\"}"},
+        enabled=True,
+    )
+    tool_config_store.add(tool)
+    try:
+        with patch("orchestrator.api.run", new=AsyncMock(return_value="sess_http_mcp_native")) as mock_run:
+            response = client.post(
+                "/orchestrate/run",
+                json={
+                    "mode": "creator_critic",
+                    "task": "Use remote MCP over HTTP",
+                    "agents": [
+                        _agent("creator", "codex", ["bearer_http_mcp"]),
+                        _agent("critic", "claude", []),
+                    ],
+                },
+            )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["session_id"] == "sess_http_mcp_native"
+        assert (
+            payload["provider_capabilities_snapshot"]["creator"]["tools"]["bearer_http_mcp"]["capability"]
+            == "native"
+        )
+        mock_run.assert_awaited_once()
+    finally:
+        tool_config_store.delete("bearer_http_mcp")
 
 
 def test_workspace_preset_crud_round_trip(tmp_path):

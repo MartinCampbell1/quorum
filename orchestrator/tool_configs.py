@@ -49,6 +49,61 @@ def supported_providers_for_tool_type(tool_type: str) -> set[str]:
     return TOOL_TYPE_PROVIDER_ALLOWLIST.get(tool_type, {"claude"})
 
 
+def mcp_server_transport(config: dict) -> str:
+    """Return normalized MCP transport from a configured tool payload."""
+    return str(config.get("transport", "stdio") or "stdio").strip().lower()
+
+
+def mcp_server_http_headers(config: dict) -> Optional[dict[str, str]]:
+    """Parse MCP HTTP headers JSON into a string mapping. Returns None on invalid JSON."""
+    raw_headers = config.get("headers", "")
+    if isinstance(raw_headers, dict):
+        parsed = raw_headers
+    else:
+        rendered = str(raw_headers or "").strip()
+        if not rendered:
+            return {}
+        try:
+            parsed = json.loads(rendered)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(parsed, dict):
+        return None
+    return {str(key): str(value) for key, value in parsed.items()}
+
+
+def codex_native_http_mcp_bearer_token(config: dict) -> Optional[str]:
+    """Return a bearer token when Codex can natively attach it to an HTTP MCP server."""
+    if mcp_server_transport(config) != "http":
+        return None
+    headers = mcp_server_http_headers(config)
+    if headers is None:
+        return None
+    normalized = {str(key).strip().lower(): str(value).strip() for key, value in headers.items() if str(key).strip()}
+    if not normalized:
+        return None
+    if set(normalized) != {"authorization"}:
+        return None
+    auth_header = normalized["authorization"]
+    if not auth_header.lower().startswith("bearer "):
+        return None
+    token = auth_header[7:].strip()
+    return token or None
+
+
+def codex_supports_native_mcp_server(config: dict) -> bool:
+    """Codex supports stdio MCP natively and HTTP MCP when no extra headers are needed or only a bearer token is required."""
+    transport = mcp_server_transport(config)
+    if transport == "stdio":
+        return True
+    if transport != "http":
+        return False
+    headers = mcp_server_http_headers(config)
+    if headers is None:
+        return False
+    return not headers or codex_native_http_mcp_bearer_token(config) is not None
+
+
 # Tool type definitions — what fields each type needs
 TOOL_TYPES = {
     "brave_search": {

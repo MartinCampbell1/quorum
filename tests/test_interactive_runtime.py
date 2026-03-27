@@ -4,10 +4,13 @@ import asyncio
 import json
 from pathlib import Path
 import time
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import orchestrator.modes.creator_critic as creator_critic
 import orchestrator.modes.democracy as democracy
 from orchestrator.engine import (
+    SessionRunner,
     fork_from_checkpoint,
     inject_instruction,
     request_pause,
@@ -196,4 +199,54 @@ def test_store_ingests_bridge_tool_events_from_runtime_file():
 
     session = store.get(session_id)
     assert any(event["type"] == "tool_call_finished" for event in session["events"])
+    assert runtime_file.exists() is False
+
+
+def test_session_runner_eagerly_ingests_runtime_tool_events():
+    session_id = store.create(
+        mode="creator_critic",
+        task="Eager tool event ingestion",
+        agents=[
+            AgentConfig(role="creator", provider="claude", tools=[]),
+            AgentConfig(role="critic", provider="claude", tools=[]),
+        ],
+        config={},
+    )
+
+    runtime_dir = Path.home() / ".multi-agent" / "runtime_events"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    runtime_file = runtime_dir / f"{session_id}.jsonl"
+    runtime_file.write_text(
+        json.dumps(
+            {
+                "type": "tool_call_started",
+                "title": "Tool call started",
+                "detail": "market_api",
+                "agent_id": "creator",
+                "tool_name": "market_api",
+            }
+        )
+        + "\n"
+    )
+
+    runner = SessionRunner(
+        session_id=session_id,
+        mode="creator_critic",
+        graph=None,
+        graph_config={},
+        initial_state=None,
+        checkpointer=None,
+    )
+    snapshot = SimpleNamespace(
+        values={"messages": [], "result": ""},
+        next=[],
+        config={"configurable": {"checkpoint_id": "graph_cp_1"}},
+    )
+
+    with patch.object(store, "ingest_runtime_events", wraps=store.ingest_runtime_events) as mock_ingest:
+        asyncio.run(runner._sync_from_snapshot(snapshot))
+
+    mock_ingest.assert_called_once_with(session_id)
+    session = store.get(session_id)
+    assert any(event["type"] == "tool_call_started" for event in session["events"])
     assert runtime_file.exists() is False

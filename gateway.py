@@ -26,10 +26,12 @@ Multi-Agent Gateway v3 - FastAPI + Profile Rotation + Orchestrator
 import asyncio
 import json
 import os
+import re
 import shlex
 import shutil
 import tempfile
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -40,7 +42,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from orchestrator.models import capability_for_tool
-from orchestrator.tool_configs import ToolConfig, normalize_tool_id, tool_config_store
+from orchestrator.tool_configs import (
+    ToolConfig,
+    codex_native_http_mcp_bearer_token,
+    mcp_server_http_headers,
+    normalize_tool_id,
+    tool_config_store,
+)
 
 
 # =========================================================================
@@ -532,6 +540,20 @@ def _bootstrap_cache_key(provider: str, env: dict, server_name: str, definition:
     return provider, profile_root, f"{server_name}:{fingerprint}"
 
 
+def _clear_bootstrap_cache(provider: str, env: dict | None = None, profile_root: str | None = None) -> None:
+    target_root = profile_root or (env or {}).get("CODEX_HOME") or (env or {}).get("HOME")
+    if not target_root:
+        return
+    for cache_key in list(BOOTSTRAPPED_MCP_SERVERS):
+        if cache_key[0] == provider and cache_key[1] == target_root:
+            BOOTSTRAPPED_MCP_SERVERS.discard(cache_key)
+
+
+def _codex_bearer_env_var_name(server_name: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", server_name).strip("_").upper() or "MCP_SERVER"
+    return f"CODEX_MCP_BEARER_{slug}"
+
+
 async def ensure_registered_mcp_servers(
     provider: str,
     env: dict,
@@ -577,6 +599,17 @@ async def ensure_registered_mcp_servers(
                     "--url",
                     definition["url"],
                 ]
+                if definition.get("headers"):
+                    bearer_token = codex_native_http_mcp_bearer_token(
+                        {
+                            "transport": "http",
+                            "headers": definition["headers"],
+                        }
+                    )
+                    if bearer_token:
+                        env_var = _codex_bearer_env_var_name(server_name)
+                        env[env_var] = bearer_token
+                        cmd.extend(["--bearer-token-env-var", env_var])
             else:
                 cmd = [CODEX_BIN, "mcp", "add"]
                 for key, value in definition.get("env", {}).items():
@@ -594,16 +627,17 @@ async def ensure_registered_mcp_servers(
         )
 
 
-def build_mcp_config(tool_keys: list[str]) -> str | None:
+def build_mcp_config(tool_keys: list[str]) -> tuple[str | None, list[str]]:
     """Generate a temporary MCP config JSON file for the given tool keys.
-    Returns the file path, or None if no tools need MCP servers.
+    Returns the config path plus all temp files that must be cleaned up.
 
     Handles both built-in MCP servers and custom MCP servers from tool_configs.
     """
     if not tool_keys:
-        return None
+        return None, []
 
     config = {"mcpServers": {}}
+    temp_paths: list[str] = []
 
     # 1. Resolve built-in MCP servers
     for server_name in resolve_mcp_servers(tool_keys):
@@ -661,15 +695,18 @@ def build_mcp_config(tool_keys: list[str]) -> str | None:
 
     if configured_runtime_tools:
         payload_path = _write_temp_json({"tools": configured_runtime_tools}, "configured_tools_")
+        temp_paths.append(payload_path)
         config["mcpServers"]["configured-tools"] = {
             "command": "python3",
             "args": [str(Path(__file__).parent / "mcp_servers" / "configured_tools_server.py"), payload_path],
         }
 
     if not config["mcpServers"]:
-        return None
+        return None, temp_paths
 
-    return _write_temp_json(config, "mcp_")
+    config_path = _write_temp_json(config, "mcp_")
+    temp_paths.append(config_path)
+    return config_path, temp_paths
 
 
 def resolve_mcp_servers(tool_keys: list[str] | None) -> list[str]:
@@ -794,7 +831,7 @@ async def call_agent(
     ]
     allowed_mcp_servers = resolve_mcp_servers(native_tools)
     bridge_payload_path = build_bridge_payload(provider, bridged_tools) if bridged_tools else None
-    mcp_config_path = build_mcp_config(native_tools) if provider == "claude" and native_tools else None
+    mcp_config_path, mcp_temp_paths = build_mcp_config(native_tools) if provider == "claude" and native_tools else (None, [])
     runtime_event_stream_path = _runtime_event_stream_path(session_id)
     temp_codex_home: str | None = None
     try:
@@ -870,6 +907,7 @@ async def call_agent(
 
             env = build_env(profile)
             if temp_codex_home:
+                _clear_bootstrap_cache(provider, profile_root=temp_codex_home)
                 shutil.rmtree(temp_codex_home, ignore_errors=True)
                 temp_codex_home = None
             if provider == "codex" and codex_native_external_servers:
@@ -933,12 +971,13 @@ async def call_agent(
         }
     finally:
         # Clean up temp MCP config
-        if mcp_config_path:
+        for temp_path in reversed(mcp_temp_paths):
             try:
-                os.unlink(mcp_config_path)
+                os.unlink(temp_path)
             except OSError:
                 pass
         if temp_codex_home:
+            _clear_bootstrap_cache(provider, profile_root=temp_codex_home)
             shutil.rmtree(temp_codex_home, ignore_errors=True)
         if bridge_payload_path:
             try:
@@ -951,10 +990,28 @@ async def call_agent(
 #  FASTAPI APP
 # =========================================================================
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    discover_profiles()
+    recovered_sessions = reconcile_orphaned_sessions()
+    print(f"\nProfiles directory: {PROFILES_DIR}")
+    for provider, pool in pools.items():
+        names = [p.name for p in pool.profiles]
+        print(f"  {provider}: {names}")
+    if not pools:
+        print("  No profiles found - using default accounts")
+    if recovered_sessions:
+        print(f"  Recovered orphaned sessions: {recovered_sessions}")
+    print()
+    yield
+
+
 app = FastAPI(
     title="Multi-Agent Gateway",
     description="Claude + Gemini + Codex с ротацией аккаунтов",
     version="3.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -963,19 +1020,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-async def startup():
-    discover_profiles()
-    print(f"\nProfiles directory: {PROFILES_DIR}")
-    for provider, pool in pools.items():
-        names = [p.name for p in pool.profiles]
-        print(f"  {provider}: {names}")
-    if not pools:
-        print("  No profiles found - using default accounts")
-    print()
-
 
 # ---- Request/Response models ----
 
@@ -1236,6 +1280,7 @@ async def ep_health():
 
 # Mount orchestrator
 from orchestrator.api import router as orchestrate_router
+from orchestrator.engine import reconcile_orphaned_sessions
 app.include_router(orchestrate_router)
 
 

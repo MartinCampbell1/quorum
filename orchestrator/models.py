@@ -18,6 +18,8 @@ from typing_extensions import TypedDict
 
 from orchestrator.tool_configs import (
     TOOL_TYPES,
+    codex_supports_native_mcp_server,
+    mcp_server_transport,
     normalize_tool_id,
     supported_providers_for_tool_type,
     tool_config_store,
@@ -265,6 +267,7 @@ class SessionResponse(BaseModel):
     attached_tools: list[dict] = Field(default_factory=list)
     provider_capabilities_snapshot: dict = Field(default_factory=dict)
     branch_children: list[dict] = Field(default_factory=list)
+    runtime_state: dict = Field(default_factory=dict)
 
 
 # ---- LangGraph State (TypedDict for graph nodes) ----
@@ -433,13 +436,13 @@ def capability_for_tool(provider: str, tool_id: str) -> CapabilityLevel:
     if not configured or not configured.enabled:
         return "unavailable"
     if configured.tool_type == "mcp_server":
-        transport = str(configured.config.get("transport", "stdio") or "stdio").strip().lower()
+        transport = mcp_server_transport(configured.config)
         if provider_key == "claude":
             return "native"
         if provider_key == "gemini":
             return "native" if transport in {"stdio", "http", "sse"} else "unavailable"
         if provider_key == "codex":
-            if transport == "stdio":
+            if codex_supports_native_mcp_server(configured.config):
                 return "native"
             if transport in {"http", "sse"}:
                 return "bridged"
@@ -1087,6 +1090,10 @@ class SessionStore:
             ).fetchall()
             return [self._decode(row["payload_json"], {}) for row in rows]
 
+    def ingest_runtime_events(self, sid: str) -> None:
+        with self._lock, self._connect() as conn:
+            self._ingest_runtime_events(conn, sid)
+
     def queue_instruction(self, sid: str, content: str) -> int:
         with self._lock, self._connect() as conn:
             row = conn.execute(
@@ -1130,7 +1137,7 @@ class SessionStore:
         with self._lock, self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, mode, task, status, created_at, active_scenario, forked_from
+                SELECT id, mode, task, status, created_at, active_scenario, forked_from, current_checkpoint_id
                 FROM runs
                 ORDER BY created_at DESC
                 LIMIT ?
@@ -1146,6 +1153,33 @@ class SessionStore:
                     "created_at": row["created_at"],
                     "active_scenario": row["active_scenario"],
                     "forked_from": row["forked_from"],
+                    "current_checkpoint_id": row["current_checkpoint_id"],
+                }
+                for row in rows
+            ]
+
+    def list_by_statuses(self, statuses: list[str]) -> list[dict]:
+        if not statuses:
+            return []
+        placeholders = ", ".join("?" for _ in statuses)
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT id, mode, task, status, created_at, current_checkpoint_id
+                FROM runs
+                WHERE status IN ({placeholders})
+                ORDER BY created_at DESC
+                """,
+                tuple(statuses),
+            ).fetchall()
+            return [
+                {
+                    "id": row["id"],
+                    "mode": row["mode"],
+                    "task": row["task"],
+                    "status": row["status"],
+                    "created_at": row["created_at"],
+                    "current_checkpoint_id": row["current_checkpoint_id"],
                 }
                 for row in rows
             ]
