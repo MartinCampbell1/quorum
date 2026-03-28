@@ -10,16 +10,44 @@ import type { AgentConfig, ScenarioDefinition } from "@/lib/types";
 
 interface WizardProps {
   onSessionCreated: (sessionId: string) => void;
+  onOpenSettings: () => void;
 }
 
-export function Wizard({ onSessionCreated }: WizardProps) {
+const WIZARD_DRAFT_KEY = "quorum-wizard-draft-v1";
+
+interface WizardDraft {
+  step: number;
+  selectedScenarioId: string | null;
+  agents: AgentConfig[];
+  workspacePresetIds: string[];
+  workspacePaths: string[];
+}
+
+function readWizardDraft(): WizardDraft | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(WIZARD_DRAFT_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as WizardDraft;
+  } catch {
+    return null;
+  }
+}
+
+function clearWizardDraft() {
+  if (typeof window === "undefined") return;
+  window.sessionStorage.removeItem(WIZARD_DRAFT_KEY);
+}
+
+export function Wizard({ onSessionCreated, onOpenSettings }: WizardProps) {
   const { scenarios, isLoading } = useScenarios();
-  const [step, setStep] = useState(0);
-  const [selectedScenarioId, setSelectedScenarioId] = useState<string | null>(null);
-  const [agents, setAgents] = useState<AgentConfig[]>([]);
+  const [initialDraft] = useState<WizardDraft | null>(() => readWizardDraft());
+  const [step, setStep] = useState(initialDraft?.step ?? 0);
+  const [selectedScenarioId, setSelectedScenarioId] = useState<string | null>(initialDraft?.selectedScenarioId ?? null);
+  const [agents, setAgents] = useState<AgentConfig[]>(initialDraft?.agents ?? []);
   const [isLaunching, setIsLaunching] = useState(false);
-  const [workspacePresetIds, setWorkspacePresetIds] = useState<string[]>([]);
-  const [workspacePaths, setWorkspacePaths] = useState<string[]>([]);
+  const [workspacePresetIds, setWorkspacePresetIds] = useState<string[]>(initialDraft?.workspacePresetIds ?? []);
+  const [workspacePaths, setWorkspacePaths] = useState<string[]>(initialDraft?.workspacePaths ?? []);
 
   function cloneAgents(source: AgentConfig[]): AgentConfig[] {
     return source.map((agent) => ({
@@ -45,6 +73,20 @@ export function Wizard({ onSessionCreated }: WizardProps) {
     setStep(0);
   }, [scenarios, selectedScenarioId]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.sessionStorage.setItem(
+      WIZARD_DRAFT_KEY,
+      JSON.stringify({
+        step,
+        selectedScenarioId,
+        agents,
+        workspacePresetIds,
+        workspacePaths,
+      } satisfies WizardDraft)
+    );
+  }, [step, selectedScenarioId, agents, workspacePresetIds, workspacePaths]);
+
   function handleScenarioSelect(scenarioId: string) {
     setSelectedScenarioId(scenarioId);
     const scenario = findScenario(scenarios, scenarioId);
@@ -68,6 +110,7 @@ export function Wizard({ onSessionCreated }: WizardProps) {
         workspace_paths: workspacePaths,
         attached_tool_ids: Array.from(new Set(agents.flatMap((agent) => agent.tools ?? []))),
       });
+      clearWizardDraft();
       onSessionCreated(result.session_id);
     } catch (err) {
       console.error("Launch failed:", err);
@@ -78,7 +121,7 @@ export function Wizard({ onSessionCreated }: WizardProps) {
 
   if (isLoading || !scenarios) {
     return (
-      <div className="flex h-full items-center justify-center">
+      <div className="flex h-full items-center justify-center bg-[#f6f7fb] dark:bg-[#05070c]">
         <div className="flex items-center gap-3">
           <div
             className="h-2 w-2 rounded-full bg-foreground/20"
@@ -106,6 +149,7 @@ export function Wizard({ onSessionCreated }: WizardProps) {
       onChange={setAgents}
       onNext={() => setStep(2)}
       onBack={() => setStep(0)}
+      onOpenSettings={onOpenSettings}
     />,
     <StepTask
       key="task"
@@ -124,7 +168,7 @@ export function Wizard({ onSessionCreated }: WizardProps) {
   ];
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full flex-col bg-[#f6f7fb] dark:bg-[#05070c]">
       {steps[step]}
     </div>
   );

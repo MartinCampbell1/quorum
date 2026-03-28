@@ -9,8 +9,11 @@ from unittest.mock import patch
 
 import orchestrator.modes.creator_critic as creator_critic
 import orchestrator.modes.democracy as democracy
+import orchestrator.modes.debate as debate
 from orchestrator.engine import (
     SessionRunner,
+    CHECKPOINT_SAVERS,
+    has_checkpoint_runtime,
     fork_from_checkpoint,
     inject_instruction,
     request_pause,
@@ -123,6 +126,49 @@ def test_fork_from_checkpoint_creates_independent_branch(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_fork_from_checkpoint_works_after_in_memory_saver_is_evicted(monkeypatch):
+    prompts: list[tuple[str, str]] = []
+
+    def fake_call_agent_cfg(agent: dict, prompt: str) -> str:
+        prompts.append((agent["role"], prompt))
+        if agent["role"] == "creator":
+            return "Draft analysis"
+        return "APPROVED"
+
+    monkeypatch.setattr(creator_critic, "call_agent_cfg", fake_call_agent_cfg)
+
+    async def scenario() -> None:
+        session_id = await run(
+            mode="creator_critic",
+            task="Branch from persisted checkpoint runtime",
+            agents=[
+                AgentConfig(role="creator", provider="claude", tools=[]),
+                AgentConfig(role="critic", provider="claude", tools=[]),
+            ],
+            config={"max_iterations": 2},
+        )
+
+        assert request_pause(session_id) is True
+        paused = await _wait_for_status(session_id, "paused")
+        assert store.checkpoint_runtime_path(session_id).exists() is True
+
+        CHECKPOINT_SAVERS.pop(session_id, None)
+        assert has_checkpoint_runtime(session_id) is True
+
+        new_session_id = fork_from_checkpoint(
+            session_id,
+            checkpoint_id=paused["current_checkpoint_id"],
+            content="Branch from disk-backed checkpoint state.",
+        )
+
+        assert new_session_id
+        branched = await _wait_for_status(new_session_id, "completed")
+        assert branched["forked_from"] == session_id
+        assert any("Branch from disk-backed checkpoint state." in prompt for _, prompt in prompts)
+
+    asyncio.run(scenario())
+
+
 def test_democracy_emits_vote_and_round_events(monkeypatch):
     def fake_call_agent_cfg(agent: dict, prompt: str) -> str:
         return f'{{"position": "Ship the strategy", "reasoning": "{agent["role"]} agrees"}}'
@@ -147,6 +193,67 @@ def test_democracy_emits_vote_and_round_events(monkeypatch):
         assert "round_started" in event_types
         assert "round_completed" in event_types
         assert completed["result"] == "Ship the strategy"
+
+    asyncio.run(scenario())
+
+
+def test_creator_critic_fails_when_critic_returns_empty_output(monkeypatch):
+    def fake_call_agent_cfg(agent: dict, prompt: str) -> str:
+        if agent["role"] == "creator":
+            return "Draft analysis"
+        return ""
+
+    monkeypatch.setattr(creator_critic, "call_agent_cfg", fake_call_agent_cfg)
+
+    async def scenario() -> None:
+        session_id = await run(
+            mode="creator_critic",
+            task="Waiting state probe",
+            agents=[
+                AgentConfig(role="creator", provider="claude", tools=[]),
+                AgentConfig(role="critic", provider="codex", tools=[]),
+            ],
+            config={"max_iterations": 2},
+        )
+
+        failed = await _wait_for_status(session_id, "failed")
+        assert any(event["type"] == "agent_failed" for event in failed["events"])
+        assert any(event["type"] == "run_failed" for event in failed["events"])
+        assert "empty response" in failed["result"]
+
+    asyncio.run(scenario())
+
+
+def test_debate_fails_when_judge_returns_empty_verdict(monkeypatch):
+    calls = {"count": 0}
+
+    def fake_call_agent_cfg(agent: dict, prompt: str) -> str:
+        if agent["role"] == "proponent":
+            return "Pro argument"
+        if agent["role"] == "opponent":
+            return "Con argument"
+        calls["count"] += 1
+        return ""
+
+    monkeypatch.setattr(debate, "call_agent_cfg", fake_call_agent_cfg)
+
+    async def scenario() -> None:
+        session_id = await run(
+            mode="debate",
+            task="Should we ship the rewrite?",
+            agents=[
+                AgentConfig(role="proponent", provider="claude", tools=[]),
+                AgentConfig(role="opponent", provider="codex", tools=[]),
+                AgentConfig(role="judge", provider="gemini", tools=[]),
+            ],
+            config={"max_rounds": 2},
+        )
+
+        failed = await _wait_for_status(session_id, "failed")
+        assert calls["count"] == 1
+        assert any(event["type"] == "agent_failed" and event.get("agent_id") == "judge" for event in failed["events"])
+        assert not any(message["phase"] == "verdict" for message in failed["messages"])
+        assert "empty response" in failed["result"]
 
     asyncio.run(scenario())
 

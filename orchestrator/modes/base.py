@@ -18,6 +18,18 @@ from langchain_gateway import GatewayClaude, GatewayGemini, GatewayCodex, Gatewa
 from orchestrator.tools.router import route_tool_visibility
 
 
+class AgentStepError(ValueError):
+    """Raised when a mode step cannot use an agent response as valid state."""
+
+    def __init__(self, agent: dict, context: str, detail: str) -> None:
+        role = str(agent.get("role", "agent") or "agent")
+        provider = str(agent.get("provider", "unknown") or "unknown")
+        super().__init__(f"{context}: {role} ({provider}) {detail}")
+        self.agent_role = role
+        self.provider = provider
+        self.gateway_error = str(self)
+
+
 def _route_tool_visibility_sync(task: str, role: str, available_tool_keys: list[str]) -> list[str]:
     result: list[str] = []
 
@@ -125,6 +137,14 @@ def apply_user_instructions(state: dict, prompt: str) -> str:
         f"ADDITIONAL USER INSTRUCTIONS:\n{instructions}\n\n"
         f"Treat these as higher-priority guidance for this step."
     )
+
+
+def require_agent_response(agent: dict, response: str, context: str) -> str:
+    """Reject blank orchestration outputs before they are persisted as valid state."""
+    text = str(response or "").strip()
+    if text:
+        return text
+    raise AgentStepError(agent, context, "returned an empty response.")
 
 
 def strip_markdown_fence(text: str) -> str:

@@ -45,6 +45,7 @@ from orchestrator.models import capability_for_tool
 from orchestrator.tool_configs import (
     ToolConfig,
     codex_native_http_mcp_bearer_token,
+    is_builtin_tool_instance,
     mcp_server_http_headers,
     normalize_tool_id,
     tool_config_store,
@@ -337,6 +338,27 @@ RATE_LIMIT_PATTERNS = [
 def is_rate_limited(text: str) -> bool:
     lower = text.lower()
     return any(p in lower for p in RATE_LIMIT_PATTERNS)
+
+
+TOOL_SCAFFOLD_BLOCK_RE = re.compile(r"<tool_(?:call|result)>.*?</tool_(?:call|result)>", re.DOTALL | re.IGNORECASE)
+
+
+def has_usable_output(output: str) -> bool:
+    """Treat blank or scaffold-only CLI output as a failed agent response."""
+    normalized = str(output or "").strip()
+    if not normalized:
+        return False
+    stripped = TOOL_SCAFFOLD_BLOCK_RE.sub("", normalized).strip()
+    return bool(stripped)
+
+
+def output_error_message(provider: str, stderr: str, output: str) -> str:
+    rendered_stderr = str(stderr or "").strip()
+    if rendered_stderr:
+        return rendered_stderr[:500]
+    if output.strip():
+        return f"{provider} returned tool scaffolding without a usable text response."
+    return f"{provider} returned an empty response."
 
 
 # =========================================================================
@@ -688,7 +710,7 @@ def build_mcp_config(tool_keys: list[str]) -> tuple[str | None, list[str]]:
                     if env_vars:
                         server_def["env"] = env_vars
                 config["mcpServers"][tc.id] = server_def
-            elif tc.tool_type not in {"code_exec", "shell"}:
+            elif not is_builtin_tool_instance(tc.id):
                 configured_runtime_tools.append(tc.model_dump())
     except ImportError:
         pass
@@ -726,7 +748,7 @@ def resolve_mcp_servers(tool_keys: list[str] | None) -> list[str]:
                 continue
             if configured_tool.tool_type == "mcp_server":
                 needed_servers.add(configured_tool.id)
-            elif configured_tool.tool_type not in {"code_exec", "shell"}:
+            elif not is_builtin_tool_instance(configured_tool.id):
                 needed_servers.add("configured-tools")
     except ImportError:
         pass
@@ -864,13 +886,15 @@ async def call_agent(
                 await ensure_registered_mcp_servers(provider, env, bootstrap_servers)
                 stdout, stderr, rc = await run_cli(cmd, workdir, timeout, env)
                 output = parse_output(provider, stdout)
+                usable_output = has_usable_output(output)
                 return {
                     "agent": provider,
                     "profile_used": "default",
                     "output": output,
                     "elapsed_sec": round(time.time() - t0, 2),
-                    "success": rc == 0,
-                    "error": stderr.strip() if rc != 0 else None,
+                    "success": rc == 0 and usable_output,
+                    "usable_output": usable_output,
+                    "error": output_error_message(provider, stderr, output) if rc != 0 or not usable_output else None,
                     "retries": 0,
                 }
             except Exception as e:
@@ -880,6 +904,7 @@ async def call_agent(
                     "output": "",
                     "elapsed_sec": round(time.time() - t0, 2),
                     "success": False,
+                    "usable_output": False,
                     "error": str(e),
                     "retries": 0,
                 }
@@ -899,6 +924,7 @@ async def call_agent(
                     "output": "",
                     "elapsed_sec": round(time.time() - t0, 2),
                     "success": False,
+                    "usable_output": False,
                     "error": f"All {len(pool.profiles)} accounts rate-limited. "
                              f"Soonest recovery: {soonest}s",
                     "retries": retries,
@@ -945,6 +971,7 @@ async def call_agent(
             # Успех
             await pool.mark_success(profile)
             output = parse_output(provider, stdout)
+            usable_output = has_usable_output(output)
 
             # Debug: log if output is empty
             if not output and stdout.strip() == "" and stderr.strip():
@@ -955,8 +982,9 @@ async def call_agent(
                 "profile_used": profile.name,
                 "output": output,
                 "elapsed_sec": round(time.time() - t0, 2),
-                "success": rc == 0 and bool(output),
-                "error": stderr.strip()[:500] if rc != 0 or not output else None,
+                "success": rc == 0 and usable_output,
+                "usable_output": usable_output,
+                "error": output_error_message(provider, stderr, output) if rc != 0 or not usable_output else None,
                 "retries": retries,
             }
 
@@ -966,6 +994,7 @@ async def call_agent(
             "output": "",
             "elapsed_sec": round(time.time() - t0, 2),
             "success": False,
+            "usable_output": False,
             "error": f"Exhausted all {max_attempts} profiles",
             "retries": retries,
         }

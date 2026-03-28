@@ -179,13 +179,15 @@ def _schema_for(tool_cfg: dict[str, Any]) -> dict[str, Any]:
             "required": ["code"],
         }
     if tool_type == "shell":
+        required = [] if str(tool_cfg.get("config", {}).get("command_template", "") or "").strip() else ["command"]
         return {
             "type": "object",
             "properties": {
                 "command": {"type": "string", "description": "Shell command to execute"},
+                "input": {"type": "string", "description": "Optional input rendered into the configured command template"},
                 "workdir": {"type": "string", "description": "Working directory under /tmp"},
             },
-            "required": ["command"],
+            "required": required,
         }
     return {"type": "object", "properties": {}}
 
@@ -207,13 +209,15 @@ def _description_for(tool_cfg: dict[str, Any]) -> str:
         host = cfg.get("host", "unknown-host")
         user = cfg.get("user", "user")
         port = cfg.get("port") or "22"
-        return f"{name}: execute remote commands on {user}@{host}:{port} over SSH."
+        extra = str(cfg.get("description", "") or "").strip()
+        return f"{name}: {extra or f'execute remote commands on {user}@{host}:{port} over SSH.'}"
     if tool_type == "neo4j":
         return f"{name}: run Cypher queries against Neo4j at {cfg.get('bolt_url', '')}."
     if tool_type == "code_exec":
         return f"{name}: execute Python code in an isolated subprocess."
     if tool_type == "shell":
-        return f"{name}: execute shell commands in a restricted /tmp workspace."
+        extra = str(cfg.get("description", "") or cfg.get("command_template", "") or "").strip()
+        return f"{name}: {extra or 'execute shell commands in a restricted /tmp workspace.'}"
     return name
 
 
@@ -375,10 +379,19 @@ def _merge_headers(tool_cfg: dict[str, Any], extra_headers: str) -> tuple[dict[s
     cfg = tool_cfg.get("config", {})
     auth_header = cfg.get("auth_header", "").strip()
     content_type = cfg.get("content_type", "").strip()
+    static_headers_raw = str(cfg.get("headers_json", "") or "").strip()
     if auth_header:
         headers["Authorization"] = auth_header
     if content_type:
         headers["Content-Type"] = content_type
+    if static_headers_raw:
+        try:
+            parsed_static_headers = json.loads(static_headers_raw)
+        except json.JSONDecodeError:
+            return {}, "invalid configured static headers JSON"
+        if not isinstance(parsed_static_headers, dict):
+            return {}, "configured static headers must be a JSON object"
+        headers.update({str(key): str(value) for key, value in parsed_static_headers.items()})
     if extra_headers:
         try:
             parsed = json.loads(extra_headers)
@@ -623,7 +636,12 @@ async def _call_code_exec(tool_cfg: dict[str, Any], arguments: dict[str, Any]) -
 
 
 async def _call_shell(tool_cfg: dict[str, Any], arguments: dict[str, Any]) -> str:
+    cfg = tool_cfg.get("config", {})
     command = str(arguments.get("command", "")).strip()
+    if not command:
+        command_template = str(cfg.get("command_template", "")).strip()
+        if command_template:
+            command = _render_template(command_template, str(arguments.get("input", "") or ""))
     if not command:
         return f"[{tool_cfg['id']}] Error: 'command' is required"
     workdir = str(arguments.get("workdir", "/tmp") or "/tmp")

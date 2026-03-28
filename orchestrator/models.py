@@ -19,6 +19,7 @@ from typing_extensions import TypedDict
 from orchestrator.tool_configs import (
     TOOL_TYPES,
     codex_supports_native_mcp_server,
+    is_builtin_tool_instance,
     mcp_server_transport,
     normalize_tool_id,
     supported_providers_for_tool_type,
@@ -337,7 +338,7 @@ def _tool_transport(tool_id: str) -> str:
         return "unknown"
     if configured.tool_type == "mcp_server":
         return str(configured.config.get("transport", "stdio") or "stdio").strip().lower()
-    if configured.tool_type in {"code_exec", "shell"}:
+    if is_builtin_tool_instance(canonical):
         return "builtin"
     return "bridge"
 
@@ -370,6 +371,9 @@ def _tool_subtitle(tool_id: str) -> str:
     if configured.tool_type in {"http_api", "custom_api"}:
         base_url = str(configured.config.get("base_url", "")).strip()
         return f"Base URL: {base_url}" if base_url else "Service: remote API"
+    if configured.tool_type == "shell":
+        command_template = str(configured.config.get("command_template", "")).strip()
+        return f"Template: {command_template}" if command_template else "Runtime: local shell"
     if configured.tool_type == "mcp_server":
         transport = _tool_transport(canonical)
         if transport == "http":
@@ -639,8 +643,10 @@ class SessionStore:
         raw_db_path = db_path or os.getenv("MULTI_AGENT_STATE_DB")
         self._db_path = Path(raw_db_path) if raw_db_path else Path.home() / ".multi-agent" / "state.db"
         self._runtime_events_dir = self._db_path.parent / "runtime_events"
+        self._checkpoint_runtimes_dir = self._db_path.parent / "checkpoint_runtimes"
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._runtime_events_dir.mkdir(parents=True, exist_ok=True)
+        self._checkpoint_runtimes_dir.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -750,9 +756,13 @@ class SessionStore:
         for sid in stale_ids:
             for candidate in self._runtime_events_dir.glob(f"{sid}*.jsonl"):
                 candidate.unlink(missing_ok=True)
+            self.checkpoint_runtime_path(sid).unlink(missing_ok=True)
 
     def _runtime_event_path(self, sid: str) -> Path:
         return self._runtime_events_dir / f"{sid}.jsonl"
+
+    def checkpoint_runtime_path(self, sid: str) -> Path:
+        return self._checkpoint_runtimes_dir / f"{sid}.pkl"
 
     def _append_event_conn(
         self,

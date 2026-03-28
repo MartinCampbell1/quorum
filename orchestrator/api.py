@@ -42,7 +42,14 @@ from orchestrator.engine import (
     DEFAULT_AGENTS,
 )
 from orchestrator.scenarios import get_scenario, list_scenarios
-from orchestrator.tool_configs import tool_config_store, ToolConfig, TOOL_TYPES, PROMPT_TEMPLATES
+from orchestrator.tool_configs import (
+    PROMPT_TEMPLATES,
+    TOOL_TYPES,
+    ToolConfig,
+    is_builtin_tool_instance,
+    normalize_tool_id,
+    tool_config_store,
+)
 
 router = APIRouter(prefix="/orchestrate", tags=["orchestrate"])
 
@@ -53,6 +60,8 @@ MESSAGEABLE_STATUSES = {"paused", "pause_requested"}
 INSTRUCTIONABLE_STATUSES = {"running", "pause_requested", "paused"}
 CANCELLABLE_STATUSES = {"running", "pause_requested", "paused", "cancel_requested"}
 BRANCHABLE_STATUSES = {"paused", "completed", "failed", "cancelled"}
+CONTINUABLE_STATUSES = {"completed", "failed", "cancelled"}
+LEGACY_CUSTOM_TOOL_TYPES = {"http_api", "ssh", "shell_command"}
 
 
 def _workspace_preset_to_dict(preset: WorkspacePreset) -> dict:
@@ -62,7 +71,7 @@ def _workspace_preset_to_dict(preset: WorkspacePreset) -> dict:
 def _tool_transport(tool: ToolConfig) -> str:
     if tool.tool_type == "mcp_server":
         return str(tool.config.get("transport", "stdio") or "stdio").strip().lower()
-    if tool.tool_type in {"code_exec", "shell"}:
+    if is_builtin_tool_instance(tool.id):
         return "builtin"
     return "bridge"
 
@@ -77,11 +86,280 @@ def _tool_payload(tool: ToolConfig) -> dict:
     return payload
 
 
+def _reason(code: str, message: str) -> dict:
+    return {"code": code, "message": message}
+
+
+def _error_detail(message: str, reason: dict | None = None, **extra: object) -> str | dict:
+    payload = {"message": message}
+    if reason is not None:
+        payload["reason"] = reason
+    for key, value in extra.items():
+        if value is not None:
+            payload[key] = value
+    return payload if reason is not None or extra else message
+
+
+def _parse_json_mapping(raw_value: object, field_name: str) -> tuple[dict[str, str], str | None]:
+    if isinstance(raw_value, dict):
+        parsed = raw_value
+    else:
+        rendered = str(raw_value or "").strip()
+        if not rendered:
+            return {}, None
+        try:
+            parsed = json.loads(rendered)
+        except json.JSONDecodeError as exc:
+            return {}, f"{field_name} must be valid JSON: {exc}"
+    if not isinstance(parsed, dict):
+        return {}, f"{field_name} must be a JSON object"
+    return {str(key): str(value) for key, value in parsed.items()}, None
+
+
+def _legacy_custom_tool_payload(tool: ToolConfig) -> dict | None:
+    if is_builtin_tool_instance(tool.id):
+        return None
+    cfg = tool.config or {}
+    description = str(cfg.get("description", "")).strip() or tool.name
+
+    if tool.tool_type in {"http_api", "custom_api"}:
+        headers, _ = _parse_json_mapping(cfg.get("headers_json", ""), "headers")
+        auth_header = str(cfg.get("auth_header", "") or "").strip()
+        content_type = str(cfg.get("content_type", "") or "").strip()
+        if auth_header:
+            headers.setdefault("Authorization", auth_header)
+        if content_type:
+            headers.setdefault("Content-Type", content_type)
+        return {
+            "key": tool.id,
+            "name": tool.name,
+            "description": description,
+            "category": TOOL_TYPES.get(tool.tool_type, {}).get("category", "custom"),
+            "tool_type": "http_api",
+            "config": {
+                "url": str(cfg.get("base_url", "") or "").strip(),
+                "base_url": str(cfg.get("base_url", "") or "").strip(),
+                "method": str(cfg.get("method", "") or "GET").strip().upper(),
+                "headers": json.dumps(headers, ensure_ascii=False) if headers else "",
+            },
+        }
+
+    if tool.tool_type == "ssh":
+        return {
+            "key": tool.id,
+            "name": tool.name,
+            "description": description,
+            "category": TOOL_TYPES.get(tool.tool_type, {}).get("category", "custom"),
+            "tool_type": "ssh",
+            "config": {
+                "host": str(cfg.get("host", "") or "").strip(),
+                "port": str(cfg.get("port", "") or "22").strip(),
+                "username": str(cfg.get("user", "") or "").strip(),
+                "user": str(cfg.get("user", "") or "").strip(),
+                "auth_type": str(cfg.get("auth_type", "") or "key").strip(),
+                "password": str(cfg.get("password", "") or "").strip(),
+            },
+        }
+
+    if tool.tool_type == "shell":
+        return {
+            "key": tool.id,
+            "name": tool.name,
+            "description": description,
+            "category": "custom",
+            "tool_type": "shell_command",
+            "config": {
+                "command": str(cfg.get("command_template", "") or "").strip(),
+            },
+        }
+
+    return None
+
+
+def _legacy_custom_tool_to_config(payload: dict) -> ToolConfig:
+    tool_type = str(payload.get("tool_type", "") or "").strip()
+    if tool_type not in LEGACY_CUSTOM_TOOL_TYPES:
+        raise HTTPException(422, f"Unsupported custom tool type: {tool_type}")
+
+    tool_id = normalize_tool_id(str(payload.get("key", "") or payload.get("id", "")).strip())
+    if not tool_id:
+        raise HTTPException(422, "Custom tool key is required.")
+    if is_builtin_tool_instance(tool_id):
+        raise HTTPException(409, f"Custom tool key '{tool_id}' conflicts with a built-in tool id.")
+
+    name = str(payload.get("name", "") or "").strip()
+    if not name:
+        raise HTTPException(422, "Custom tool name is required.")
+
+    description = str(payload.get("description", "") or "").strip() or name
+    raw_config = payload.get("config") or {}
+    if not isinstance(raw_config, dict):
+        raise HTTPException(422, "Custom tool config must be an object.")
+
+    if tool_type == "http_api":
+        base_url = str(raw_config.get("base_url") or raw_config.get("url") or "").strip()
+        if not base_url:
+            raise HTTPException(422, "Custom HTTP API tool requires a URL.")
+        static_headers, error = _parse_json_mapping(raw_config.get("headers", ""), "headers")
+        if error:
+            raise HTTPException(422, error)
+        auth_header = str(raw_config.get("auth_header") or static_headers.pop("Authorization", "")).strip()
+        content_type = str(
+            raw_config.get("content_type")
+            or static_headers.pop("Content-Type", "")
+            or static_headers.pop("content-type", "")
+        ).strip()
+        mapped_config = {
+            "base_url": base_url,
+            "method": str(raw_config.get("method", "") or "GET").strip().upper(),
+            "auth_header": auth_header,
+            "content_type": content_type,
+            "description": description,
+        }
+        if static_headers:
+            mapped_config["headers_json"] = json.dumps(static_headers, ensure_ascii=False)
+        return ToolConfig(
+            id=tool_id,
+            name=name,
+            tool_type="http_api",
+            icon=str(payload.get("icon", "") or TOOL_TYPES["http_api"]["icon"]),
+            config=mapped_config,
+            enabled=bool(payload.get("enabled", True)),
+        )
+
+    if tool_type == "ssh":
+        host = str(raw_config.get("host", "") or "").strip()
+        user = str(raw_config.get("user") or raw_config.get("username") or "").strip()
+        if not host or not user:
+            raise HTTPException(422, "Custom SSH tool requires host and username.")
+        return ToolConfig(
+            id=tool_id,
+            name=name,
+            tool_type="ssh",
+            icon=str(payload.get("icon", "") or TOOL_TYPES["ssh"]["icon"]),
+            config={
+                "host": host,
+                "port": str(raw_config.get("port", "") or "22").strip(),
+                "user": user,
+                "auth_type": str(raw_config.get("auth_type", "") or "key").strip(),
+                "password": str(raw_config.get("password", "") or "").strip(),
+                "description": description,
+            },
+            enabled=bool(payload.get("enabled", True)),
+        )
+
+    command_template = str(raw_config.get("command", "") or "").strip()
+    if not command_template:
+        raise HTTPException(422, "Custom shell tool requires a command template.")
+    return ToolConfig(
+        id=tool_id,
+        name=name,
+        tool_type="shell",
+        icon=str(payload.get("icon", "") or TOOL_TYPES["shell"]["icon"]),
+        config={
+            "command_template": command_template,
+            "description": description,
+        },
+        enabled=bool(payload.get("enabled", True)),
+    )
+
+
 def _has_checkpoint_history(session: dict) -> bool:
     checkpoints = session.get("checkpoints")
     if isinstance(checkpoints, list):
         return bool(checkpoints)
     return bool(session.get("current_checkpoint_id"))
+
+
+def _live_runtime_reason(status: str, live_runtime_available: bool) -> dict | None:
+    if live_runtime_available:
+        return None
+    if status in PAUSEABLE_STATUSES | RESUMABLE_STATUSES | CANCELLABLE_STATUSES:
+        return _reason(
+            "runtime_unavailable_after_restart",
+            "In-memory runtime is unavailable. The backend likely restarted or evicted the active runner.",
+        )
+    return _reason(
+        "session_not_active",
+        f"Session is in status '{status}' and does not currently require a live runtime.",
+    )
+
+
+def _checkpoint_runtime_reason(
+    status: str,
+    has_checkpoints: bool,
+    checkpoint_runtime_available: bool,
+) -> dict | None:
+    if checkpoint_runtime_available:
+        return None
+    if not has_checkpoints:
+        return _reason(
+            "checkpoint_history_missing",
+            "Session has no recorded checkpoints to branch from.",
+        )
+    if status not in BRANCHABLE_STATUSES:
+        return _reason(
+            "session_not_branchable",
+            f"Session in status '{status}' cannot branch from a checkpoint yet.",
+        )
+    return _reason(
+        "checkpoint_runtime_unavailable",
+        "Checkpoint runtime snapshot is unavailable for this session.",
+    )
+
+
+def _action_reason(
+    action: str,
+    status: str,
+    live_runtime_available: bool,
+    checkpoint_runtime_available: bool,
+    has_checkpoints: bool,
+) -> dict | None:
+    if action == "pause":
+        if status not in PAUSEABLE_STATUSES:
+            return _reason("status_not_pauseable", f"Session status '{status}' cannot be paused.")
+        if not live_runtime_available:
+            return _reason("runtime_unavailable_after_restart", "Cannot pause because live runtime is unavailable.")
+        return None
+    if action == "resume":
+        if status not in RESUMABLE_STATUSES:
+            return _reason("status_not_resumable", f"Session status '{status}' cannot be resumed.")
+        if not live_runtime_available:
+            return _reason("runtime_unavailable_after_restart", "Cannot resume because live runtime is unavailable.")
+        return None
+    if action == "send_message":
+        if status not in MESSAGEABLE_STATUSES:
+            return _reason("status_not_messageable", f"Session status '{status}' cannot accept paused-state messages.")
+        if not live_runtime_available:
+            return _reason("runtime_unavailable_after_restart", "Cannot send a message because live runtime is unavailable.")
+        return None
+    if action == "inject_instruction":
+        if status not in INSTRUCTIONABLE_STATUSES:
+            return _reason("status_not_instructionable", f"Session status '{status}' cannot accept instructions.")
+        if not live_runtime_available:
+            return _reason("runtime_unavailable_after_restart", "Cannot queue an instruction because live runtime is unavailable.")
+        return None
+    if action == "cancel":
+        if status not in CANCELLABLE_STATUSES:
+            return _reason("status_not_cancellable", f"Session status '{status}' cannot be cancelled.")
+        if not live_runtime_available:
+            return _reason("runtime_unavailable_after_restart", "Cannot cancel because live runtime is unavailable.")
+        return None
+    if action == "continue_conversation":
+        if status not in CONTINUABLE_STATUSES:
+            return _reason("status_not_continuable", f"Session status '{status}' cannot continue the conversation.")
+        if not has_checkpoints:
+            return _reason("checkpoint_history_missing", "Session has no checkpoints to continue from.")
+        if not checkpoint_runtime_available:
+            return _reason("checkpoint_runtime_unavailable", "Checkpoint runtime snapshot is unavailable.")
+        return None
+    if status not in BRANCHABLE_STATUSES:
+        return _reason("status_not_branchable", f"Session status '{status}' cannot branch from a checkpoint.")
+    if not has_checkpoints:
+        return _reason("checkpoint_history_missing", "Session has no checkpoints to branch from.")
+    if not checkpoint_runtime_available:
+        return _reason("checkpoint_runtime_unavailable", "Checkpoint runtime snapshot is unavailable.")
+    return None
 
 
 def _session_runtime_state(session: dict) -> dict:
@@ -90,20 +368,29 @@ def _session_runtime_state(session: dict) -> dict:
     live_runtime_available = bool(session_id) and has_live_runtime(session_id)
     checkpoint_runtime_available = bool(session_id) and has_checkpoint_runtime(session_id)
     has_checkpoints = _has_checkpoint_history(session)
+    reasons = {
+        "live_runtime": _live_runtime_reason(status, live_runtime_available),
+        "checkpoint_runtime": _checkpoint_runtime_reason(status, has_checkpoints, checkpoint_runtime_available),
+        "pause": _action_reason("pause", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints),
+        "resume": _action_reason("resume", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints),
+        "send_message": _action_reason("send_message", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints),
+        "inject_instruction": _action_reason("inject_instruction", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints),
+        "cancel": _action_reason("cancel", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints),
+        "continue_conversation": _action_reason("continue_conversation", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints),
+        "branch_from_checkpoint": _action_reason("branch_from_checkpoint", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints),
+    }
     return {
         "live_runtime_available": live_runtime_available,
         "checkpoint_runtime_available": checkpoint_runtime_available,
         "has_checkpoints": has_checkpoints,
-        "can_pause": status in PAUSEABLE_STATUSES and live_runtime_available,
-        "can_resume": status in RESUMABLE_STATUSES and live_runtime_available,
-        "can_send_message": status in MESSAGEABLE_STATUSES and live_runtime_available,
-        "can_inject_instruction": status in INSTRUCTIONABLE_STATUSES and live_runtime_available,
-        "can_cancel": status in CANCELLABLE_STATUSES and live_runtime_available,
-        "can_branch_from_checkpoint": (
-            status in BRANCHABLE_STATUSES
-            and has_checkpoints
-            and checkpoint_runtime_available
-        ),
+        "can_pause": reasons["pause"] is None,
+        "can_resume": reasons["resume"] is None,
+        "can_send_message": reasons["send_message"] is None,
+        "can_inject_instruction": reasons["inject_instruction"] is None,
+        "can_cancel": reasons["cancel"] is None,
+        "can_continue_conversation": reasons["continue_conversation"] is None,
+        "can_branch_from_checkpoint": reasons["branch_from_checkpoint"] is None,
+        "reasons": reasons,
     }
 
 
@@ -111,6 +398,26 @@ def _session_payload(session: dict) -> dict:
     payload = dict(session)
     payload["runtime_state"] = _session_runtime_state(session)
     return payload
+
+
+def _raise_session_action_error(
+    status_code: int,
+    session: dict,
+    action: str,
+    message: str,
+    **extra: object,
+) -> None:
+    runtime_state = _session_runtime_state(session)
+    raise HTTPException(
+        status_code,
+        _error_detail(
+            message,
+            reason=runtime_state["reasons"].get(action),
+            session_status=session.get("status"),
+            action=action,
+            **extra,
+        ),
+    )
 
 
 def _validate_workspace_paths_exist(paths: list[str]) -> list[str]:
@@ -386,21 +693,99 @@ async def ep_user_message(session_id: str, req: MessageRequest):
     if not session:
         raise HTTPException(404, f"Session not found: {session_id}")
     if session["status"] not in MESSAGEABLE_STATUSES:
-        raise HTTPException(
+        _raise_session_action_error(
             409,
+            session,
+            "send_message",
             "Pause the run first, then send an instruction so it can be applied at the next checkpoint.",
         )
     if not req.content.strip():
-        raise HTTPException(422, "Instruction content cannot be empty.")
-    if not has_live_runtime(session_id):
         raise HTTPException(
+            422,
+            _error_detail(
+                "Instruction content cannot be empty.",
+                reason=_reason("instruction_empty", "Instruction content cannot be empty."),
+                session_status=session.get("status"),
+                action="send_message",
+            ),
+        )
+    if not has_live_runtime(session_id):
+        _raise_session_action_error(
             409,
+            session,
+            "send_message",
             "Session runtime is unavailable. The backend was likely restarted, so this paused run can no longer accept new instructions.",
         )
     queued = inject_instruction(session_id, req.content.strip())
     if not queued:
-        raise HTTPException(409, "Instruction could not be queued because session runtime is unavailable.")
+        _raise_session_action_error(
+            409,
+            session,
+            "send_message",
+            "Instruction could not be queued because session runtime is unavailable.",
+        )
     return {"status": "queued", "pending_instructions": queued}
+
+
+@router.post("/session/{session_id}/continue")
+async def ep_continue_session(session_id: str, req: MessageRequest):
+    session = store.get(session_id)
+    if not session:
+        raise HTTPException(404, f"Session not found: {session_id}")
+    if session["status"] not in CONTINUABLE_STATUSES:
+        _raise_session_action_error(
+            409,
+            session,
+            "continue_conversation",
+            f"Session '{session_id}' must be completed, failed, or cancelled before continuing the conversation.",
+        )
+    if not req.content.strip():
+        raise HTTPException(
+            422,
+            _error_detail(
+                "Continuation content cannot be empty.",
+                reason=_reason("instruction_empty", "Continuation content cannot be empty."),
+                session_status=session.get("status"),
+                action="continue_conversation",
+            ),
+        )
+    checkpoint_id = session.get("current_checkpoint_id")
+    if not checkpoint_id:
+        raise HTTPException(
+            409,
+            _error_detail(
+                "This session has no current checkpoint to continue from.",
+                reason=_reason(
+                    "no_current_checkpoint",
+                    "This session has no current checkpoint to continue from.",
+                ),
+                session_status=session.get("status"),
+                action="continue_conversation",
+            ),
+        )
+    if not has_checkpoint_runtime(session_id):
+        _raise_session_action_error(
+            409,
+            session,
+            "continue_conversation",
+            "Checkpoint runtime snapshot is unavailable. The backend likely restarted or discarded this session's branch state.",
+        )
+    new_session_id = fork_from_checkpoint(session_id, checkpoint_id, req.content.strip())
+    if not new_session_id:
+        raise HTTPException(
+            422,
+            _error_detail(
+                "Checkpoint not found or conversation continuation is unavailable for this session.",
+                reason=_reason(
+                    "checkpoint_not_found",
+                    "Checkpoint not found or conversation continuation is unavailable for this session.",
+                ),
+                session_status=session.get("status"),
+                action="continue_conversation",
+                checkpoint_id=checkpoint_id,
+            ),
+        )
+    return {"status": "running", "new_session_id": new_session_id}
 
 
 @router.post("/session/{session_id}/control")
@@ -412,62 +797,116 @@ async def ep_session_control(session_id: str, req: ControlRequest):
     action = req.action.strip().lower()
     if action == "pause":
         if session["status"] in PAUSEABLE_STATUSES and not has_live_runtime(session_id):
-            raise HTTPException(
+            _raise_session_action_error(
                 409,
+                session,
+                "pause",
                 "Session runtime is unavailable. The backend was likely restarted, so this run can no longer be paused or resumed.",
             )
         if not request_pause(session_id):
-            raise HTTPException(409, f"Session '{session_id}' cannot be paused from status '{session['status']}'.")
+            _raise_session_action_error(
+                409,
+                session,
+                "pause",
+                f"Session '{session_id}' cannot be paused from status '{session['status']}'.",
+            )
         return {"status": "pause_requested"}
     if action == "resume":
         if session["status"] in RESUMABLE_STATUSES and not has_live_runtime(session_id):
-            raise HTTPException(
+            _raise_session_action_error(
                 409,
+                session,
+                "resume",
                 "Session runtime is unavailable. The backend was likely restarted, so this paused run can no longer be resumed.",
             )
         if not request_resume(session_id, req.content):
-            raise HTTPException(409, f"Session '{session_id}' cannot be resumed from status '{session['status']}'.")
+            _raise_session_action_error(
+                409,
+                session,
+                "resume",
+                f"Session '{session_id}' cannot be resumed from status '{session['status']}'.",
+            )
         return {"status": "running"}
     if action == "inject_instruction":
         if session["status"] not in INSTRUCTIONABLE_STATUSES:
-            raise HTTPException(
+            _raise_session_action_error(
                 409,
+                session,
+                "inject_instruction",
                 f"Session '{session_id}' cannot accept instructions from status '{session['status']}'.",
             )
         if not req.content.strip():
-            raise HTTPException(422, "Instruction content cannot be empty.")
-        if not has_live_runtime(session_id):
             raise HTTPException(
+                422,
+                _error_detail(
+                    "Instruction content cannot be empty.",
+                    reason=_reason("instruction_empty", "Instruction content cannot be empty."),
+                    session_status=session.get("status"),
+                    action="inject_instruction",
+                ),
+            )
+        if not has_live_runtime(session_id):
+            _raise_session_action_error(
                 409,
+                session,
+                "inject_instruction",
                 "Session runtime is unavailable. The backend was likely restarted, so queued instructions can no longer be applied to this run.",
             )
         queued = inject_instruction(session_id, req.content.strip())
         if not queued:
-            raise HTTPException(409, "Instruction could not be queued because session runtime is unavailable.")
+            _raise_session_action_error(
+                409,
+                session,
+                "inject_instruction",
+                "Instruction could not be queued because session runtime is unavailable.",
+            )
         return {"status": "queued", "pending_instructions": queued}
     if action == "cancel":
         if session["status"] in CANCELLABLE_STATUSES and not has_live_runtime(session_id):
-            raise HTTPException(
+            _raise_session_action_error(
                 409,
+                session,
+                "cancel",
                 "Session runtime is unavailable. The backend was likely restarted, so this run is no longer cancellable in place.",
             )
         if not request_cancel(session_id):
-            raise HTTPException(409, f"Session '{session_id}' cannot be cancelled from status '{session['status']}'.")
+            _raise_session_action_error(
+                409,
+                session,
+                "cancel",
+                f"Session '{session_id}' cannot be cancelled from status '{session['status']}'.",
+            )
         return {"status": "cancel_requested"}
     if action == "restart_from_checkpoint":
         if session["status"] not in BRANCHABLE_STATUSES:
-            raise HTTPException(
+            _raise_session_action_error(
                 409,
+                session,
+                "branch_from_checkpoint",
                 f"Session '{session_id}' must be paused or finished before creating a branch from a checkpoint.",
             )
         if not has_checkpoint_runtime(session_id):
-            raise HTTPException(
+            _raise_session_action_error(
                 409,
-                "Checkpoint runtime is unavailable. The backend was likely restarted, so this session can no longer branch from its in-memory checkpoint state.",
+                session,
+                "branch_from_checkpoint",
+                "Checkpoint runtime snapshot is unavailable. The backend likely restarted or discarded this session's branch state.",
             )
         new_session_id = fork_from_checkpoint(session_id, req.checkpoint_id, req.content)
         if not new_session_id:
-            raise HTTPException(422, "Checkpoint not found or branch restart is unavailable for this session.")
+            raise HTTPException(
+                422,
+                _error_detail(
+                    "Checkpoint not found or branch restart is unavailable for this session.",
+                    reason=_reason(
+                        "checkpoint_not_found",
+                        "Checkpoint not found or branch restart is unavailable for this session.",
+                    ),
+                    session_status=session.get("status"),
+                    action="branch_from_checkpoint",
+                    checkpoint_id=req.checkpoint_id or session.get("current_checkpoint_id"),
+                ),
+            )
         return {"status": "running", "new_session_id": new_session_id}
     raise HTTPException(422, f"Unknown control action: {req.action}")
 
@@ -506,24 +945,37 @@ async def ep_tools():
 
 @router.get("/tools/custom")
 async def ep_custom_tools():
-    return []
+    payloads: list[dict] = []
+    for tool in tool_config_store.list_all():
+        payload = _legacy_custom_tool_payload(tool)
+        if payload is not None:
+            payloads.append(payload)
+    return payloads
 
 
 @router.post("/tools/custom")
-async def ep_add_custom_tool():
-    raise HTTPException(
-        501,
-        "Executable custom tools are not supported in this build yet. "
-        "Only built-in tools are available.",
-    )
+async def ep_add_custom_tool(payload: dict):
+    tool = _legacy_custom_tool_to_config(payload)
+    try:
+        saved = tool_config_store.add(tool)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    legacy_payload = _legacy_custom_tool_payload(saved)
+    if legacy_payload is None:
+        raise HTTPException(422, f"Tool '{saved.id}' cannot be exposed through the legacy custom-tools API.")
+    return legacy_payload
 
 
 @router.delete("/tools/custom/{tool_key}")
 async def ep_remove_custom_tool(tool_key: str):
-    raise HTTPException(
-        501,
-        f"Custom tool '{tool_key}' cannot be removed because custom tools are disabled in this build.",
-    )
+    tool = tool_config_store.get(tool_key)
+    if not tool:
+        raise HTTPException(404, f"Custom tool not found: {tool_key}")
+    if _legacy_custom_tool_payload(tool) is None:
+        raise HTTPException(409, f"Tool '{tool_key}' is not managed by the legacy custom-tools API.")
+    if not tool_config_store.delete(tool_key):
+        raise HTTPException(409, f"Custom tool '{tool_key}' could not be removed.")
+    return {"status": "deleted"}
 
 
 @router.get("/tool-logs")
@@ -589,13 +1041,23 @@ async def ep_add_tool(tool: ToolConfig):
     """Add a new configured tool."""
     if tool.tool_type not in TOOL_TYPES:
         raise HTTPException(422, f"Unknown tool type: {tool.tool_type}")
-    return _tool_payload(tool_config_store.add(tool))
+    if is_builtin_tool_instance(tool.id):
+        raise HTTPException(409, f"Built-in tool '{tool.id}' cannot be replaced via the settings API.")
+    try:
+        return _tool_payload(tool_config_store.add(tool))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.put("/settings/tools/{tool_id}")
 async def ep_update_tool(tool_id: str, updates: dict):
     """Update a configured tool."""
-    result = tool_config_store.update(tool_id, updates)
+    if is_builtin_tool_instance(tool_id):
+        raise HTTPException(409, f"Built-in tool '{tool_id}' cannot be edited via the settings API.")
+    try:
+        result = tool_config_store.update(tool_id, updates)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
     if not result:
         raise HTTPException(404, f"Tool not found: {tool_id}")
     return _tool_payload(result)

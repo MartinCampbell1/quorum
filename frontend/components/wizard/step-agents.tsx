@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { ChevronDown, ChevronUp, ArrowRight, Plus, Trash2, Wrench } from "lucide-react";
+import { ChevronDown, ChevronUp, ArrowRight, Plus, Trash2, Wrench, Settings2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -17,11 +17,13 @@ interface StepAgentsProps {
   onChange: (agents: AgentConfig[]) => void;
   onNext: () => void;
   onBack: () => void;
+  onOpenSettings: () => void;
 }
 
 const providers = ["claude", "gemini", "codex", "minimax"] as const;
+const CONNECTION_TOOL_TYPES = new Set(["http_api", "custom_api", "ssh", "neo4j", "mcp_server"]);
 
-export function StepAgents({ agents, onChange, onNext, onBack }: StepAgentsProps) {
+export function StepAgents({ agents, onChange, onNext, onBack, onOpenSettings }: StepAgentsProps) {
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
   const [availableTools, setAvailableTools] = useState<ToolDefinition[]>([]);
   const [promptTemplates, setPromptTemplates] = useState<Record<string, { name: string; description: string; prompt: string }>>({});
@@ -31,9 +33,10 @@ export function StepAgents({ agents, onChange, onNext, onBack }: StepAgentsProps
     getPromptTemplates().then((templates) => setPromptTemplates(templates as Record<string, { name: string; description: string; prompt: string }>)).catch(() => {});
   }, []);
 
-  const toolKeys = availableTools.map((t) => t.key);
   const toolLabels = Object.fromEntries(availableTools.map((t) => [t.key, `${t.icon ?? ""} ${t.name}`.trim()]));
   const toolsByKey = Object.fromEntries(availableTools.map((tool) => [tool.key, tool]));
+  const connectionToolKeys = availableTools.filter((tool) => CONNECTION_TOOL_TYPES.has(tool.tool_type ?? "")).map((tool) => tool.key);
+  const builtinToolKeys = availableTools.filter((tool) => !CONNECTION_TOOL_TYPES.has(tool.tool_type ?? "")).map((tool) => tool.key);
 
   function updateAgent(index: number, updates: Partial<AgentConfig>) {
     const next = agents.map((a, i) => (i === index ? { ...a, ...updates } : a));
@@ -59,11 +62,11 @@ export function StepAgents({ agents, onChange, onNext, onBack }: StepAgentsProps
   function capabilityTone(capability: "native" | "bridged" | "unavailable" | undefined) {
     if (capability === "native") return "border-emerald-200 bg-emerald-50 text-emerald-700";
     if (capability === "bridged") return "border-amber-200 bg-amber-50 text-amber-700";
-    return "border-slate-200 bg-white text-slate-500";
+    return "border-slate-200 bg-white text-slate-500 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400";
   }
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full flex-col bg-[#f6f7fb] dark:bg-[#05070c]">
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-xl mx-auto px-10 pt-12 pb-10">
           <Stepper currentStep={1} />
@@ -74,6 +77,41 @@ export function StepAgents({ agents, onChange, onNext, onBack }: StepAgentsProps
           <p className="text-[13px] text-muted-foreground/60 mb-7">
             Назначьте провайдера и инструменты каждой роли. Раскройте для детальной настройки.
           </p>
+
+          <div className="mb-5 rounded-2xl border border-border/60 bg-white p-4 dark:border-slate-800 dark:bg-slate-950/70">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <Settings2 className="h-4 w-4 text-muted-foreground" />
+                  <div className="text-[13px] font-medium text-foreground">
+                    Внешние подключения
+                  </div>
+                </div>
+                <p className="mt-2 text-[12px] leading-6 text-muted-foreground/70">
+                  API, SSH, граф и MCP подключаются в Settings, после чего их можно выдать любому агенту здесь.
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {connectionToolKeys.length > 0 ? (
+                    connectionToolKeys.map((toolKey) => (
+                      <span
+                        key={`connection-${toolKey}`}
+                        className="rounded-full border border-border bg-background px-2.5 py-1 text-[10px] text-muted-foreground dark:border-slate-800 dark:bg-slate-950"
+                      >
+                        {toolLabels[toolKey] ?? toolKey}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="rounded-full border border-dashed border-border px-2.5 py-1 text-[10px] text-muted-foreground/70 dark:border-slate-800">
+                      Пока подключены только built-ins
+                    </span>
+                  )}
+                </div>
+              </div>
+              <Button type="button" variant="outline" size="sm" className="shrink-0 text-xs" onClick={onOpenSettings}>
+                Открыть Settings
+              </Button>
+            </div>
+          </div>
 
           <div className="flex flex-col gap-2.5">
             {agents.map((agent, i) => (
@@ -135,40 +173,53 @@ export function StepAgents({ agents, onChange, onNext, onBack }: StepAgentsProps
                     <div className="mt-3 pt-3 border-t border-border/50" style={{ animation: "fade-in 0.15s ease-out" }}>
                       {/* Tools section */}
                       <label className="text-[10px] uppercase tracking-widest text-muted-foreground/60 mb-2 block font-medium">
-                        Инструменты
+                        Подключения
                       </label>
-                      {toolKeys.length > 0 ? (
+                      {connectionToolKeys.length > 0 ? (
+                        <SelectorChips
+                          options={connectionToolKeys}
+                          value={agent.tools ?? []}
+                          onChange={(selected) => updateAgent(i, { tools: selected })}
+                          labels={toolLabels}
+                        />
+                      ) : (
+                        <div className="rounded-xl border border-dashed border-border/70 bg-background px-3 py-3 text-[11px] leading-relaxed text-muted-foreground/70 dark:border-slate-800 dark:bg-slate-950/60">
+                          Подключений пока нет. Добавь `API`, `SSH`, `граф` или `MCP` в Settings, потом вернись сюда и прикрепи их к агенту.
+                        </div>
+                      )}
+
+                      {builtinToolKeys.length > 0 && (
                         <>
+                          <label className="text-[10px] uppercase tracking-widest text-muted-foreground/60 mb-2 mt-4 block font-medium">
+                            Built-ins
+                          </label>
                           <SelectorChips
-                            options={toolKeys}
+                            options={builtinToolKeys}
                             value={agent.tools ?? []}
                             onChange={(selected) => updateAgent(i, { tools: selected })}
                             labels={toolLabels}
                           />
-                          {(agent.tools?.length ?? 0) > 0 && (
-                            <div className="mt-2 flex flex-wrap gap-2">
-                              {(agent.tools ?? []).map((toolKey) => {
-                                const tool = toolsByKey[toolKey];
-                                const capability = tool?.compatibility?.[agent.provider];
-                                return (
-                                  <span
-                                    key={`${agent.role}-${toolKey}`}
-                                    className={cn(
-                                      "rounded-full border px-2.5 py-1 text-[10px] font-medium capitalize",
-                                      capabilityTone(capability)
-                                    )}
-                                  >
-                                    {(tool?.name ?? toolKey)}: {capability ?? "unknown"}
-                                  </span>
-                                );
-                              })}
-                            </div>
-                          )}
                         </>
-                      ) : (
-                        <p className="text-[11px] leading-relaxed text-muted-foreground/60">
-                          Нет настроенных инструментов. Добавьте их в Настройках.
-                        </p>
+                      )}
+
+                      {(agent.tools?.length ?? 0) > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {(agent.tools ?? []).map((toolKey) => {
+                            const tool = toolsByKey[toolKey];
+                            const capability = tool?.compatibility?.[agent.provider];
+                            return (
+                              <span
+                                key={`${agent.role}-${toolKey}`}
+                                className={cn(
+                                  "rounded-full border px-2.5 py-1 text-[10px] font-medium capitalize",
+                                  capabilityTone(capability)
+                                )}
+                              >
+                                {(tool?.name ?? toolKey)}: {capability ?? "unknown"}
+                              </span>
+                            );
+                          })}
+                        </div>
                       )}
 
                       {/* Prompt template section */}
@@ -203,7 +254,7 @@ export function StepAgents({ agents, onChange, onNext, onBack }: StepAgentsProps
                         onChange={(e) => updateAgent(i, { system_prompt: e.target.value })}
                         placeholder="Дополнительные инструкции для агента..."
                         rows={3}
-                        className="w-full rounded-lg border border-border bg-muted/30 px-3 py-2.5 text-xs text-foreground placeholder:text-muted-foreground/50 resize-none focus:outline-none focus:ring-2 focus:ring-ring/30 focus:border-ring transition-colors"
+                        className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-xs text-foreground placeholder:text-muted-foreground/50 resize-none focus:outline-none focus:ring-2 focus:ring-ring/30 focus:border-ring transition-colors dark:border-slate-800 dark:bg-slate-950/70"
                       />
                     </div>
                   )}
@@ -215,7 +266,7 @@ export function StepAgents({ agents, onChange, onNext, onBack }: StepAgentsProps
           {/* Add worker button */}
           <button
             onClick={addWorker}
-            className="mt-3 w-full flex items-center justify-center gap-2 rounded-xl border border-dashed border-border/60 py-3 text-[13px] text-muted-foreground hover:text-foreground hover:border-foreground/20 hover:bg-muted/30 transition-colors cursor-pointer"
+            className="mt-3 w-full flex items-center justify-center gap-2 rounded-xl border border-dashed border-border/60 py-3 text-[13px] text-muted-foreground hover:text-foreground hover:border-foreground/20 hover:bg-white transition-colors cursor-pointer dark:border-slate-800 dark:hover:bg-slate-950/70"
           >
             <Plus size={14} />
             Добавить воркера
@@ -224,7 +275,7 @@ export function StepAgents({ agents, onChange, onNext, onBack }: StepAgentsProps
       </div>
 
       {/* Footer */}
-      <div className="border-t bg-background">
+      <div className="border-t bg-background dark:border-slate-800/80 dark:bg-[#0b0f17]/95">
         <div className="max-w-xl mx-auto px-10 py-4 flex justify-between">
           <Button variant="ghost" onClick={onBack} className="text-muted-foreground">
             Назад

@@ -3,7 +3,7 @@
 import time
 
 from orchestrator.engine import CHECKPOINT_SAVERS, _prune_checkpoint_savers, reconcile_orphaned_sessions
-from orchestrator.models import AgentConfig, store
+from orchestrator.models import AgentConfig, SessionStore, store
 
 
 def test_reconcile_orphaned_sessions_marks_transient_runs_terminal():
@@ -103,3 +103,32 @@ def test_checkpoint_runtime_cache_prunes_stale_sessions():
     finally:
         CHECKPOINT_SAVERS.clear()
         CHECKPOINT_SAVERS.update(snapshot)
+
+
+def test_trimmed_sessions_remove_persisted_checkpoint_runtime(tmp_path):
+    temp_store = SessionStore(max_sessions=1, db_path=str(tmp_path / "state.db"))
+
+    first_id = temp_store.create(
+        "dictator",
+        "Old run",
+        [
+            AgentConfig(role="director", provider="claude", tools=[]),
+            AgentConfig(role="worker", provider="codex", tools=[]),
+        ],
+        {},
+    )
+    temp_store.checkpoint_runtime_path(first_id).write_bytes(b"checkpoint")
+
+    second_id = temp_store.create(
+        "dictator",
+        "New run",
+        [
+            AgentConfig(role="director", provider="claude", tools=[]),
+            AgentConfig(role="worker", provider="codex", tools=[]),
+        ],
+        {},
+    )
+
+    assert temp_store.get(first_id) is None
+    assert temp_store.get(second_id) is not None
+    assert temp_store.checkpoint_runtime_path(first_id).exists() is False

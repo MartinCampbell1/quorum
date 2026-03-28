@@ -25,6 +25,9 @@ LEGACY_TOOL_ID_ALIASES = {
     "shell": "shell_exec",
 }
 
+BUILTIN_TOOL_INSTANCE_IDS = {"code_exec", "shell_exec"}
+BUILTIN_TOOL_MUTABLE_FIELDS = {"validation_status", "last_validation_result"}
+
 
 TOOL_TYPE_PROVIDER_ALLOWLIST: dict[str, set[str]] = {
     "code_exec": {"claude", "codex"},
@@ -47,6 +50,11 @@ def normalize_tool_id(tool_id: str) -> str:
 def supported_providers_for_tool_type(tool_type: str) -> set[str]:
     """Return providers that can execute a configured tool type today."""
     return TOOL_TYPE_PROVIDER_ALLOWLIST.get(tool_type, {"claude"})
+
+
+def is_builtin_tool_instance(tool_id: str) -> bool:
+    """Return whether a tool id points at one of the immutable built-in tool instances."""
+    return normalize_tool_id(tool_id) in BUILTIN_TOOL_INSTANCE_IDS
 
 
 def mcp_server_transport(config: dict) -> str:
@@ -160,6 +168,7 @@ TOOL_TYPES = {
         "fields": [
             {"name": "base_url", "label": "Base URL", "type": "text", "required": True, "placeholder": "https://api.example.com"},
             {"name": "auth_header", "label": "Authorization header", "type": "password", "required": False, "placeholder": "Bearer ..."},
+            {"name": "headers_json", "label": "Static headers (JSON)", "type": "textarea", "required": False, "placeholder": "{\"X-Api-Key\": \"...\"}"},
             {"name": "method", "label": "Метод", "type": "select", "required": False, "options": ["GET", "POST", "PUT", "DELETE"], "placeholder": ""},
         ],
         "mcp_server": "configured-tools",
@@ -190,6 +199,7 @@ TOOL_TYPES = {
             {"name": "base_url", "label": "Base URL", "type": "text", "required": True, "placeholder": "https://api.example.com/v1"},
             {"name": "method", "label": "HTTP метод", "type": "select", "required": False, "options": ["GET", "POST", "PUT", "DELETE"], "placeholder": ""},
             {"name": "auth_header", "label": "Authorization", "type": "password", "required": False, "placeholder": "Bearer sk-..."},
+            {"name": "headers_json", "label": "Static headers (JSON)", "type": "textarea", "required": False, "placeholder": "{\"X-Api-Key\": \"...\"}"},
             {"name": "content_type", "label": "Content-Type", "type": "text", "required": False, "placeholder": "application/json"},
             {"name": "body_template", "label": "Шаблон тела запроса", "type": "textarea", "required": False, "placeholder": "{\"query\": \"{input}\"}"},
             {"name": "description", "label": "Описание для агента", "type": "textarea", "required": False, "placeholder": "Что этот API делает, как его использовать..."},
@@ -280,6 +290,8 @@ class ToolConfigStore:
             except Exception:
                 continue
             tool = tool.model_copy(update={"id": normalize_tool_id(tool.id)})
+            if is_builtin_tool_instance(tool.id):
+                continue
             self._tools[tool.id] = tool
 
     def _save_to_disk(self) -> None:
@@ -287,7 +299,7 @@ class ToolConfigStore:
         self._store_path.parent.mkdir(parents=True, exist_ok=True)
         tools = []
         for tool in self._tools.values():
-            if tool.id in {"code_exec", "shell_exec"}:
+            if is_builtin_tool_instance(tool.id):
                 continue
             tools.append(tool.model_dump())
         payload = {"tools": tools}
@@ -309,6 +321,8 @@ class ToolConfigStore:
     def add(self, tool: ToolConfig) -> ToolConfig:
         with self._lock:
             normalized = tool.model_copy(update={"id": normalize_tool_id(tool.id)})
+            if is_builtin_tool_instance(normalized.id):
+                raise ValueError(f"Built-in tool '{normalized.id}' cannot be replaced.")
             self._tools[normalized.id] = normalized
             self._save_to_disk()
             return normalized
@@ -319,8 +333,41 @@ class ToolConfigStore:
             if normalized_id not in self._tools:
                 return None
             tool = self._tools[normalized_id]
-            updated = tool.model_copy(update=updates)
-            self._tools[normalized_id] = updated
+            normalized_updates = dict(updates)
+
+            if is_builtin_tool_instance(normalized_id):
+                disallowed = sorted(set(normalized_updates) - BUILTIN_TOOL_MUTABLE_FIELDS)
+                if disallowed:
+                    blocked = ", ".join(disallowed)
+                    raise ValueError(
+                        f"Built-in tool '{normalized_id}' cannot be modified via fields: {blocked}."
+                    )
+                normalized_updates = {
+                    key: value
+                    for key, value in normalized_updates.items()
+                    if key in BUILTIN_TOOL_MUTABLE_FIELDS
+                }
+                if not normalized_updates:
+                    return tool
+                updated = tool.model_copy(update=normalized_updates)
+                self._tools[normalized_id] = updated
+                return updated
+
+            target_id = normalized_id
+            if "id" in normalized_updates:
+                target_id = normalize_tool_id(str(normalized_updates["id"]))
+                if not target_id:
+                    target_id = normalized_id
+                if is_builtin_tool_instance(target_id):
+                    raise ValueError(f"Built-in tool '{target_id}' cannot be replaced.")
+                if target_id != normalized_id and target_id in self._tools:
+                    raise ValueError(f"Tool '{target_id}' already exists.")
+                normalized_updates["id"] = target_id
+
+            updated = tool.model_copy(update=normalized_updates)
+            if target_id != normalized_id:
+                del self._tools[normalized_id]
+            self._tools[target_id] = updated
             self._save_to_disk()
             return updated
 
@@ -328,7 +375,7 @@ class ToolConfigStore:
         with self._lock:
             normalized_id = normalize_tool_id(tool_id)
             if normalized_id in self._tools:
-                if normalized_id in {"code_exec", "shell_exec"}:
+                if is_builtin_tool_instance(normalized_id):
                     return False
                 del self._tools[normalized_id]
                 self._save_to_disk()

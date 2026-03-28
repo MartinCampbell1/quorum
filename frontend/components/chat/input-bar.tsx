@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { AlertCircle, Loader2, Play, SendHorizonal } from "lucide-react";
 
-import { controlSession, sendMessage } from "@/lib/api";
+import { continueSession, controlSession, sendMessage } from "@/lib/api";
 import { useLocale } from "@/lib/locale";
 import type { Session } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,7 @@ interface InputBarProps {
   status: Session["status"];
   pendingInstructions?: number;
   checkpointId?: string | null;
+  continueCheckpointId?: string | null;
   onForkSession?: (sessionId: string) => void;
   onRefresh?: () => void;
 }
@@ -22,6 +23,7 @@ export function InputBar({
   status,
   pendingInstructions = 0,
   checkpointId,
+  continueCheckpointId,
   onForkSession,
   onRefresh,
 }: InputBarProps) {
@@ -62,6 +64,22 @@ export function InputBar({
         draft.trim() || undefined,
         checkpointId
       );
+      setDraft("");
+      await onRefresh?.();
+      if (result.new_session_id) {
+        onForkSession?.(result.new_session_id);
+      }
+    } finally {
+      setIsWorking(false);
+    }
+  }
+
+  async function continueConversation() {
+    if (!draft.trim()) return;
+    if (!(continueCheckpointId ?? checkpointId)) return;
+    setIsWorking(true);
+    try {
+      const result = await continueSession(sessionId, draft.trim());
       setDraft("");
       await onRefresh?.();
       if (result.new_session_id) {
@@ -137,5 +155,49 @@ export function InputBar({
       </div>
     );
   }
+
+  if (["completed", "failed", "cancelled"].includes(status)) {
+    return (
+      <div className="border-t border-slate-200/70 bg-white/70 px-6 py-4 backdrop-blur-md dark:border-slate-800/70 dark:bg-slate-950/40">
+        <div className="rounded-[26px] border border-[#d6dbe6] bg-[linear-gradient(135deg,rgba(250,251,255,0.96),rgba(255,255,255,0.9))] px-5 py-5 shadow-[0_24px_60px_-44px_rgba(17,48,105,0.25)] dark:border-slate-800 dark:bg-[linear-gradient(135deg,rgba(15,23,42,0.72),rgba(2,6,23,0.5))]">
+          <div className="flex items-start gap-2.5">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-slate-700 dark:text-slate-300" />
+            <div className="min-w-0 flex-1">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#6b7280] dark:text-slate-400">
+                {copy.input.teamContinue}
+              </p>
+              <p className="mt-2 text-[14px] font-semibold text-foreground/90">
+                {copy.input.teamContinueHint}
+              </p>
+              <textarea
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                placeholder={copy.input.teamContinuePlaceholder}
+                rows={3}
+                className="mt-4 w-full resize-none rounded-2xl border border-[#d6dbe6] bg-white/85 px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground/50 shadow-inner focus:outline-none focus:ring-2 focus:ring-slate-400/20 dark:border-slate-800 dark:bg-slate-950/50"
+              />
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  className="rounded-full bg-slate-950 text-xs text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-950 dark:hover:bg-white"
+                  onClick={continueConversation}
+                  disabled={isWorking || !draft.trim() || !(continueCheckpointId ?? checkpointId)}
+                >
+                  {isWorking ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Play className="mr-1.5 h-3.5 w-3.5" />}
+                  {copy.input.continueDiscussion}
+                </Button>
+                {!(continueCheckpointId ?? checkpointId) ? (
+                  <span className="self-center text-[12px] text-[#6b7280] dark:text-slate-400">
+                    {copy.monitor.noCheckpoints}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return null;
 }
