@@ -1,6 +1,7 @@
 """Base class for orchestration modes and agent factory."""
 
 import asyncio
+import os
 import re
 import time
 import threading
@@ -30,6 +31,47 @@ FALLBACK_PROVIDER_ORDER = {
     "codex": ("codex", "claude", "gemini"),
     "minimax": ("minimax", "claude", "codex", "gemini"),
 }
+
+
+def agent_workspace_paths(agent: dict) -> list[str]:
+    """Return normalized non-empty workspace paths assigned to an agent."""
+    return [str(path).strip() for path in list(agent.get("workspace_paths") or []) if str(path).strip()]
+
+
+def agent_default_workdir(agent: dict) -> str:
+    """Prefer the agent's explicit workdir, otherwise a single attached project root, otherwise repo root."""
+    explicit = str(agent.get("workdir") or "").strip()
+    if explicit:
+        return explicit
+
+    workspace_paths = agent_workspace_paths(agent)
+    if len(workspace_paths) == 1:
+        return workspace_paths[0]
+
+    return str(PROJECT_ROOT)
+
+
+def build_workspace_context_prompt(agent: dict) -> str:
+    """Describe attached project roots so prompts can reference them explicitly."""
+    workspace_paths = agent_workspace_paths(agent)
+    if not workspace_paths:
+        return ""
+
+    lines = [
+        "PROJECT ROOT CONTEXT:",
+        "Your accessible project roots are:",
+        *[f"- {path}" for path in workspace_paths],
+        "Use only these project roots as your code context unless the task explicitly points elsewhere.",
+    ]
+    if len(workspace_paths) == 1:
+        lines.append(
+            f"When the task or system prompt references relative file paths, resolve them relative to this root: {workspace_paths[0]}"
+        )
+    else:
+        lines.append(
+            "If the task mentions relative paths, first determine which listed root they belong to before inspecting files."
+        )
+    return "\n".join(lines) + "\n\n"
 
 
 class AgentStepError(ValueError):
@@ -86,7 +128,7 @@ def make_llm(
     elif provider == "codex":
         return GatewayCodex(**kwargs)
     elif provider == "minimax":
-        return GatewayMiniMax()
+        return GatewayMiniMax(**kwargs)
     else:
         raise ValueError(f"Unknown provider: {provider}")
 
@@ -123,7 +165,11 @@ def _needs_plain_text_contract(role: str | None) -> bool:
     return "critic" in normalized or "judge" in normalized
 
 
-def _provider_attempt_order(primary_provider: str) -> list[str]:
+def _minimax_available() -> bool:
+    return bool(os.environ.get("OPENROUTER_API_KEY", "").strip())
+
+
+def _provider_attempt_order(primary_provider: str, session_provider_pool: list[str] | None = None) -> list[str]:
     ordered = [primary_provider]
     preferred = FALLBACK_PROVIDER_ORDER.get(primary_provider, (primary_provider, "codex", "claude", "gemini"))
     ordered.extend(
@@ -136,6 +182,11 @@ def _provider_attempt_order(primary_provider: str) -> list[str]:
         for provider in ("codex", "claude", "gemini", "minimax")
         if provider != primary_provider and provider not in ordered
     )
+    if session_provider_pool:
+        allowed = set(session_provider_pool)
+        ordered = [provider for provider in ordered if provider in allowed or provider == primary_provider]
+    if not _minimax_available():
+        ordered = [provider for provider in ordered if provider != "minimax" or provider == primary_provider]
     return ordered
 
 
@@ -163,7 +214,10 @@ def call_agent_cfg(agent: dict, prompt: str) -> str:
             tools = _route_tool_visibility_sync(prompt, agent.get("role", ""), tools)
     role = agent.get("role")
     prompt = _plain_text_contract(prompt, role)
-    providers = _provider_attempt_order(str(agent["provider"]))
+    providers = _provider_attempt_order(
+        str(agent["provider"]),
+        [str(provider) for provider in list(agent.get("session_provider_pool") or []) if str(provider).strip()],
+    )
     last_error: GatewayInvocationError | None = None
 
     for provider in providers:
@@ -173,8 +227,8 @@ def call_agent_cfg(agent: dict, prompt: str) -> str:
                 prompt,
                 agent.get("system_prompt", ""),
                 tools=tools,
-                workdir=agent.get("workdir") or str(PROJECT_ROOT),
-                workspace_paths=list(agent.get("workspace_paths") or []),
+                workdir=agent_default_workdir(agent),
+                workspace_paths=agent_workspace_paths(agent),
                 session_id=agent.get("session_id"),
                 agent_role=role,
             )

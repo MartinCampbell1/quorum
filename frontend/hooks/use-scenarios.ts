@@ -1,12 +1,19 @@
 import useSWR from "swr";
 
-import { getScenarios } from "@/lib/api";
+import { getModes, getScenarios } from "@/lib/api";
+import { withScenarioFallbacks } from "@/lib/scenario-fallbacks";
 import type { ScenarioDefinition } from "@/lib/types";
 
 export function useScenarios() {
   const { data, error, isLoading } = useSWR<ScenarioDefinition[]>(
     "/orchestrate/scenarios",
-    getScenarios,
+    async () => {
+      const [scenarios, modes] = await Promise.all([
+        getScenarios(),
+        getModes().catch(() => undefined),
+      ]);
+      return withScenarioFallbacks(scenarios, modes);
+    },
     { revalidateOnFocus: false }
   );
 

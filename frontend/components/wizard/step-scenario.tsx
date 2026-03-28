@@ -38,6 +38,10 @@ const DISPLAY_MODES = [
     mode: "creator_critic",
     description: "Дуэт автора и критика с несколькими итерациями и прозрачной обратной связью.",
   },
+  {
+    mode: "tournament",
+    description: "Несколько проектов проходят по сетке матчей, пока судья не выберет чемпиона.",
+  },
 ];
 
 function findScenarioByMode(

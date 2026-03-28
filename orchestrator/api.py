@@ -62,6 +62,7 @@ CANCELLABLE_STATUSES = {"running", "pause_requested", "paused", "cancel_requeste
 BRANCHABLE_STATUSES = {"paused", "completed", "failed", "cancelled"}
 CONTINUABLE_STATUSES = {"completed", "failed", "cancelled"}
 LEGACY_CUSTOM_TOOL_TYPES = {"http_api", "ssh", "shell_command"}
+PARALLEL_EXECUTION_MODES = {"sequential", "parallel"}
 
 
 def _workspace_preset_to_dict(preset: WorkspacePreset) -> dict:
@@ -362,22 +363,33 @@ def _action_reason(
     return None
 
 
+def _parallel_child_reason(session: dict, action: str) -> dict | None:
+    parent_id = str(session.get("parallel_parent_id") or "").strip()
+    if not parent_id:
+        return None
+    return _reason(
+        "parallel_child_parent_managed",
+        f"This parallel child session is managed by parent session '{parent_id}'. Control it from the parent tournament run.",
+    )
+
+
 def _session_runtime_state(session: dict) -> dict:
     session_id = str(session.get("id", "")).strip()
     status = str(session.get("status", "")).strip().lower()
     live_runtime_available = bool(session_id) and has_live_runtime(session_id)
     checkpoint_runtime_available = bool(session_id) and has_checkpoint_runtime(session_id)
     has_checkpoints = _has_checkpoint_history(session)
+    child_reason = _parallel_child_reason(session, "runtime")
     reasons = {
         "live_runtime": _live_runtime_reason(status, live_runtime_available),
         "checkpoint_runtime": _checkpoint_runtime_reason(status, has_checkpoints, checkpoint_runtime_available),
-        "pause": _action_reason("pause", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints),
-        "resume": _action_reason("resume", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints),
-        "send_message": _action_reason("send_message", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints),
-        "inject_instruction": _action_reason("inject_instruction", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints),
-        "cancel": _action_reason("cancel", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints),
-        "continue_conversation": _action_reason("continue_conversation", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints),
-        "branch_from_checkpoint": _action_reason("branch_from_checkpoint", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints),
+        "pause": child_reason or _action_reason("pause", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints),
+        "resume": child_reason or _action_reason("resume", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints),
+        "send_message": child_reason or _action_reason("send_message", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints),
+        "inject_instruction": child_reason or _action_reason("inject_instruction", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints),
+        "cancel": child_reason or _action_reason("cancel", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints),
+        "continue_conversation": child_reason or _action_reason("continue_conversation", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints),
+        "branch_from_checkpoint": child_reason or _action_reason("branch_from_checkpoint", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints),
     }
     return {
         "live_runtime_available": live_runtime_available,
@@ -600,11 +612,28 @@ async def ep_run(req: RunRequest):
     agents = normalize_agent_configs(_resolve_agents(req))
     run_config = dict(scenario.get("default_config", {})) if scenario else {}
     run_config.update(req.config)
+    execution_mode = str(run_config.get("execution_mode", "sequential") or "sequential").strip().lower()
+    if execution_mode not in PARALLEL_EXECUTION_MODES:
+        raise HTTPException(422, f"Invalid execution_mode: {execution_mode}. Expected one of {sorted(PARALLEL_EXECUTION_MODES)}")
+    if req.mode != "tournament" and execution_mode != "sequential":
+        raise HTTPException(422, "Parallel execution_mode is currently supported only for tournament.")
+    run_config["execution_mode"] = execution_mode
+    if "parallelism_limit" in run_config and run_config["parallelism_limit"] is not None:
+        try:
+            run_config["parallelism_limit"] = max(int(run_config["parallelism_limit"]), 1)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(422, f"parallelism_limit must be a positive integer: {exc}") from exc
     resolved_preset_ids, resolved_workspace_paths = resolve_workspace_paths(
         req.workspace_preset_ids,
         req.workspace_paths,
     )
     workspace_errors = _validate_workspace_paths_exist(resolved_workspace_paths)
+    for agent in agents:
+        agent_workspace_errors = _validate_workspace_paths_exist(agent.workspace_paths)
+        if agent_workspace_errors:
+            workspace_errors.extend(
+                [f"{agent.role}: {error}" for error in agent_workspace_errors]
+            )
     if workspace_errors:
         raise HTTPException(422, {"message": "Invalid workspace paths", "errors": workspace_errors})
     errors = validate_agents_for_mode(req.mode, agents)
@@ -692,6 +721,13 @@ async def ep_user_message(session_id: str, req: MessageRequest):
     session = store.get(session_id)
     if not session:
         raise HTTPException(404, f"Session not found: {session_id}")
+    if session.get("parallel_parent_id"):
+        _raise_session_action_error(
+            409,
+            session,
+            "send_message",
+            "Parallel child sessions are controlled from their parent tournament run.",
+        )
     if session["status"] not in MESSAGEABLE_STATUSES:
         _raise_session_action_error(
             409,
@@ -732,6 +768,13 @@ async def ep_continue_session(session_id: str, req: MessageRequest):
     session = store.get(session_id)
     if not session:
         raise HTTPException(404, f"Session not found: {session_id}")
+    if session.get("parallel_parent_id"):
+        _raise_session_action_error(
+            409,
+            session,
+            "continue_conversation",
+            "Parallel child sessions are controlled from their parent tournament run.",
+        )
     if session["status"] not in CONTINUABLE_STATUSES:
         _raise_session_action_error(
             409,
@@ -795,6 +838,20 @@ async def ep_session_control(session_id: str, req: ControlRequest):
         raise HTTPException(404, f"Session not found: {session_id}")
 
     action = req.action.strip().lower()
+    if session.get("parallel_parent_id"):
+        action_name = {
+            "pause": "pause",
+            "resume": "resume",
+            "inject_instruction": "inject_instruction",
+            "cancel": "cancel",
+            "restart_from_checkpoint": "branch_from_checkpoint",
+        }.get(action, "cancel")
+        _raise_session_action_error(
+            409,
+            session,
+            action_name,
+            "Parallel child sessions are controlled from their parent tournament run.",
+        )
     if action == "pause":
         if session["status"] in PAUSEABLE_STATUSES and not has_live_runtime(session_id):
             _raise_session_action_error(

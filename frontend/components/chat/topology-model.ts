@@ -1,6 +1,6 @@
 import type { Edge, Node } from "@xyflow/react";
 
-import { AGENT_COLORS, PROVIDER_LABELS } from "@/lib/constants";
+import { AGENT_COLORS, formatAgentDisplay, formatWorkspaceLabel, PROVIDER_LABELS, type RoleDisplayContext } from "@/lib/constants";
 import { useLocale } from "@/lib/locale";
 import type { Session, SessionEvent } from "@/lib/types";
 
@@ -125,10 +125,8 @@ export function providerLabel(provider: string) {
   return PROVIDER_LABELS[provider] ?? provider;
 }
 
-export function humanizeRole(role: string) {
-  return role
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (char) => char.toUpperCase());
+export function humanizeRole(role: string, context?: RoleDisplayContext) {
+  return formatAgentDisplay(role, context);
 }
 
 export function latestRoundLabel(events: SessionEvent[] = []) {
@@ -213,12 +211,18 @@ export function buildAgentFlowNode(
   agent: SessionAgent,
   x: number,
   y: number,
-  options?: Partial<Pick<TopologyFlowNodeData, "density" | "variant" | "eyebrow">>
+  options?: Partial<Pick<TopologyFlowNodeData, "density" | "variant" | "eyebrow">> & {
+    roleContext?: RoleDisplayContext;
+  }
 ) {
+  const projectLabel = formatWorkspaceLabel(agent.workspace_paths);
   return flowNode(`agent:${agent.role}`, x, y, {
     kind: "agent",
-    label: humanizeRole(agent.role),
-    subtitle: providerLabel(agent.provider),
+    label: formatAgentDisplay(agent.role, {
+      ...options?.roleContext,
+      projectLabel,
+    }),
+    subtitle: projectLabel ? `${projectLabel} - ${providerLabel(agent.provider)}` : providerLabel(agent.provider),
     provider: agent.provider,
     density: options?.density,
     variant: options?.variant,

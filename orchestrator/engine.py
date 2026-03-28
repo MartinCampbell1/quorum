@@ -25,7 +25,7 @@ from orchestrator.modes.debate import build_debate_graph
 from orchestrator.modes.board import build_board_graph
 from orchestrator.modes.map_reduce import build_map_reduce_graph
 from orchestrator.modes.creator_critic import build_creator_critic_graph
-from orchestrator.modes.tournament import build_tournament_graph
+from orchestrator.modes.tournament import build_tournament_graph, build_tournament_match_graph
 
 
 DEFAULT_AGENTS = {
@@ -76,7 +76,8 @@ AVAILABLE_MODES = {
     "debate": "Proponent vs opponent argue in rounds, judge decides winner",
     "map_reduce": "Split task into chunks, process in parallel, synthesize results",
     "creator_critic": "Creator produces work, critic reviews, iterate until approved",
-    "tournament": "All agents compete, bracket elimination, judge picks champion",
+    "tournament": "Projects debate head-to-head through a bracket, judge picks who advances",
+    "tournament_match": "Internal head-to-head tournament match executor",
 }
 
 
@@ -89,12 +90,14 @@ def _build_initial_state(
     workspace_paths: list[str],
     attached_tool_ids: list[str],
 ) -> dict:
+    session_provider_pool = list(dict.fromkeys(str(agent.provider) for agent in agents if str(agent.provider).strip()))
     agents_dicts = [
         {
             **agent.model_dump(),
-            "workspace_paths": list(workspace_paths),
+            "workspace_paths": list(dict.fromkeys([*list(workspace_paths), *list(agent.workspace_paths)])),
             "workdir": str(config.get("workdir", "")) or None,
             "session_id": session_id,
+            "session_provider_pool": list(session_provider_pool),
         }
         for agent in agents
     ]
@@ -121,7 +124,7 @@ def _build_initial_state(
                 "max_rounds": config.get("max_rounds", 3), "majority_position": ""}
     if mode == "debate":
         return {**base, "rounds": [], "current_round": 0,
-                "max_rounds": config.get("max_rounds", 3), "verdict": ""}
+                "max_rounds": config.get("max_rounds", 3), "verdict": "", "judge_action": ""}
     if mode == "board":
         return {**base, "positions": [], "vote_round": 0,
                 "max_rounds": config.get("max_rounds", 3),
@@ -133,7 +136,22 @@ def _build_initial_state(
                 "iteration": 0, "max_iterations": config.get("max_iterations", 3), "approved": False}
     if mode == "tournament":
         return {**base, "submissions": [], "bracket": [],
-                "current_round": 0, "winners": [], "champion": {}}
+                "current_round": 0, "current_match_index": 0, "current_match_round": 0,
+                "current_match": {}, "max_rounds": config.get("max_rounds", 5),
+                "winners": [], "champion": {}, "match_history": [], "match_verdict": "",
+                "judge_action": "", "match_winner": "", "advance_target": "",
+                "current_stage_label": "", "parallel_stage_children": [], "parallel_stage_group_id": ""}
+    if mode == "tournament_match":
+        return {**base,
+                "current_round": int(config.get("tournament_round", 1) or 1),
+                "current_stage_label": str(config.get("parallel_stage", "") or ""),
+                "current_match_index": max(int(config.get("match_index", 1) or 1) - 1, 0),
+                "current_match_round": 0,
+                "current_match": {},
+                "max_rounds": config.get("max_rounds", 5),
+                "match_history": [], "match_verdict": "", "judge_action": "",
+                "match_winner": "", "advance_target": "", "champion": {},
+                "parallel_stage_children": [], "parallel_stage_group_id": ""}
     raise ValueError(f"Unknown mode: {mode}")
 
 
@@ -146,6 +164,7 @@ def _build_graph(mode: str, **compile_kwargs):
         "map_reduce": build_map_reduce_graph,
         "creator_critic": build_creator_critic_graph,
         "tournament": build_tournament_graph,
+        "tournament_match": build_tournament_match_graph,
     }
     builder = builders.get(mode)
     if not builder:
@@ -409,6 +428,7 @@ class SessionRunner:
             result=values.get("result", ""),
             elapsed_sec=round(time.time() - self.started_at, 2),
             active_node=next_node,
+            config=values.get("config", {}),
         )
 
     def _emit_mode_progress_events(self, values: dict[str, Any], next_node: str | None) -> None:
@@ -476,9 +496,12 @@ class SessionRunner:
                 )
             return
 
-        if self.mode == "debate":
-            round_number = int(values.get("current_round", 0) or 0)
-            if round_number > self.last_round_started and next_node == "judge_decides":
+        if self.mode in {"debate", "tournament_match"}:
+            round_key = "current_match_round" if self.mode == "tournament_match" else "current_round"
+            round_number = int(values.get(round_key, 0) or 0)
+            judge_node = "judge_match" if self.mode == "tournament_match" else "judge_decides"
+            restart_node = "contestant_a_argues" if self.mode == "tournament_match" else "proponent_argues"
+            if round_number > self.last_round_started and next_node == judge_node:
                 self.last_round_started = round_number
                 self._emit_event(
                     "round_started",
@@ -486,7 +509,7 @@ class SessionRunner:
                     "Аргументы обеих сторон собраны, слово за судьёй.",
                     round=round_number,
                 )
-            if round_number > self.last_round_completed and next_node in {None, "proponent_argues"}:
+            if round_number > self.last_round_completed and next_node in {None, restart_node}:
                 self.last_round_completed = round_number
                 detail = str(values.get("verdict") or values.get("result") or "Раунд дебатов завершён.")
                 self._emit_event(
@@ -616,17 +639,22 @@ class SessionRunner:
                     provider=failed_provider,
                     status="failed",
                 )
+            failure_detail = str(gateway_error or exc)
+            if failed_agent or failed_provider or gateway_error:
+                result_text = f"Error: {type(exc).__name__}: {failure_detail}"
+            else:
+                result_text = f"Error: {type(exc).__name__}: {exc}\n{traceback.format_exc()}"
             store.update(
                 self.session_id,
                 status="failed",
-                result=f"Error: {type(exc).__name__}: {exc}\n{traceback.format_exc()}",
+                result=result_text,
                 elapsed_sec=round(time.time() - self.started_at, 2),
                 active_node=None,
             )
             self._emit_event(
                 "run_failed",
                 f"Ошибка: {type(exc).__name__}",
-                str(exc),
+                failure_detail,
                 status="failed",
             )
         finally:
@@ -643,6 +671,11 @@ async def run(
     workspace_preset_ids: list[str] | None = None,
     workspace_paths: list[str] | None = None,
     attached_tool_ids: list[str] | None = None,
+    parallel_parent_id: str | None = None,
+    parallel_group_id: str | None = None,
+    parallel_slot_key: str | None = None,
+    parallel_stage: str | None = None,
+    parallel_label: str | None = None,
 ) -> str:
     config = config or {}
     agents = agents or DEFAULT_AGENTS.get(mode, [])
@@ -658,6 +691,11 @@ async def run(
         workspace_paths=workspace_paths,
         attached_tool_ids=resolved_attached_tools,
         provider_capabilities_snapshot=provider_capabilities_snapshot,
+        parallel_parent_id=parallel_parent_id,
+        parallel_group_id=parallel_group_id,
+        parallel_slot_key=parallel_slot_key,
+        parallel_stage=parallel_stage,
+        parallel_label=parallel_label,
     )
 
     saver = MemorySaver()

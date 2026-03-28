@@ -13,24 +13,49 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
+import { formatAgentDisplay, formatWorkspaceLabel } from "@/lib/constants";
 import { useLocale } from "@/lib/locale";
 import type { AttachedToolDetail, Message, Session, SessionEvent } from "@/lib/types";
 
 import { useTopologyFlowGraph } from "./topology-layout";
 import {
-  buildTournamentStructure,
   latestRoundLabel,
+  tournamentRoundLabel,
 } from "./topology-model";
 import { TopologyFlowStage } from "./topology-stage";
 
 interface TopologyPanelProps {
   session: Session;
+  onOpenSession?: (sessionId: string) => void;
+}
+
+const RUNTIME_WARNING_PREFIX_RE = /^(?:MCP issues detected\. Run \/mcp list for status\.\s*)+/i;
+
+function sanitizeMessageContent(text?: string | null) {
+  return String(text ?? "").replace(RUNTIME_WARNING_PREFIX_RE, "").trim();
 }
 
 function humanizeTool(tool: string) {
   return tool
     .replace(/_/g, " ")
     .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function formatSessionRole(session: Session, role: string) {
+  const agent = session.agents.find((candidate) => candidate.role === role);
+  return formatAgentDisplay(role, {
+    mode: session.mode,
+    scenarioId: session.active_scenario,
+    projectLabel: formatWorkspaceLabel(agent?.workspace_paths),
+  });
+}
+
+function displayActor(session: Session, actor?: string | null) {
+  const normalized = String(actor ?? "").trim();
+  if (!normalized || normalized === "system" || normalized === "user" || normalized === "agent") {
+    return normalized || "agent";
+  }
+  return formatSessionRole(session, normalized);
 }
 
 function resolveToolIcon(tool: string, detail?: AttachedToolDetail): LucideIcon {
@@ -45,6 +70,10 @@ function latestMessage(messages: Message[], agentId: string, phasePrefix?: strin
   return [...messages]
     .reverse()
     .find((message) => message.agent_id === agentId && (!phasePrefix || message.phase.startsWith(phasePrefix)));
+}
+
+function latestMessageText(messages: Message[], agentId: string, phasePrefix?: string) {
+  return sanitizeMessageContent(latestMessage(messages, agentId, phasePrefix)?.content);
 }
 
 function latestEvent(
@@ -110,6 +139,14 @@ function summarizedResult(session: Session, fallback: string) {
 function resolveSessionStateSnapshot(session: Session, copy: ReturnType<typeof useLocale>["copy"]) {
   const latestStatus = latestStatusEvent(session);
 
+  if (session.status === "completed") {
+    return {
+      tone: "completed" as const,
+      title: copy.monitor.stateTitles.completed,
+      detail: latestStatus?.detail || copy.monitor.stateDetails.completed,
+    };
+  }
+
   if (session.status === "failed") {
     return {
       tone: "failed" as const,
@@ -152,7 +189,7 @@ function resolveSessionStateSnapshot(session: Session, copy: ReturnType<typeof u
 function shellTitle(session: Session, copy: ReturnType<typeof useLocale>["copy"]) {
   if (session.mode === "board") return copy.monitor.topologyTitles.board;
   if (session.mode === "democracy") return copy.monitor.topologyTitles.democracy;
-  if (session.mode === "debate") return copy.monitor.topologyTitles.debate;
+  if (session.mode === "debate" || session.mode === "tournament_match") return copy.monitor.topologyTitles.debate;
   if (session.mode === "creator_critic") return copy.monitor.topologyTitles.creator_critic;
   if (session.mode === "map_reduce") return copy.monitor.topologyTitles.map_reduce;
   if (session.mode === "dictator") return copy.monitor.topologyTitles.dictator;
@@ -205,7 +242,7 @@ function resolveActiveEdgeIds(session: Session, edgeIds: string[]): Set<string> 
       return new Set(session.agents.map((agent) => `agent:${agent.role}->hub`));
     }
 
-    if (session.mode === "debate") {
+    if (session.mode === "debate" || session.mode === "tournament_match") {
       const proponent = session.agents[0]?.role ?? "proponent";
       const opponent = session.agents[1]?.role ?? "opponent";
       return new Set(["debate:judge", `agent:${proponent}->agent:${opponent}`]);
@@ -255,11 +292,18 @@ function signalCards(session: Session, copy: ReturnType<typeof useLocale>["copy"
   const latestToolEvent =
     latestEvent(session.events ?? [], "tool_call_finished") ??
     latestEvent(session.events ?? [], "tool_call_started");
+  const terminal = ["completed", "failed", "cancelled"].includes(session.status);
+  const activeNodeValue = terminal
+    ? copy.monitor.terminalNode
+    : session.active_node || copy.monitor.idle;
+  const liveToolValue = terminal
+    ? copy.monitor.executionFinished
+    : latestToolEvent?.tool_name || latestToolEvent?.detail || copy.monitor.noToolActivity;
 
   return [
     {
       label: copy.monitor.signalLabels.activeNode,
-      value: session.active_node || copy.monitor.idle,
+      value: activeNodeValue,
     },
     {
       label: copy.monitor.signalLabels.checkpoint,
@@ -267,7 +311,7 @@ function signalCards(session: Session, copy: ReturnType<typeof useLocale>["copy"
     },
     {
       label: copy.monitor.signalLabels.liveTool,
-      value: latestToolEvent?.tool_name || latestToolEvent?.detail || copy.monitor.noToolActivity,
+      value: liveToolValue,
     },
   ];
 }
@@ -283,6 +327,41 @@ interface LiveExchangeItem {
   raw: string;
   meta: string[];
 }
+
+interface TournamentRoundSnapshot {
+  round: number;
+  aArg?: string;
+  bArg?: string;
+  verdict?: string;
+}
+
+interface TournamentMatchSnapshot {
+  key: string;
+  tournamentRound: number;
+  matchIndex: number;
+  badge: string;
+  contestantARole?: string;
+  contestantBRole?: string;
+  contestantA?: string;
+  contestantB?: string;
+  rounds: TournamentRoundSnapshot[];
+  latestJudgeNote?: string;
+  completionSummary?: string;
+  latestTimestamp: number;
+}
+
+interface TournamentProgressSnapshot {
+  matches: TournamentMatchSnapshot[];
+  completedMatches: TournamentMatchSnapshot[];
+  currentMatch: TournamentMatchSnapshot | null;
+  focusMatch: TournamentMatchSnapshot | null;
+  reachedLabel: string;
+  focusStepLabel: string;
+  focusDetail: string;
+}
+
+const TOURNAMENT_PHASE_RE = /^tournament_r(\d+)_m(\d+)_(?:round_(\d+)_(a|b|verdict)|match_\d+_complete|round_complete)$/;
+const ADVANCE_SUMMARY_RE = /^Round\s+\d+,\s+match\s+\d+:\s+(.+?)\s+advances over\s+(.+?)\.\s*$/i;
 
 function normalizeExchangeText(text: string) {
   return text.replace(/\r\n/g, "\n").trim();
@@ -310,6 +389,154 @@ function formatExchangePayload(text: string) {
   }
 }
 
+function nextPowerOfTwoAtLeast(value: number) {
+  let power = 1;
+  while (power < value) {
+    power *= 2;
+  }
+  return power;
+}
+
+function tournamentStageLabel(totalEntrants: number, tournamentRound: number) {
+  let participants = nextPowerOfTwoAtLeast(Math.max(totalEntrants, 2));
+  for (let index = 1; index < tournamentRound; index += 1) {
+    participants = Math.max(2, participants / 2);
+  }
+  return tournamentRoundLabel(participants);
+}
+
+function tournamentMatchBadge(
+  copy: ReturnType<typeof useLocale>["copy"],
+  totalEntrants: number,
+  tournamentRound: number,
+  matchIndex: number
+) {
+  return `${tournamentStageLabel(totalEntrants, tournamentRound)} · ${copy.monitor.matchLabel} ${matchIndex}`;
+}
+
+function ensureTournamentDebateRound(match: TournamentMatchSnapshot, roundNumber: number) {
+  let round = match.rounds.find((candidate) => candidate.round === roundNumber);
+  if (!round) {
+    round = { round: roundNumber };
+    match.rounds.push(round);
+  }
+  return round;
+}
+
+function describeTournamentMatchStep(
+  match: TournamentMatchSnapshot | null,
+  copy: ReturnType<typeof useLocale>["copy"],
+  sessionStatus: Session["status"]
+) {
+  if (!match) {
+    return copy.monitor.noMatchYet;
+  }
+  if (match.completionSummary) {
+    return copy.statuses.completed;
+  }
+  const latestRound = match.rounds.at(-1);
+  if (!latestRound?.aArg) {
+    return copy.monitor.noMatchYet;
+  }
+  if (!latestRound.bArg) {
+    return copy.monitor.awaitingSecondContestant;
+  }
+  if (!latestRound.verdict) {
+    return sessionStatus === "failed" ? copy.monitor.judgeStep : copy.monitor.awaitingJudgeDecision;
+  }
+  return copy.monitor.advancingBracket;
+}
+
+function buildTournamentProgress(
+  session: Session,
+  copy: ReturnType<typeof useLocale>["copy"]
+): TournamentProgressSnapshot {
+  const totalEntrants = Math.max(session.agents.length - 1, 2);
+  const matches = new Map<string, TournamentMatchSnapshot>();
+
+  for (const message of [...session.messages].sort((left, right) => left.timestamp - right.timestamp)) {
+    const phase = String(message.phase ?? "").trim();
+    const parsed = TOURNAMENT_PHASE_RE.exec(phase);
+    if (!parsed) {
+      continue;
+    }
+
+    const tournamentRound = Number(parsed[1]);
+    const matchIndex = Number(parsed[2]);
+    const key = `${tournamentRound}:${matchIndex}`;
+    const content = sanitizeMessageContent(message.content);
+    let match = matches.get(key);
+    if (!match) {
+      match = {
+        key,
+        tournamentRound,
+        matchIndex,
+        badge: tournamentMatchBadge(copy, totalEntrants, tournamentRound, matchIndex),
+        rounds: [],
+        latestTimestamp: message.timestamp,
+      };
+      matches.set(key, match);
+    }
+
+    match.latestTimestamp = Math.max(match.latestTimestamp, message.timestamp);
+    const debateRoundNumber = parsed[3] ? Number(parsed[3]) : 0;
+    const phaseKind = parsed[4];
+
+    if (debateRoundNumber > 0 && phaseKind) {
+      const debateRound = ensureTournamentDebateRound(match, debateRoundNumber);
+      if (phaseKind === "a") {
+        debateRound.aArg = content;
+        match.contestantARole = message.agent_id;
+        match.contestantA = displayActor(session, message.agent_id);
+      } else if (phaseKind === "b") {
+        debateRound.bArg = content;
+        match.contestantBRole = message.agent_id;
+        match.contestantB = displayActor(session, message.agent_id);
+      } else {
+        debateRound.verdict = content;
+        match.latestJudgeNote = content;
+      }
+      continue;
+    }
+
+    match.completionSummary = content;
+  }
+
+  const orderedMatches = [...matches.values()].sort((left, right) =>
+    left.tournamentRound === right.tournamentRound
+      ? left.matchIndex - right.matchIndex
+      : left.tournamentRound - right.tournamentRound
+  );
+  const currentMatch = [...orderedMatches].reverse().find((match) => !match.completionSummary) ?? null;
+  const focusMatch = currentMatch ?? orderedMatches.at(-1) ?? null;
+  const failure = latestFailureEvent(session);
+  const focusDetail =
+    session.status === "failed" && currentMatch && failure
+      ? sanitizeSummaryText(failure.detail, 560) || sanitizeSummaryText(failure.title, 560)
+      : focusMatch?.latestJudgeNote || focusMatch?.completionSummary || "";
+
+  return {
+    matches: orderedMatches,
+    completedMatches: orderedMatches.filter((match) => Boolean(match.completionSummary)),
+    currentMatch,
+    focusMatch,
+    reachedLabel: focusMatch?.badge ?? copy.monitor.noMatchYet,
+    focusStepLabel: describeTournamentMatchStep(focusMatch, copy, session.status),
+    focusDetail,
+  };
+}
+
+function parseAdvanceSummary(summary?: string | null) {
+  const match = ADVANCE_SUMMARY_RE.exec(String(summary ?? "").trim());
+  if (!match) {
+    return null;
+  }
+  return {
+    winner: match[1].trim(),
+    loser: match[2].trim(),
+  };
+}
+
 function buildLiveExchange(session: Session, copy: ReturnType<typeof useLocale>["copy"]): LiveExchangeItem[] {
   return (session.events ?? [])
     .filter((event) => ["tool_call_started", "tool_call_finished", "vote_recorded", "round_completed", "chunk_completed"].includes(event.type))
@@ -325,7 +552,7 @@ function buildLiveExchange(session: Session, copy: ReturnType<typeof useLocale>[
               ? copy.monitor.toolResult
               : event.title,
         title: event.tool_name ?? event.title,
-        from: event.agent_id ?? copy.monitor.sharedContexts.default,
+        from: displayActor(session, event.agent_id) || copy.monitor.sharedContexts.default,
         to: event.tool_name ?? copy.monitor.sharedContexts.default,
         preview: compactExchangeText(raw || event.title),
         raw,
@@ -350,9 +577,17 @@ function SessionStateBanner({ session }: { session: Session }) {
   }
 
   const Icon =
-    snapshot.tone === "waiting" ? LoaderCircle : snapshot.tone === "paused" ? PauseCircle : AlertTriangle;
+    snapshot.tone === "waiting"
+      ? LoaderCircle
+      : snapshot.tone === "paused"
+        ? PauseCircle
+        : snapshot.tone === "completed"
+          ? Sparkles
+          : AlertTriangle;
   const toneClasses =
-    snapshot.tone === "failed"
+    snapshot.tone === "completed"
+      ? "border-emerald-200 bg-emerald-50/90 text-emerald-900 dark:border-emerald-900/70 dark:bg-emerald-950/30 dark:text-emerald-100"
+      : snapshot.tone === "failed"
       ? "border-amber-200 bg-amber-50/90 text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100"
       : snapshot.tone === "paused"
         ? "border-sky-200 bg-sky-50/90 text-sky-900 dark:border-sky-900/70 dark:bg-sky-950/30 dark:text-sky-100"
@@ -526,7 +761,7 @@ function GenericView({ session }: { session: Session }) {
           <div className="mt-3 text-center text-[20px] leading-tight text-[#111111]">
             {orchestrator.provider}
             <br />
-            ({orchestrator.role})
+            ({formatSessionRole(session, orchestrator.role)})
           </div>
         </div>
       ) : null}
@@ -539,7 +774,7 @@ function GenericView({ session }: { session: Session }) {
           <div className="mt-3 text-center text-[20px] leading-tight text-[#111111]">
             {upperWorker.provider}
             <br />
-            ({upperWorker.role})
+            ({formatSessionRole(session, upperWorker.role)})
           </div>
         </div>
       ) : null}
@@ -552,7 +787,7 @@ function GenericView({ session }: { session: Session }) {
           <div className="mt-3 text-center text-[20px] leading-tight text-[#111111]">
             {lowerWorker.provider}
             <br />
-            ({lowerWorker.role})
+            ({formatSessionRole(session, lowerWorker.role)})
           </div>
         </div>
       ) : null}
@@ -610,10 +845,10 @@ function BoardView({ session }: { session: Session }) {
       {directors.map((director) => (
         <AgentPill
           key={director.role}
-          label={director.role}
+          label={formatSessionRole(session, director.role)}
           subtitle={
             latestEvent(events, "vote_recorded", (event) => event.agent_id === director.role)?.detail ||
-            latestMessage(session.messages, director.role)?.content?.slice(0, 160) ||
+            latestMessageText(session.messages, director.role).slice(0, 160) ||
             copy.monitor.waitingBoardPosition
           }
           accent={roundLabel ?? undefined}
@@ -640,10 +875,10 @@ function DemocracyView({ session }: { session: Session }) {
       {session.agents.map((agent) => (
         <AgentPill
           key={agent.role}
-          label={agent.role}
+          label={formatSessionRole(session, agent.role)}
           subtitle={
             latestEvent(events, "vote_recorded", (event) => event.agent_id === agent.role)?.detail ||
-            latestMessage(session.messages, agent.role)?.content?.replace(/^Vote:\s*/i, "").slice(0, 140) ||
+            latestMessageText(session.messages, agent.role).replace(/^Vote:\s*/i, "").slice(0, 140) ||
             copy.monitor.waitingVote
           }
           accent={roundLabel ?? undefined}
@@ -669,16 +904,16 @@ function DebateView({ session }: { session: Session }) {
   return (
     <div className="grid gap-4 rounded-[18px] border border-[#d6dbe6] bg-white p-5 dark:border-slate-800 dark:bg-slate-950/70 lg:grid-cols-[minmax(0,1fr)_48px_minmax(0,1fr)]">
       <AgentPill
-        label={proponent?.role ?? "proponent"}
-        subtitle={proponent ? latestMessage(session.messages, proponent.role)?.content?.slice(0, 180) || copy.monitor.awaitingArgument : "—"}
+        label={formatSessionRole(session, proponent?.role ?? "proponent")}
+        subtitle={proponent ? latestMessageText(session.messages, proponent.role).slice(0, 180) || copy.monitor.awaitingArgument : "—"}
         accent={roundLabel ?? undefined}
       />
       <div className="flex items-center justify-center text-[#9ca3af]">
         <ArrowRight className="h-6 w-6" />
       </div>
       <AgentPill
-        label={opponent?.role ?? "opponent"}
-        subtitle={opponent ? latestMessage(session.messages, opponent.role)?.content?.slice(0, 180) || copy.monitor.awaitingRebuttal : "—"}
+        label={formatSessionRole(session, opponent?.role ?? "opponent")}
+        subtitle={opponent ? latestMessageText(session.messages, opponent.role).slice(0, 180) || copy.monitor.awaitingRebuttal : "—"}
         accent={roundLabel ?? undefined}
       />
       <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 lg:col-span-3 dark:border-slate-800 dark:bg-slate-900/80">
@@ -686,7 +921,7 @@ function DebateView({ session }: { session: Session }) {
         <div className="mt-2 text-[16px] leading-7 text-[#111111] dark:text-slate-100">
           {sanitizeSummaryText(latestVerdict?.detail) ||
             (judge
-              ? sanitizeSummaryText(latestMessage(session.messages, judge.role)?.content) ||
+              ? sanitizeSummaryText(latestMessageText(session.messages, judge.role)) ||
                 summarizedResult(session, copy.monitor.noVerdictYet)
               : summarizedResult(session, copy.monitor.noVerdictYet))}
         </div>
@@ -705,9 +940,9 @@ function CreatorCriticView({ session }: { session: Session }) {
         {iterations.map((message) => (
           <div key={`${message.agent_id}-${message.timestamp}`} className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-3 dark:border-slate-800 dark:bg-slate-900/80">
             <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">
-              {message.agent_id} · {message.phase.replace(/_/g, " ")}
+              {displayActor(session, message.agent_id)} · {message.phase.replace(/_/g, " ")}
             </div>
-            <div className="mt-2 text-[14px] leading-6 text-[#111111] dark:text-slate-100">{message.content}</div>
+            <div className="mt-2 text-[14px] leading-6 text-[#111111] dark:text-slate-100">{sanitizeMessageContent(message.content)}</div>
           </div>
         ))}
         {iterations.length === 0 ? (
@@ -730,17 +965,17 @@ function MapReduceView({ session }: { session: Session }) {
   return (
     <div className="grid gap-4 rounded-[18px] border border-[#d6dbe6] bg-white p-5 dark:border-slate-800 dark:bg-slate-950/70 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)]">
       <AgentPill
-        label={planner?.role ?? "planner"}
-        subtitle={planner ? latestMessage(session.messages, planner.role)?.content || copy.monitor.plannerPreparing : "—"}
+        label={formatSessionRole(session, planner?.role ?? "planner")}
+        subtitle={planner ? latestMessageText(session.messages, planner.role) || copy.monitor.plannerPreparing : "—"}
       />
       <div className="space-y-3 rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80">
         <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{copy.monitor.workers}</div>
         {workers.map((worker) => (
           <div key={worker.role} className="rounded-[14px] border border-[#d6dbe6] bg-white px-3 py-3 dark:border-slate-800 dark:bg-slate-950/70">
-            <div className="text-[14px] font-medium text-[#111111] dark:text-slate-100">{worker.role}</div>
+            <div className="text-[14px] font-medium text-[#111111] dark:text-slate-100">{formatSessionRole(session, worker.role)}</div>
             <div className="mt-1 text-[12px] leading-5 text-[#6b7280] dark:text-slate-400">
               {latestEvent(session.events ?? [], "chunk_completed", (event) => event.agent_id === worker.role)?.detail ||
-                latestMessage(session.messages, worker.role)?.content?.slice(0, 120) ||
+                latestMessageText(session.messages, worker.role).slice(0, 120) ||
                 copy.monitor.waitingChunkOutput}
             </div>
           </div>
@@ -750,7 +985,7 @@ function MapReduceView({ session }: { session: Session }) {
             <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{copy.monitor.recentChunks}</div>
             {chunkEvents.map((event) => (
               <div key={event.id} className="text-[12px] leading-5 text-[#6b7280] dark:text-slate-400">
-                <span className="font-medium text-[#111111] dark:text-slate-100">{event.agent_id || "worker"}</span>
+                <span className="font-medium text-[#111111] dark:text-slate-100">{displayActor(session, event.agent_id || "worker")}</span>
                 {" · "}
                 {event.detail}
               </div>
@@ -759,10 +994,10 @@ function MapReduceView({ session }: { session: Session }) {
         ) : null}
       </div>
       <AgentPill
-        label={synthesizer?.role ?? "synthesizer"}
+        label={formatSessionRole(session, synthesizer?.role ?? "synthesizer")}
         subtitle={
           synthesizer
-            ? sanitizeSummaryText(latestMessage(session.messages, synthesizer.role)?.content) ||
+            ? sanitizeSummaryText(latestMessageText(session.messages, synthesizer.role)) ||
               summarizedResult(session, copy.monitor.synthesisPending)
             : "—"
         }
@@ -783,18 +1018,18 @@ function DictatorView({ session }: { session: Session }) {
       <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80">
         <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{copy.monitor.dictatorInstruction}</div>
         <div className="mt-2 text-[16px] font-medium tracking-[-0.03em] text-[#111111] dark:text-slate-100">
-          {dictator?.role ?? "dictator"}
+          {formatSessionRole(session, dictator?.role ?? "dictator")}
         </div>
         <div className="mt-2 text-[14px] leading-6 text-[#6b7280] dark:text-slate-400">
-          {latestDirective?.detail || latestMessage(session.messages, dictator?.role ?? "")?.content?.slice(0, 240) || copy.monitor.idle}
+          {latestDirective?.detail || latestMessageText(session.messages, dictator?.role ?? "").slice(0, 240) || copy.monitor.idle}
         </div>
       </div>
       <div className="space-y-3">
         {workers.map((worker) => (
           <AgentPill
             key={worker.role}
-            label={worker.role}
-            subtitle={latestMessage(session.messages, worker.role)?.content?.slice(0, 160) || copy.monitor.waitingWorkerResult}
+            label={formatSessionRole(session, worker.role)}
+            subtitle={latestMessageText(session.messages, worker.role).slice(0, 160) || copy.monitor.waitingWorkerResult}
           />
         ))}
         <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80">
@@ -808,72 +1043,279 @@ function DictatorView({ session }: { session: Session }) {
   );
 }
 
-function TournamentView({ session }: { session: Session }) {
+function TournamentSequentialView({ session }: { session: Session }) {
   const { copy } = useLocale();
-  const structure = buildTournamentStructure(session.agents);
-  const events = session.events ?? [];
-  const roundLabel = latestRoundLabel(events) ?? structure.mainRoundLabels[0];
-  const directAccent = structure.playInMatchCount > 0 ? structure.mainRoundLabels[0] ?? roundLabel : roundLabel;
-  const directEntries = structure.slots.filter((slot): slot is Extract<(typeof structure.slots)[number], { kind: "direct" }> => slot.kind === "direct");
-  const playInEntries = structure.slots.filter((slot): slot is Extract<(typeof structure.slots)[number], { kind: "playin" }> => slot.kind === "playin");
+  const progress = buildTournamentProgress(session, copy);
+  const focusTitle =
+    session.status === "failed" && progress.currentMatch
+      ? copy.monitor.failedAt
+      : progress.currentMatch
+        ? copy.monitor.currentMatch
+        : copy.monitor.matchResult;
 
   return (
     <div className="grid gap-4 rounded-[18px] border border-[#d6dbe6] bg-white p-5 dark:border-slate-800 dark:bg-slate-950/70">
-      {playInEntries.map((slot) => {
-        const [a, b] = slot.pair;
-        return (
-          <div
-            key={`playin-${slot.slotIndex}`}
-            className="grid grid-cols-[minmax(0,1fr)_48px_minmax(0,1fr)] items-center gap-2 rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80"
-          >
+      <div className="grid gap-3 lg:grid-cols-3">
+        <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80">
+          <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{copy.monitor.reachedMatch}</div>
+          <div className="mt-2 text-[18px] font-medium tracking-[-0.03em] text-[#111111] dark:text-slate-100">
+            {progress.reachedLabel}
+          </div>
+        </div>
+        <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80">
+          <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{copy.monitor.completedMatches}</div>
+          <div className="mt-2 text-[18px] font-medium tracking-[-0.03em] text-[#111111] dark:text-slate-100">
+            {progress.completedMatches.length}
+          </div>
+        </div>
+        <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80">
+          <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">
+            {session.status === "failed" && progress.currentMatch ? copy.monitor.failedAt : copy.monitor.currentStep}
+          </div>
+          <div className="mt-2 text-[18px] font-medium tracking-[-0.03em] text-[#111111] dark:text-slate-100">
+            {progress.focusStepLabel}
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{focusTitle}</div>
+          {progress.focusMatch ? (
+            <span className="rounded-full border border-[#d6dbe6] bg-white px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-[#6b7280] dark:border-slate-700 dark:bg-slate-950 dark:text-slate-400">
+              {progress.focusMatch.badge}
+            </span>
+          ) : null}
+        </div>
+        {progress.focusMatch ? (
+          <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_48px_minmax(0,1fr)] lg:items-center">
             <AgentPill
-              label={a.role}
-              subtitle={latestMessage(session.messages, a.role)?.content?.slice(0, 120) || copy.monitor.noMatchYet}
-              accent="PLAY-IN"
+              label={progress.focusMatch.contestantA || copy.monitor.noMatchYet}
+              subtitle={
+                progress.focusMatch.rounds.at(-1)?.aArg?.slice(0, 180) ||
+                copy.monitor.noMatchYet
+              }
+              accent={progress.focusMatch.badge}
             />
             <div className="flex items-center justify-center text-[18px] font-bold tracking-[-0.04em] text-[#9aa3b2] dark:text-slate-500">
               {copy.monitor.vsLabel}
             </div>
             <AgentPill
-              label={b.role}
-              subtitle={latestMessage(session.messages, b.role)?.content?.slice(0, 120) || copy.monitor.noMatchYet}
-              accent="PLAY-IN"
+              label={progress.focusMatch.contestantB || copy.monitor.awaitingSecondContestant}
+              subtitle={
+                progress.focusMatch.rounds.at(-1)?.bArg?.slice(0, 180) ||
+                copy.monitor.awaitingSecondContestant
+              }
+              accent={progress.focusStepLabel}
             />
           </div>
-        );
-      })}
-      {directEntries.length > 0 ? (
-        <div className="grid gap-3 rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80 lg:grid-cols-2">
-          {directEntries.map((slot) => (
-            <AgentPill
-              key={`seeded-${slot.agent.role}`}
-              label={slot.agent.role}
-              subtitle={latestMessage(session.messages, slot.agent.role)?.content?.slice(0, 140) || copy.monitor.seededForward}
-              accent={directAccent ?? undefined}
-            />
-          ))}
-        </div>
-      ) : null}
-      <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80">
-        <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{copy.monitor.matchResult}</div>
-        <div className="mt-2 text-[16px] leading-7 text-[#111111] dark:text-slate-100">
-          {sanitizeSummaryText(latestEvent(events, "round_completed")?.detail) || summarizedResult(session, copy.monitor.noMatchYet)}
+        ) : null}
+        <div className="mt-3 text-[15px] leading-7 text-[#111111] dark:text-slate-100">
+          {progress.focusDetail || copy.monitor.noMatchYet}
         </div>
       </div>
+
+      <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80">
+        <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{copy.monitor.completedMatchesList}</div>
+        {progress.completedMatches.length > 0 ? (
+          <div className="mt-3 space-y-3">
+            {progress.completedMatches.map((match) => {
+              const summary = parseAdvanceSummary(match.completionSummary);
+              return (
+                <div
+                  key={match.key}
+                  className="rounded-[14px] border border-[#d6dbe6] bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-950/70"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="rounded-full border border-[#d6dbe6] bg-[#fafbff] px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-[#6b7280] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
+                      {match.badge}
+                    </span>
+                    {summary ? (
+                      <span className="text-[13px] font-medium tracking-[-0.02em] text-[#111111] dark:text-slate-100">
+                        {summary.winner}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="mt-2 text-[13px] leading-6 text-[#475569] dark:text-slate-400">
+                    {match.completionSummary}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="mt-3 rounded-[14px] border border-[#d6dbe6] bg-white px-3 py-4 text-[13px] text-[#6b7280] dark:border-slate-800 dark:bg-slate-950/60 dark:text-slate-400">
+            {copy.monitor.noCompletedMatches}
+          </div>
+        )}
+      </div>
+      {session.status === "completed" ? (
+        <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80">
+          <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{copy.monitor.matchResult}</div>
+          <div className="mt-2 text-[16px] leading-7 text-[#111111] dark:text-slate-100">
+            {summarizedResult(session, copy.monitor.noMatchYet)}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
 
-export function TopologyPanel({ session }: TopologyPanelProps) {
+function TournamentParallelView({
+  session,
+  onOpenSession,
+}: {
+  session: Session;
+  onOpenSession?: (sessionId: string) => void;
+}) {
+  const { copy } = useLocale();
+  const progress = session.parallel_progress ?? {};
+  const children = session.parallel_children ?? [];
+  const stageLabel = progress.stage_label || copy.monitor.noMatchYet;
+
+  return (
+    <div className="grid gap-4 rounded-[18px] border border-[#d6dbe6] bg-white p-5 dark:border-slate-800 dark:bg-slate-950/70">
+      <div className="grid gap-3 lg:grid-cols-4">
+        <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80">
+          <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{copy.monitor.parallelStage}</div>
+          <div className="mt-2 text-[18px] font-medium tracking-[-0.03em] text-[#111111] dark:text-slate-100">
+            {stageLabel}
+          </div>
+        </div>
+        <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80">
+          <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{copy.monitor.completedMatches}</div>
+          <div className="mt-2 text-[18px] font-medium tracking-[-0.03em] text-[#111111] dark:text-slate-100">
+            {progress.completed ?? 0} / {progress.total ?? children.length}
+          </div>
+        </div>
+        <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80">
+          <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{copy.monitor.runningMatches}</div>
+          <div className="mt-2 text-[18px] font-medium tracking-[-0.03em] text-[#111111] dark:text-slate-100">
+            {progress.running ?? 0}
+          </div>
+        </div>
+        <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80">
+          <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{copy.monitor.failedMatches}</div>
+          <div className="mt-2 text-[18px] font-medium tracking-[-0.03em] text-[#111111] dark:text-slate-100">
+            {progress.failed ?? 0}
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80">
+        <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{copy.monitor.parallelChildren}</div>
+        {children.length > 0 ? (
+          <div className="mt-3 grid gap-3 lg:grid-cols-2">
+            {children.map((child) => (
+              <div
+                key={child.id}
+                className="rounded-[14px] border border-[#d6dbe6] bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-950/70"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-[13px] font-medium tracking-[-0.02em] text-[#111111] dark:text-slate-100">
+                      {child.label}
+                    </div>
+                    <div className="mt-1 text-[11px] text-[#6b7280] dark:text-slate-400">
+                      {child.stage} · {child.slot_key}
+                    </div>
+                  </div>
+                  <span className="rounded-full border border-[#d6dbe6] bg-[#fafbff] px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-[#6b7280] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
+                    {copy.statuses[child.status as keyof typeof copy.statuses] ?? child.status}
+                  </span>
+                </div>
+                {child.winner_label ? (
+                  <div className="mt-2 text-[12px] leading-5 text-[#475569] dark:text-slate-400">
+                    {copy.monitor.matchResult}: {child.winner_label}
+                  </div>
+                ) : null}
+                {onOpenSession ? (
+                  <button
+                    type="button"
+                    onClick={() => onOpenSession(child.id)}
+                    className="mt-3 rounded-full border border-[#d6dbe6] bg-white px-3 py-1.5 text-[11px] font-medium text-[#111111] transition-colors hover:bg-[#f6f7fb] dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:hover:bg-slate-900"
+                  >
+                    {copy.monitor.openChildSession}
+                  </button>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="mt-3 rounded-[14px] border border-[#d6dbe6] bg-white px-3 py-4 text-[13px] text-[#6b7280] dark:border-slate-800 dark:bg-slate-950/60 dark:text-slate-400">
+            {copy.monitor.noMatchYet}
+          </div>
+        )}
+      </div>
+
+      {session.status === "completed" || session.status === "failed" ? (
+        <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80">
+          <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{copy.monitor.finalResult}</div>
+          <div className="mt-2 text-[16px] leading-7 text-[#111111] dark:text-slate-100">
+            {summarizedResult(session, copy.monitor.noMatchYet)}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function TournamentMatchView({ session }: { session: Session }) {
+  const { copy } = useLocale();
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80">
+        <div className="flex flex-wrap items-center gap-2">
+          {session.parallel_stage ? (
+            <span className="rounded-full border border-[#d6dbe6] bg-white px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-[#6b7280] dark:border-slate-700 dark:bg-slate-950 dark:text-slate-400">
+              {session.parallel_stage}
+            </span>
+          ) : null}
+          {session.parallel_slot_key ? (
+            <span className="rounded-full border border-[#d6dbe6] bg-white px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-[#6b7280] dark:border-slate-700 dark:bg-slate-950 dark:text-slate-400">
+              {session.parallel_slot_key}
+            </span>
+          ) : null}
+        </div>
+        <div className="mt-3 text-[16px] font-medium tracking-[-0.03em] text-[#111111] dark:text-slate-100">
+          {session.parallel_label ?? copy.monitor.currentMatch}
+        </div>
+        <div className="mt-1 text-[13px] leading-6 text-[#6b7280] dark:text-slate-400">
+          {copy.monitor.managedByParent}
+        </div>
+      </div>
+      <DebateView session={session} />
+    </div>
+  );
+}
+
+function TournamentView({
+  session,
+  onOpenSession,
+}: {
+  session: Session;
+  onOpenSession?: (sessionId: string) => void;
+}) {
+  const executionMode = session.parallel_progress?.execution_mode;
+  const hasParallelChildren = (session.parallel_children?.length ?? 0) > 0;
+  if (executionMode === "parallel" || hasParallelChildren) {
+    return <TournamentParallelView session={session} onOpenSession={onOpenSession} />;
+  }
+  return <TournamentSequentialView session={session} />;
+}
+
+export function TopologyPanel({ session, onOpenSession }: TopologyPanelProps) {
   const { copy } = useLocale();
   let content = <GenericView session={session} />;
   if (session.mode === "board") content = <BoardView session={session} />;
   else if (session.mode === "democracy") content = <DemocracyView session={session} />;
   else if (session.mode === "debate") content = <DebateView session={session} />;
+  else if (session.mode === "tournament_match") content = <TournamentMatchView session={session} />;
   else if (session.mode === "creator_critic") content = <CreatorCriticView session={session} />;
   else if (session.mode === "map_reduce") content = <MapReduceView session={session} />;
   else if (session.mode === "dictator") content = <DictatorView session={session} />;
-  else if (session.mode === "tournament") content = <TournamentView session={session} />;
+  else if (session.mode === "tournament") content = <TournamentView session={session} onOpenSession={onOpenSession} />;
 
   return (
     <section className="rounded-[18px] border border-[#d6dbe6] bg-white p-4 shadow-[0_10px_24px_-18px_rgba(17,48,105,0.18)] dark:border-slate-800 dark:bg-slate-950/60 dark:shadow-none">

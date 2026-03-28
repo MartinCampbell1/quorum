@@ -1128,7 +1128,7 @@ async function buildTournamentElkFlowGraph(session: Session, copy: LocaleCopy): 
 }
 
 function buildStaticFlowGraph(session: Session, copy: LocaleCopy) {
-  if (session.mode === "debate") {
+  if (session.mode === "debate" || session.mode === "tournament_match") {
     return buildDebateFlowGraph(session, copy);
   }
 

@@ -8,7 +8,7 @@ import { SettingsView } from "@/components/settings-view";
 import { HistoryView } from "@/components/history-view";
 import { IconBar } from "@/components/sidebar/icon-bar";
 import { SessionList } from "@/components/sidebar/session-list";
-import { Wizard } from "@/components/wizard/wizard";
+import { clearWizardDraft, Wizard } from "@/components/wizard/wizard";
 import { LocaleProvider, useLocale } from "@/lib/locale";
 
 type View = "chat" | "history" | "settings";
@@ -38,30 +38,42 @@ function HomeShell() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [showWizard, setShowWizard] = useState(true);
   const [isSessionListCollapsed, setIsSessionListCollapsed] = useState(false);
+  const [resumeWizardDraft, setResumeWizardDraft] = useState(false);
+  const [wizardVersion, setWizardVersion] = useState(0);
+
+  function openFreshWizard() {
+    clearWizardDraft();
+    setResumeWizardDraft(false);
+    setActiveSessionId(null);
+    setShowWizard(true);
+    setView("chat");
+    setWizardVersion((value) => value + 1);
+  }
 
   function handleViewChange(nextView: View) {
     setView(nextView);
     if (nextView === "chat" && !activeSessionId) {
       setShowWizard(true);
+      if (!resumeWizardDraft) {
+        setWizardVersion((value) => value + 1);
+      }
     }
   }
 
   function handleSelectSession(id: string) {
+    clearWizardDraft();
+    setResumeWizardDraft(false);
     setActiveSessionId(id);
     setShowWizard(false);
     setView("chat");
   }
 
   function handleNewSession() {
-    setActiveSessionId(null);
-    setShowWizard(true);
-    setView("chat");
+    openFreshWizard();
   }
 
   function handleOpenHome() {
-    setActiveSessionId(null);
-    setShowWizard(true);
-    setView("chat");
+    openFreshWizard();
   }
 
   const isMonitorView = view === "chat" && !showWizard && !!activeSessionId;
@@ -137,11 +149,18 @@ function HomeShell() {
             <SettingsView />
           ) : showWizard ? (
             <Wizard
+              key={wizardVersion}
+              resumeDraft={resumeWizardDraft}
               onSessionCreated={(id) => {
+                clearWizardDraft();
+                setResumeWizardDraft(false);
                 setActiveSessionId(id);
                 setShowWizard(false);
               }}
-              onOpenSettings={() => setView("settings")}
+              onOpenSettings={() => {
+                setResumeWizardDraft(true);
+                setView("settings");
+              }}
             />
           ) : isMonitorView && activeSessionId ? (
             <ChatView

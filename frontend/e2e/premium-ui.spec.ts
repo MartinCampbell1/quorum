@@ -7,6 +7,7 @@ const scenarios = [
   { id: "debate_mode", name: "Debate", mode: "debate", headline: "", description: "", recommended_for: "", task_placeholder: "", tags: [], default_config: {}, default_agents: [] },
   { id: "reduce_ops", name: "Reduce Ops", mode: "map_reduce", headline: "", description: "", recommended_for: "", task_placeholder: "", tags: [], default_config: {}, default_agents: [] },
   { id: "draft_review", name: "Draft Review", mode: "creator_critic", headline: "", description: "", recommended_for: "", task_placeholder: "", tags: [], default_config: {}, default_agents: [] },
+  { id: "project_tournament", name: "Project Tournament", mode: "tournament", headline: "", description: "", recommended_for: "", task_placeholder: "", tags: [], default_config: {}, default_agents: [] },
 ];
 
 const toolTypes = {
@@ -299,6 +300,7 @@ test("terminal session can continue the conversation as a new branch", async ({ 
     status: "completed",
     result: "Judge verdict: keep the existing rollout plan.",
     current_checkpoint_id: "cp_3",
+    active_node: "terminal",
   } as typeof sessionDetail;
   const followupSession = {
     ...sessionDetail,
@@ -321,6 +323,8 @@ test("terminal session can continue the conversation as a new branch", async ({ 
 
   await page.goto("/");
   await page.getByRole("button", { name: /Project Alpha/i }).click();
+  await expect(page.getByText("Сессия завершена")).toBeVisible();
+  await expect(page.getByText("Исполнение завершено")).toBeVisible();
   await expect(page.getByText("Продолжение обсуждения")).toBeVisible();
   await page.getByPlaceholder(/теперь сфокусируйтесь на рисках/i).fill("Focus on the biggest operational risks.");
   await page.getByRole("button", { name: /Продолжить обсуждение с командой/i }).click();

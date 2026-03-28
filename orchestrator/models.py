@@ -101,6 +101,7 @@ MODE_AGENT_REQUIREMENTS: dict[str, dict[str, object]] = {
     "map_reduce": {"min": 3, "label": "planner, at least 1 worker, synthesizer"},
     "creator_critic": {"exact": 2, "label": "creator and critic"},
     "tournament": {"min": 3, "label": "at least 2 contestants + judge"},
+    "tournament_match": {"exact": 3, "label": "contestant A, contestant B, judge"},
 }
 
 BUILTIN_TOOL_CAPABILITIES: dict[str, dict[str, CapabilityLevel]] = {
@@ -201,6 +202,7 @@ class AgentConfig(BaseModel):
     provider: str
     system_prompt: str = ""
     tools: list[str] = Field(default_factory=list)
+    workspace_paths: list[str] = Field(default_factory=list)
 
 
 class RunRequest(BaseModel):
@@ -254,6 +256,11 @@ class SessionResponse(BaseModel):
     active_scenario: Optional[str] = None
     forked_from: Optional[str] = None
     forked_checkpoint_id: Optional[str] = None
+    parallel_parent_id: Optional[str] = None
+    parallel_group_id: Optional[str] = None
+    parallel_slot_key: Optional[str] = None
+    parallel_stage: Optional[str] = None
+    parallel_label: Optional[str] = None
     capabilities: dict = Field(default_factory=lambda: dict(SESSION_CAPABILITIES))
     created_at: float
     elapsed_sec: Optional[float] = None
@@ -268,6 +275,8 @@ class SessionResponse(BaseModel):
     attached_tools: list[dict] = Field(default_factory=list)
     provider_capabilities_snapshot: dict = Field(default_factory=dict)
     branch_children: list[dict] = Field(default_factory=list)
+    parallel_children: list[dict] = Field(default_factory=list)
+    parallel_progress: dict = Field(default_factory=dict)
     runtime_state: dict = Field(default_factory=dict)
 
 
@@ -496,9 +505,22 @@ def normalize_agent_configs(agents: list[AgentConfig]) -> list[AgentConfig]:
 
     normalized_agents: list[AgentConfig] = []
     for agent in agents:
+        normalized_workspace_paths: list[str] = []
+        seen_paths: set[str] = set()
+        for raw_path in agent.workspace_paths:
+            if not str(raw_path).strip():
+                continue
+            normalized_path = str(Path(raw_path).expanduser().resolve())
+            if normalized_path in seen_paths:
+                continue
+            seen_paths.add(normalized_path)
+            normalized_workspace_paths.append(normalized_path)
         normalized_agents.append(
             agent.model_copy(
-                update={"tools": [normalize_tool_id(tool) for tool in agent.tools]},
+                update={
+                    "tools": [normalize_tool_id(tool) for tool in agent.tools],
+                    "workspace_paths": normalized_workspace_paths,
+                },
             )
         )
     return normalized_agents
@@ -535,6 +557,11 @@ def validate_agents_for_mode(mode: str, agents: list[AgentConfig]) -> list[str]:
     duplicate_roles = sorted({role for role in roles if roles.count(role) > 1})
     if duplicate_roles:
         errors.append(f"Agent roles must be unique; duplicate roles: {', '.join(duplicate_roles)}.")
+
+    if mode in {"tournament", "tournament_match"} and agents:
+        judge_positions = [index for index, agent in enumerate(agents) if agent.role.strip() == "judge"]
+        if judge_positions != [len(agents) - 1]:
+            errors.append(f"Mode '{mode}' requires exactly one judge and it must be the last agent in the list.")
 
     for index, agent in enumerate(agents):
         provider = _canonical_provider(agent.provider)
@@ -631,6 +658,7 @@ _RUN_JSON_COLUMNS = {
     "workspace_paths",
     "attached_tool_ids",
     "provider_capabilities_snapshot",
+    "parallel_progress",
 }
 
 
@@ -671,6 +699,11 @@ class SessionStore:
                     active_scenario TEXT,
                     forked_from TEXT,
                     forked_checkpoint_id TEXT,
+                    parallel_parent_id TEXT,
+                    parallel_group_id TEXT,
+                    parallel_slot_key TEXT,
+                    parallel_stage TEXT,
+                    parallel_label TEXT,
                     capabilities_json TEXT NOT NULL,
                     created_at REAL NOT NULL,
                     elapsed_sec REAL,
@@ -682,9 +715,21 @@ class SessionStore:
                     workspace_preset_ids_json TEXT NOT NULL,
                     workspace_paths_json TEXT NOT NULL,
                     attached_tool_ids_json TEXT NOT NULL,
-                    provider_capabilities_snapshot_json TEXT NOT NULL
+                    provider_capabilities_snapshot_json TEXT NOT NULL,
+                    parallel_progress_json TEXT NOT NULL DEFAULT '{}'
                 )
                 """
+            )
+            self._ensure_run_columns(
+                conn,
+                {
+                    "parallel_parent_id": "TEXT",
+                    "parallel_group_id": "TEXT",
+                    "parallel_slot_key": "TEXT",
+                    "parallel_stage": "TEXT",
+                    "parallel_label": "TEXT",
+                    "parallel_progress_json": "TEXT NOT NULL DEFAULT '{}'",
+                },
             )
             conn.execute(
                 """
@@ -728,6 +773,14 @@ class SessionStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_events_session_seq ON events(session_id, event_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_checkpoints_session_ord ON checkpoints(session_id, ordinal)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_forked_from ON runs(forked_from)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_parallel_parent_id ON runs(parallel_parent_id)")
+
+    def _ensure_run_columns(self, conn: sqlite3.Connection, required: dict[str, str]) -> None:
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
+        for column, definition in required.items():
+            if column in existing:
+                continue
+            conn.execute(f"ALTER TABLE runs ADD COLUMN {column} {definition}")
 
     @staticmethod
     def _encode(value: object) -> str:
@@ -840,6 +893,12 @@ class SessionStore:
         workspace_paths: list[str] | None = None,
         attached_tool_ids: list[str] | None = None,
         provider_capabilities_snapshot: dict | None = None,
+        parallel_parent_id: Optional[str] = None,
+        parallel_group_id: Optional[str] = None,
+        parallel_slot_key: Optional[str] = None,
+        parallel_stage: Optional[str] = None,
+        parallel_label: Optional[str] = None,
+        parallel_progress: dict | None = None,
     ) -> str:
         sid = f"sess_{uuid.uuid4().hex[:12]}"
         payload = {
@@ -854,6 +913,11 @@ class SessionStore:
             "active_scenario": scenario_id,
             "forked_from": forked_from,
             "forked_checkpoint_id": forked_checkpoint_id,
+            "parallel_parent_id": parallel_parent_id,
+            "parallel_group_id": parallel_group_id,
+            "parallel_slot_key": parallel_slot_key,
+            "parallel_stage": parallel_stage,
+            "parallel_label": parallel_label,
             "capabilities": dict(SESSION_CAPABILITIES),
             "created_at": time.time(),
             "elapsed_sec": None,
@@ -866,18 +930,21 @@ class SessionStore:
             "workspace_paths": list(workspace_paths or []),
             "attached_tool_ids": list(attached_tool_ids or []),
             "provider_capabilities_snapshot": copy.deepcopy(provider_capabilities_snapshot or {}),
+            "parallel_progress": copy.deepcopy(parallel_progress or {}),
         }
         with self._lock, self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO runs (
                     id, mode, task, agents_json, messages_json, result, status, config_json,
-                    active_scenario, forked_from, forked_checkpoint_id, capabilities_json,
+                    active_scenario, forked_from, forked_checkpoint_id,
+                    parallel_parent_id, parallel_group_id, parallel_slot_key, parallel_stage, parallel_label,
+                    capabilities_json,
                     created_at, elapsed_sec, current_checkpoint_id, next_event_seq,
                     pending_instruction_queue_json, pending_instructions, active_node,
                     workspace_preset_ids_json, workspace_paths_json, attached_tool_ids_json,
-                    provider_capabilities_snapshot_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    provider_capabilities_snapshot_json, parallel_progress_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     sid,
@@ -891,6 +958,11 @@ class SessionStore:
                     payload["active_scenario"],
                     payload["forked_from"],
                     payload["forked_checkpoint_id"],
+                    payload["parallel_parent_id"],
+                    payload["parallel_group_id"],
+                    payload["parallel_slot_key"],
+                    payload["parallel_stage"],
+                    payload["parallel_label"],
                     self._encode(payload["capabilities"]),
                     payload["created_at"],
                     payload["elapsed_sec"],
@@ -903,6 +975,7 @@ class SessionStore:
                     self._encode(payload["workspace_paths"]),
                     self._encode(payload["attached_tool_ids"]),
                     self._encode(payload["provider_capabilities_snapshot"]),
+                    self._encode(payload["parallel_progress"]),
                 ),
             )
             self._trim_sessions(conn)
@@ -943,6 +1016,27 @@ class SessionStore:
                 (sid,),
             ).fetchall()
         ]
+        parallel_children = [
+            {
+                "id": child["id"],
+                "mode": child["mode"],
+                "status": child["status"],
+                "created_at": child["created_at"],
+                "slot_key": child["parallel_slot_key"],
+                "stage": child["parallel_stage"],
+                "label": child["parallel_label"] or child["task"],
+                "winner_label": (self._decode(child["config_json"], {}) or {}).get("match_result", {}).get("winner_label"),
+            }
+            for child in conn.execute(
+                """
+                SELECT id, mode, task, status, created_at, parallel_slot_key, parallel_stage, parallel_label, config_json
+                FROM runs
+                WHERE parallel_parent_id = ?
+                ORDER BY created_at ASC
+                """,
+                (sid,),
+            ).fetchall()
+        ]
         agents = self._decode(row["agents_json"], [])
         attached_tool_ids = self._decode(row["attached_tool_ids_json"], [])
         provider_capabilities_snapshot = self._decode(
@@ -960,6 +1054,11 @@ class SessionStore:
             "active_scenario": row["active_scenario"],
             "forked_from": row["forked_from"],
             "forked_checkpoint_id": row["forked_checkpoint_id"],
+            "parallel_parent_id": row["parallel_parent_id"],
+            "parallel_group_id": row["parallel_group_id"],
+            "parallel_slot_key": row["parallel_slot_key"],
+            "parallel_stage": row["parallel_stage"],
+            "parallel_label": row["parallel_label"],
             "capabilities": self._decode(row["capabilities_json"], dict(SESSION_CAPABILITIES)),
             "created_at": row["created_at"],
             "elapsed_sec": row["elapsed_sec"],
@@ -978,6 +1077,8 @@ class SessionStore:
                 provider_capabilities_snapshot,
             ),
             "branch_children": branch_children,
+            "parallel_children": parallel_children,
+            "parallel_progress": self._decode(row["parallel_progress_json"], {}),
         }
 
     def get(self, sid: str) -> Optional[dict]:
@@ -998,6 +1099,11 @@ class SessionStore:
             "active_scenario": "active_scenario",
             "forked_from": "forked_from",
             "forked_checkpoint_id": "forked_checkpoint_id",
+            "parallel_parent_id": "parallel_parent_id",
+            "parallel_group_id": "parallel_group_id",
+            "parallel_slot_key": "parallel_slot_key",
+            "parallel_stage": "parallel_stage",
+            "parallel_label": "parallel_label",
             "result": "result",
             "status": "status",
             "elapsed_sec": "elapsed_sec",
@@ -1009,6 +1115,7 @@ class SessionStore:
             "workspace_paths": "workspace_paths_json",
             "attached_tool_ids": "attached_tool_ids_json",
             "provider_capabilities_snapshot": "provider_capabilities_snapshot_json",
+            "parallel_progress": "parallel_progress_json",
         }
         assignments: list[str] = []
         values: list[object] = []
@@ -1147,8 +1254,11 @@ class SessionStore:
         with self._lock, self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, mode, task, status, created_at, active_scenario, forked_from, current_checkpoint_id
+                SELECT id, mode, task, status, created_at, active_scenario, forked_from,
+                       current_checkpoint_id, parallel_parent_id, parallel_group_id,
+                       parallel_slot_key, parallel_stage, parallel_label
                 FROM runs
+                WHERE parallel_parent_id IS NULL
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
@@ -1164,9 +1274,42 @@ class SessionStore:
                     "active_scenario": row["active_scenario"],
                     "forked_from": row["forked_from"],
                     "current_checkpoint_id": row["current_checkpoint_id"],
+                    "parallel_parent_id": row["parallel_parent_id"],
+                    "parallel_group_id": row["parallel_group_id"],
+                    "parallel_slot_key": row["parallel_slot_key"],
+                    "parallel_stage": row["parallel_stage"],
+                    "parallel_label": row["parallel_label"],
                 }
                 for row in rows
             ]
+
+    def list_parallel_children(self, parent_id: str) -> list[dict]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, mode, task, status, created_at, parallel_slot_key, parallel_stage, parallel_label, config_json
+                FROM runs
+                WHERE parallel_parent_id = ?
+                ORDER BY created_at ASC
+                """,
+                (parent_id,),
+            ).fetchall()
+            children: list[dict] = []
+            for row in rows:
+                config = self._decode(row["config_json"], {})
+                children.append(
+                    {
+                        "id": row["id"],
+                        "mode": row["mode"],
+                        "status": row["status"],
+                        "created_at": row["created_at"],
+                        "slot_key": row["parallel_slot_key"],
+                        "stage": row["parallel_stage"],
+                        "label": row["parallel_label"] or row["task"],
+                        "winner_label": (config or {}).get("match_result", {}).get("winner_label"),
+                    }
+                )
+            return children
 
     def list_by_statuses(self, statuses: list[str]) -> list[dict]:
         if not statuses:

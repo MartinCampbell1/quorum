@@ -3,16 +3,20 @@
 import { useState, useEffect } from "react";
 import { ChevronDown, ChevronUp, ArrowRight, Plus, Trash2, Wrench, Settings2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SelectorChips } from "@/components/ui/selector-chips";
-import { PROVIDER_LABELS } from "@/lib/constants";
+import { formatAgentRole, formatScenarioLabel, MODE_LABELS, PROVIDER_LABELS, roleMonogram } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 import type { AgentConfig, ToolDefinition } from "@/lib/types";
 import { getTools, getPromptTemplates } from "@/lib/api";
 import { Stepper } from "./stepper";
 
 interface StepAgentsProps {
+  mode: string;
+  scenarioId?: string | null;
+  scenarioLabel?: string;
   agents: AgentConfig[];
   onChange: (agents: AgentConfig[]) => void;
   onNext: () => void;
@@ -23,10 +27,20 @@ interface StepAgentsProps {
 const providers = ["claude", "gemini", "codex", "minimax"] as const;
 const CONNECTION_TOOL_TYPES = new Set(["http_api", "custom_api", "ssh", "neo4j", "mcp_server"]);
 
-export function StepAgents({ agents, onChange, onNext, onBack, onOpenSettings }: StepAgentsProps) {
+export function StepAgents({
+  mode,
+  scenarioId,
+  scenarioLabel,
+  agents,
+  onChange,
+  onNext,
+  onBack,
+  onOpenSettings,
+}: StepAgentsProps) {
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
   const [availableTools, setAvailableTools] = useState<ToolDefinition[]>([]);
   const [promptTemplates, setPromptTemplates] = useState<Record<string, { name: string; description: string; prompt: string }>>({});
+  const [workspaceDrafts, setWorkspaceDrafts] = useState<Record<string, string>>({});
 
   useEffect(() => {
     getTools().then((tools) => setAvailableTools(tools)).catch(() => {});
@@ -43,20 +57,71 @@ export function StepAgents({ agents, onChange, onNext, onBack, onOpenSettings }:
     onChange(next);
   }
 
-  function addWorker() {
+  function addAgent() {
+    if (mode === "tournament") {
+      const contestantCount = agents.filter((a) => a.role.startsWith("contestant_")).length;
+      const newContestant: AgentConfig = {
+        role: `contestant_${contestantCount + 1}`,
+        provider: "codex",
+        system_prompt: "",
+        tools: [],
+        workspace_paths: [],
+      };
+      const judgeIndex = agents.findIndex((agent) => agent.role === "judge");
+      if (judgeIndex >= 0) {
+        onChange([
+          ...agents.slice(0, judgeIndex),
+          newContestant,
+          ...agents.slice(judgeIndex),
+        ]);
+        return;
+      }
+      onChange([...agents, newContestant]);
+      return;
+    }
+
     const workerCount = agents.filter((a) => a.role.startsWith("worker")).length;
     const newWorker: AgentConfig = {
       role: `worker_${workerCount + 1}`,
       provider: "codex",
       system_prompt: "",
       tools: [],
+      workspace_paths: [],
     };
     onChange([...agents, newWorker]);
   }
 
   function removeAgent(index: number) {
     if (agents.length <= 2) return;
+    if (mode === "tournament" && agents[index]?.role === "judge") return;
     onChange(agents.filter((_, i) => i !== index));
+  }
+
+  function updateWorkspaceDraft(role: string, value: string) {
+    setWorkspaceDrafts((current) => ({ ...current, [role]: value }));
+  }
+
+  function addWorkspacePath(index: number) {
+    const agent = agents[index];
+    if (!agent) return;
+    const value = String(workspaceDrafts[agent.role] ?? "").trim();
+    if (!value) return;
+    const nextPaths = Array.from(new Set([...(agent.workspace_paths ?? []), value]));
+    updateAgent(index, { workspace_paths: nextPaths });
+    updateWorkspaceDraft(agent.role, "");
+  }
+
+  function removeWorkspacePath(index: number, path: string) {
+    const agent = agents[index];
+    if (!agent) return;
+    updateAgent(index, {
+      workspace_paths: (agent.workspace_paths ?? []).filter((item) => item !== path),
+    });
+  }
+
+  function addButtonLabel() {
+    if (mode === "tournament") return "Добавить участника";
+    return "Добавить воркера";
   }
 
   function capabilityTone(capability: "native" | "bridged" | "unavailable" | undefined) {
@@ -77,6 +142,18 @@ export function StepAgents({ agents, onChange, onNext, onBack, onOpenSettings }:
           <p className="text-[13px] text-muted-foreground/60 mb-7">
             Назначьте провайдера и инструменты каждой роли. Раскройте для детальной настройки.
           </p>
+          <div className="mb-5 flex flex-wrap items-center gap-2">
+            {mode ? (
+              <Badge variant="secondary" className="font-medium">
+                {MODE_LABELS[mode] ?? mode}
+              </Badge>
+            ) : null}
+            {(scenarioLabel || scenarioId) ? (
+              <Badge variant="outline" className="font-medium">
+                {scenarioLabel ?? formatScenarioLabel(scenarioId ?? "")}
+              </Badge>
+            ) : null}
+          </div>
 
           <div className="mb-5 rounded-2xl border border-border/60 bg-white p-4 dark:border-slate-800 dark:bg-slate-950/70">
             <div className="flex items-start justify-between gap-4">
@@ -123,12 +200,22 @@ export function StepAgents({ agents, onChange, onNext, onBack, onOpenSettings }:
                   <div className="flex items-center gap-3">
                     <div className="flex h-8 w-8 items-center justify-center rounded-md bg-muted text-muted-foreground">
                       <span className="font-mono text-[10px] font-semibold uppercase">
-                        {agent.role.slice(0, 2)}
+                        {roleMonogram(agent.role, { mode, scenarioId })}
                       </span>
                     </div>
-                    <span className="font-mono text-xs font-medium text-foreground truncate flex-1">
-                      {agent.role}
-                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-xs font-medium text-foreground">
+                        {formatAgentRole(agent.role, { mode, scenarioId })}
+                      </div>
+                      <div className="truncate font-mono text-[10px] text-muted-foreground/60">
+                        {agent.role}
+                      </div>
+                      {(agent.workspace_paths?.length ?? 0) > 0 && (
+                        <div className="mt-1 truncate text-[10px] text-muted-foreground/70">
+                          {(agent.workspace_paths ?? []).map((path) => path.split("/").filter(Boolean).pop() || path).join(", ")}
+                        </div>
+                      )}
+                    </div>
 
                     {/* Tool count badge */}
                     {(agent.tools?.length ?? 0) > 0 && (
@@ -162,6 +249,7 @@ export function StepAgents({ agents, onChange, onNext, onBack, onOpenSettings }:
                     {agents.length > 2 && (
                       <button
                         onClick={() => removeAgent(i)}
+                        disabled={mode === "tournament" && agent.role === "judge"}
                         className="p-1 rounded-md text-muted-foreground/40 hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer"
                         aria-label="Удалить агента"
                       >
@@ -256,6 +344,38 @@ export function StepAgents({ agents, onChange, onNext, onBack, onOpenSettings }:
                         rows={3}
                         className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-xs text-foreground placeholder:text-muted-foreground/50 resize-none focus:outline-none focus:ring-2 focus:ring-ring/30 focus:border-ring transition-colors dark:border-slate-800 dark:bg-slate-950/70"
                       />
+
+                      <label className="text-[10px] uppercase tracking-widest text-muted-foreground/60 mb-1.5 mt-4 block font-medium">
+                        Рабочие директории агента
+                      </label>
+                      <p className="mb-2 text-[11px] leading-relaxed text-muted-foreground/70">
+                        Укажи папки, которые доступны только этому агенту. Для турнира сюда удобно положить корень конкретного проекта.
+                      </p>
+                      <div className="flex gap-2">
+                        <input
+                          value={workspaceDrafts[agent.role] ?? ""}
+                          onChange={(e) => updateWorkspaceDraft(agent.role, e.target.value)}
+                          placeholder="/Users/example/projects/my-repo"
+                          className="flex-1 rounded-lg border border-border bg-white px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring/25 dark:border-slate-800 dark:bg-slate-950/70"
+                        />
+                        <Button type="button" variant="outline" size="sm" onClick={() => addWorkspacePath(i)}>
+                          Добавить
+                        </Button>
+                      </div>
+                      {(agent.workspace_paths?.length ?? 0) > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {(agent.workspace_paths ?? []).map((path) => (
+                            <button
+                              key={`${agent.role}-${path}`}
+                              type="button"
+                              onClick={() => removeWorkspacePath(i, path)}
+                              className="rounded-full border border-border bg-white px-3 py-1.5 text-[10px] text-muted-foreground hover:text-foreground dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400 dark:hover:text-slate-100"
+                            >
+                              {path}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                 </CardContent>
@@ -265,11 +385,11 @@ export function StepAgents({ agents, onChange, onNext, onBack, onOpenSettings }:
 
           {/* Add worker button */}
           <button
-            onClick={addWorker}
+            onClick={addAgent}
             className="mt-3 w-full flex items-center justify-center gap-2 rounded-xl border border-dashed border-border/60 py-3 text-[13px] text-muted-foreground hover:text-foreground hover:border-foreground/20 hover:bg-white transition-colors cursor-pointer dark:border-slate-800 dark:hover:bg-slate-950/70"
           >
             <Plus size={14} />
-            Добавить воркера
+            {addButtonLabel()}
           </button>
         </div>
       </div>

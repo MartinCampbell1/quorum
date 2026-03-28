@@ -1,7 +1,7 @@
 "use client";
 
 import { Badge } from "@/components/ui/badge";
-import { MODE_LABELS } from "@/lib/constants";
+import { formatScenarioLabel, MODE_LABELS } from "@/lib/constants";
 import { useLocale } from "@/lib/locale";
 
 import type { Session } from "@/lib/types";
@@ -46,12 +46,22 @@ export function ChatHeader({ session, onOpenHome, onOpenSessions }: ChatHeaderPr
           </Badge>
           {session.active_scenario ? (
             <Badge variant="outline" className="rounded-full border-[#d6dbe6] bg-white px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-[#6b7280] dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
-              {copy.monitor.scenario}: {session.active_scenario}
+              {copy.monitor.scenario}: {formatScenarioLabel(session.active_scenario)}
             </Badge>
           ) : null}
           {session.forked_from ? (
             <Badge variant="outline" className="rounded-full border-[#d6dbe6] bg-white px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-[#6b7280] dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
               {copy.monitor.branchOf}: {session.forked_from}
+            </Badge>
+          ) : null}
+          {session.parallel_parent_id ? (
+            <Badge variant="outline" className="rounded-full border-[#d6dbe6] bg-white px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-[#6b7280] dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
+              {copy.monitor.parentSession}: {session.parallel_parent_id}
+            </Badge>
+          ) : null}
+          {session.parallel_stage ? (
+            <Badge variant="outline" className="rounded-full border-[#d6dbe6] bg-white px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-[#6b7280] dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
+              {session.parallel_stage}{session.parallel_slot_key ? ` · ${session.parallel_slot_key}` : ""}
             </Badge>
           ) : null}
         </div>
