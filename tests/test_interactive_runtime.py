@@ -303,7 +303,7 @@ def test_creator_critic_recovers_when_critic_provider_falls_back(monkeypatch):
         assert completed["result"] == "Draft analysis"
         assert any(message["agent_id"] == "critic" and "APPROVED" in message["content"] for message in completed["messages"])
         assert ("claude", "critic") in attempts
-        assert ("gemini", "critic") in attempts
+        assert ("codex", "critic") in attempts
         assert not any(event["type"] == "run_failed" for event in completed["events"])
 
     asyncio.run(scenario())

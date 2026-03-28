@@ -11,7 +11,6 @@ import orchestrator.modes.board as board
 import orchestrator.modes.base as mode_base
 import orchestrator.modes.democracy as democracy
 import orchestrator.modes.map_reduce as map_reduce
-import pytest
 
 from langchain_gateway import GatewayInvocationError
 
@@ -161,34 +160,37 @@ def test_call_agent_cfg_retries_critical_roles_with_provider_fallback(monkeypatc
     )
 
     assert response == "APPROVED: concise critique"
-    assert [provider for provider, _, _ in attempts] == ["claude", "gemini"]
+    assert [provider for provider, _, _ in attempts] == ["claude", "codex"]
     assert "FINAL RESPONSE CONTRACT" in attempts[0][2]
 
 
-def test_call_agent_cfg_does_not_retry_noncritical_roles(monkeypatch):
-    attempts: list[str] = []
+def test_call_agent_cfg_retries_noncritical_roles_on_gateway_failure(monkeypatch):
+    attempts: list[tuple[str, str]] = []
 
     def fake_call_agent(provider, prompt, system_prompt="", tools=None, **kwargs):
-        attempts.append(provider)
-        raise GatewayInvocationError(
-            provider=provider,
-            agent_role=kwargs.get("agent_role"),
-            profile_used="acc1",
-            retries=0,
-            gateway_error="provider failed",
-        )
+        attempts.append((provider, prompt))
+        if provider == "claude":
+            raise GatewayInvocationError(
+                provider=provider,
+                agent_role=kwargs.get("agent_role"),
+                profile_used="acc1",
+                retries=0,
+                gateway_error="provider failed",
+            )
+        return "Plan: keep launch health checks lightweight."
 
     monkeypatch.setattr(mode_base, "call_agent", fake_call_agent)
 
-    with pytest.raises(GatewayInvocationError):
-        mode_base.call_agent_cfg(
-            {
-                "role": "planner",
-                "provider": "claude",
-                "system_prompt": "",
-                "tools": [],
-            },
-            "Plan the work.",
-        )
+    response = mode_base.call_agent_cfg(
+        {
+            "role": "planner",
+            "provider": "claude",
+            "system_prompt": "",
+            "tools": [],
+        },
+        "Plan the work.",
+    )
 
-    assert attempts == ["claude"]
+    assert response == "Plan: keep launch health checks lightweight."
+    assert [provider for provider, _ in attempts] == ["claude", "codex"]
+    assert "FINAL RESPONSE CONTRACT" not in attempts[0][1]
