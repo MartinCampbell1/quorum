@@ -7,6 +7,8 @@ import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from langchain_gateway import GatewayInvocationError
+import orchestrator.modes.base as mode_base
 import orchestrator.modes.creator_critic as creator_critic
 import orchestrator.modes.democracy as democracy
 import orchestrator.modes.debate as debate
@@ -254,6 +256,107 @@ def test_debate_fails_when_judge_returns_empty_verdict(monkeypatch):
         assert any(event["type"] == "agent_failed" and event.get("agent_id") == "judge" for event in failed["events"])
         assert not any(message["phase"] == "verdict" for message in failed["messages"])
         assert "empty response" in failed["result"]
+
+    asyncio.run(scenario())
+
+
+def test_creator_critic_recovers_when_critic_provider_falls_back(monkeypatch):
+    attempts: list[tuple[str, str | None]] = []
+
+    def fake_call_agent(
+        provider: str,
+        prompt: str,
+        system_prompt: str = "",
+        tools=None,
+        workdir=None,
+        workspace_paths=None,
+        session_id=None,
+        agent_role=None,
+    ) -> str:
+        attempts.append((provider, agent_role))
+        if agent_role == "creator":
+            return "Draft analysis"
+        if provider == "claude":
+            raise GatewayInvocationError(
+                provider=provider,
+                agent_role=agent_role,
+                profile_used="acc1",
+                retries=0,
+                gateway_error="claude returned tool scaffolding without a usable text response.",
+            )
+        return "APPROVED: ready to ship"
+
+    monkeypatch.setattr(mode_base, "call_agent", fake_call_agent)
+
+    async def scenario() -> None:
+        session_id = await run(
+            mode="creator_critic",
+            task="Fallback path for critic",
+            agents=[
+                AgentConfig(role="creator", provider="codex", tools=[]),
+                AgentConfig(role="critic", provider="claude", tools=[]),
+            ],
+            config={"max_iterations": 2},
+        )
+
+        completed = await _wait_for_status(session_id, "completed")
+        assert completed["result"] == "Draft analysis"
+        assert any(message["agent_id"] == "critic" and "APPROVED" in message["content"] for message in completed["messages"])
+        assert ("claude", "critic") in attempts
+        assert ("gemini", "critic") in attempts
+        assert not any(event["type"] == "run_failed" for event in completed["events"])
+
+    asyncio.run(scenario())
+
+
+def test_debate_recovers_when_judge_provider_falls_back(monkeypatch):
+    attempts: list[tuple[str, str | None]] = []
+
+    def fake_call_agent(
+        provider: str,
+        prompt: str,
+        system_prompt: str = "",
+        tools=None,
+        workdir=None,
+        workspace_paths=None,
+        session_id=None,
+        agent_role=None,
+    ) -> str:
+        attempts.append((provider, agent_role))
+        if agent_role == "proponent":
+            return "Pro argument"
+        if agent_role == "opponent":
+            return "Con argument"
+        if provider == "gemini":
+            raise GatewayInvocationError(
+                provider=provider,
+                agent_role=agent_role,
+                profile_used="acc2",
+                retries=0,
+                gateway_error="gemini returned no usable text output.",
+            )
+        return "Verdict: proponent wins because the argument is more specific."
+
+    monkeypatch.setattr(mode_base, "call_agent", fake_call_agent)
+
+    async def scenario() -> None:
+        session_id = await run(
+            mode="debate",
+            task="Should we ship the rewrite?",
+            agents=[
+                AgentConfig(role="proponent", provider="claude", tools=[]),
+                AgentConfig(role="opponent", provider="codex", tools=[]),
+                AgentConfig(role="judge", provider="gemini", tools=[]),
+            ],
+            config={"max_rounds": 2},
+        )
+
+        completed = await _wait_for_status(session_id, "completed")
+        assert "Verdict:" in completed["result"]
+        assert any(message["phase"] == "verdict" and "Verdict:" in message["content"] for message in completed["messages"])
+        assert ("gemini", "judge") in attempts
+        assert any(provider != "gemini" and role == "judge" for provider, role in attempts)
+        assert not any(event["type"] == "run_failed" for event in completed["events"])
 
     asyncio.run(scenario())
 
