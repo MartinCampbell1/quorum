@@ -1,4 +1,6 @@
 import type {
+  AccountHealth,
+  AccountsByProvider,
   ConfiguredTool,
   CustomToolConfig,
   ModeInfo,
@@ -117,6 +119,54 @@ export async function controlSession(
   return request(`/orchestrate/session/${sessionId}/control`, {
     method: "POST",
     body: JSON.stringify({ action, content: content ?? "", checkpoint_id: checkpointId ?? "" }),
+  });
+}
+
+export async function getAccountsHealth(): Promise<AccountHealth> {
+  return request("/accounts/health");
+}
+
+export async function getAccounts(): Promise<{ accounts: AccountsByProvider }> {
+  return request("/accounts");
+}
+
+export async function reloadAccounts(): Promise<{ status: string; accounts: AccountsByProvider }> {
+  return request("/accounts/reload", { method: "POST" });
+}
+
+export async function openProviderLogin(
+  provider: string
+): Promise<{ status: string; provider: string; command: string; message: string }> {
+  return request(`/accounts/${encodeURIComponent(provider)}/open-login`, {
+    method: "POST",
+  });
+}
+
+export async function importProviderSession(
+  provider: string
+): Promise<{ status: string; provider: string; account_name: string; accounts: AccountsByProvider[string]; message: string }> {
+  return request(`/accounts/${encodeURIComponent(provider)}/import`, {
+    method: "POST",
+  });
+}
+
+export async function reauthorizeProviderAccount(
+  provider: string,
+  accountName: string
+): Promise<{ status: string; provider: string; account_name: string; accounts: AccountsByProvider[string]; message: string }> {
+  return request(`/accounts/${encodeURIComponent(provider)}/${encodeURIComponent(accountName)}/reauthorize`, {
+    method: "POST",
+  });
+}
+
+export async function updateProviderAccount(
+  provider: string,
+  accountName: string,
+  label: string
+): Promise<{ status: string; provider: string; account_name: string; label: string; accounts: AccountsByProvider[string]; message: string }> {
+  return request(`/accounts/${encodeURIComponent(provider)}/${encodeURIComponent(accountName)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ label }),
   });
 }
 

@@ -8,12 +8,13 @@ import { controlSession } from "@/lib/api";
 import { useLocale } from "@/lib/locale";
 import { useSession } from "@/hooks/use-session";
 import { useSessionEvents } from "@/hooks/use-session-events";
-import type { AttachedToolDetail } from "@/lib/types";
+import type { AttachedToolDetail, Session } from "@/lib/types";
 
 import { ChatHeader } from "./chat-header";
 import { CheckpointPanel } from "./checkpoint-panel";
 import { ConversationPanel, EventTimeline } from "./event-timeline";
 import { InputBar } from "./input-bar";
+import { RichText } from "./rich-text";
 import { TopologyPanel } from "./topology-panel";
 
 interface ChatViewProps {
@@ -61,6 +62,43 @@ function TaskSummaryCard({ task }: { task: string }) {
   );
 }
 
+function SessionResultPanel({ session }: { session: Session }) {
+  const { copy } = useLocale();
+  const judgeRole = session.agents.find((agent) => agent.role === "judge")?.role;
+  const latestJudgeVerdict =
+    [...session.messages]
+      .reverse()
+      .find((message) => message.agent_id === judgeRole && message.phase === "verdict")?.content ??
+    session.result;
+
+  if (!latestJudgeVerdict) {
+    return null;
+  }
+
+  const title = session.mode === "debate" ? copy.monitor.finalVerdict : copy.monitor.finalResult;
+
+  return (
+    <section className="rounded-[18px] border border-[#d6dbe6] bg-white p-5 shadow-[0_10px_24px_-18px_rgba(17,48,105,0.18)] dark:border-slate-800 dark:bg-slate-950/60 dark:shadow-none">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="rounded-full border border-[#d6dbe6] bg-[#fbfcff] px-3 py-1 text-[10px] uppercase tracking-[0.16em] text-[#6b7280] dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
+          {copy.statuses[session.status]}
+        </span>
+        {judgeRole ? (
+          <span className="rounded-full border border-[#d6dbe6] bg-[#fbfcff] px-3 py-1 text-[10px] uppercase tracking-[0.16em] text-[#6b7280] dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
+            {copy.monitor.judgeVerdict}
+          </span>
+        ) : null}
+      </div>
+      <h2 className="mt-3 text-[22px] font-medium tracking-[-0.03em] text-[#111111] dark:text-slate-100">
+        {title}
+      </h2>
+      <div className="mt-4 rounded-[16px] border border-[#e5e7eb] bg-[#fbfcff] px-5 py-5 dark:border-slate-800 dark:bg-slate-900/70">
+        <RichText text={latestJudgeVerdict} className="text-[15px] leading-8" />
+      </div>
+    </section>
+  );
+}
+
 export function ChatView({
   sessionId,
   onForkSession,
@@ -76,6 +114,7 @@ export function ChatView({
   const trackedCurrentCheckpointRef = useRef<string | null>(null);
   const currentSessionId = session?.id ?? null;
   const currentCheckpointId = session?.current_checkpoint_id ?? null;
+  const isParallelChild = Boolean(session?.parallel_parent_id);
 
   const activeConnections = useMemo(() => {
     if (!session) return [];
@@ -176,9 +215,24 @@ export function ChatView({
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_356px]">
           <div className="space-y-4">
             <TaskSummaryCard task={session.task} />
-            <TopologyPanel session={session} />
-            <ConversationPanel key={session.id} sessionId={session.id} messages={session.messages} events={events} />
-            <EventTimeline events={events} />
+            <TopologyPanel session={session} onOpenSession={onForkSession} />
+            <SessionResultPanel session={session} />
+            <ConversationPanel
+              key={session.id}
+              sessionId={session.id}
+              messages={session.messages}
+              events={events}
+              mode={session.mode}
+              scenarioId={session.active_scenario}
+              agents={session.agents}
+              status={session.status}
+            />
+            <EventTimeline
+              events={events}
+              mode={session.mode}
+              scenarioId={session.active_scenario}
+              agents={session.agents}
+            />
           </div>
 
           <div className="flex flex-col gap-4">
@@ -226,40 +280,48 @@ export function ChatView({
             </section>
 
             <div className="mt-auto rounded-[18px] border border-[#d6dbe6] bg-white p-4 dark:border-slate-800 dark:bg-slate-950/60">
-              <div className="flex gap-3">
-                <Button
-                  type="button"
-                  onClick={handlePrimaryAction}
-                  disabled={isWorking}
-                  className="h-[46px] flex-1 rounded-[12px] bg-black text-[15px] font-medium text-white hover:bg-black/92"
-                >
-                  {isWorking ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  ) : null}
-                  {primaryLabel()}
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={handleExport}
-                  className="h-[46px] flex-1 rounded-[12px] border-[#111111] bg-white text-[15px] font-medium text-[#111111] dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:hover:bg-slate-900"
-                >
-                  {copy.monitor.exportResults}
-                </Button>
-              </div>
+              {isParallelChild ? (
+                <div className="rounded-[14px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 text-[13px] leading-6 text-[#6b7280] dark:border-slate-800 dark:bg-slate-900/80 dark:text-slate-400">
+                  Этот дочерний матч управляется из родительского турнира. Здесь доступен monitor, но pause / cancel / branch выполняются только из parent run.
+                </div>
+              ) : (
+                <div className="flex gap-3">
+                  <Button
+                    type="button"
+                    onClick={handlePrimaryAction}
+                    disabled={isWorking}
+                    className="h-[46px] flex-1 rounded-[12px] bg-black text-[15px] font-medium text-white hover:bg-black/92"
+                  >
+                    {isWorking ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : null}
+                    {primaryLabel()}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleExport}
+                    className="h-[46px] flex-1 rounded-[12px] border-[#111111] bg-white text-[15px] font-medium text-[#111111] dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:hover:bg-slate-900"
+                  >
+                    {copy.monitor.exportResults}
+                  </Button>
+                </div>
+              )}
             </div>
           </div>
         </div>
 
-        <InputBar
-          sessionId={session.id}
-          status={session.status}
-          pendingInstructions={session.pending_instructions}
-          checkpointId={selectedCheckpointId ?? session.current_checkpoint_id}
-          continueCheckpointId={session.current_checkpoint_id}
-          onForkSession={onForkSession}
-          onRefresh={refresh}
-        />
+        {!isParallelChild ? (
+          <InputBar
+            sessionId={session.id}
+            status={session.status}
+            pendingInstructions={session.pending_instructions}
+            checkpointId={selectedCheckpointId ?? session.current_checkpoint_id}
+            continueCheckpointId={session.current_checkpoint_id}
+            onForkSession={onForkSession}
+            onRefresh={refresh}
+          />
+        ) : null}
       </div>
     </div>
   );

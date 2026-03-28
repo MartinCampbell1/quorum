@@ -335,7 +335,7 @@ def test_debate_recovers_when_judge_provider_falls_back(monkeypatch):
                 retries=0,
                 gateway_error="gemini returned no usable text output.",
             )
-        return "Verdict: proponent wins because the argument is more specific."
+        return "FINAL_VERDICT Verdict: proponent wins because the argument is more specific."
 
     monkeypatch.setattr(mode_base, "call_agent", fake_call_agent)
 
@@ -357,6 +357,81 @@ def test_debate_recovers_when_judge_provider_falls_back(monkeypatch):
         assert ("gemini", "judge") in attempts
         assert any(provider != "gemini" and role == "judge" for provider, role in attempts)
         assert not any(event["type"] == "run_failed" for event in completed["events"])
+
+    asyncio.run(scenario())
+
+
+def test_debate_uses_configured_round_budget_by_default(monkeypatch):
+    call_counts = {"proponent": 0, "opponent": 0, "judge": 0}
+
+    def fake_call_agent_cfg(agent: dict, prompt: str) -> str:
+        role = agent["role"]
+        call_counts[role] += 1
+        if role == "proponent":
+            return f"Pro argument round {call_counts[role]}"
+        if role == "opponent":
+            return f"Con argument round {call_counts[role]}"
+        if call_counts[role] == 1:
+            return "Interim assessment: both sides should sharpen their evidence."
+        return "Final verdict: proponent wins on specificity."
+
+    monkeypatch.setattr(debate, "call_agent_cfg", fake_call_agent_cfg)
+
+    async def scenario() -> None:
+        session_id = await run(
+            mode="debate",
+            task="Should we continue the project?",
+            agents=[
+                AgentConfig(role="proponent", provider="gemini", tools=[]),
+                AgentConfig(role="opponent", provider="codex", tools=[]),
+                AgentConfig(role="judge", provider="gemini", tools=[]),
+            ],
+            config={"max_rounds": 2},
+        )
+
+        completed = await _wait_for_status(session_id, "completed")
+        assert call_counts == {"proponent": 2, "opponent": 2, "judge": 2}
+        assert "Final verdict" in completed["result"]
+        assert len([message for message in completed["messages"] if message["agent_id"] == "proponent"]) == 2
+        assert len([message for message in completed["messages"] if message["agent_id"] == "opponent"]) == 2
+        round_events = [event for event in completed["events"] if event["type"] == "round_completed"]
+        assert len(round_events) == 2
+
+    asyncio.run(scenario())
+
+
+def test_debate_allows_judge_to_finish_early_with_explicit_marker(monkeypatch):
+    call_counts = {"proponent": 0, "opponent": 0, "judge": 0}
+
+    def fake_call_agent_cfg(agent: dict, prompt: str) -> str:
+        role = agent["role"]
+        call_counts[role] += 1
+        if role == "proponent":
+            return "Pro opening argument"
+        if role == "opponent":
+            return "Con opening argument"
+        return "FINAL_VERDICT Clear winner after one round."
+
+    monkeypatch.setattr(debate, "call_agent_cfg", fake_call_agent_cfg)
+
+    async def scenario() -> None:
+        session_id = await run(
+            mode="debate",
+            task="Should we ship this now?",
+            agents=[
+                AgentConfig(role="proponent", provider="gemini", tools=[]),
+                AgentConfig(role="opponent", provider="codex", tools=[]),
+                AgentConfig(role="judge", provider="codex", tools=[]),
+            ],
+            config={"max_rounds": 5},
+        )
+
+        completed = await _wait_for_status(session_id, "completed")
+        assert call_counts == {"proponent": 1, "opponent": 1, "judge": 1}
+        assert "Clear winner" in completed["result"]
+        assert "FINAL_VERDICT" not in completed["result"]
+        round_events = [event for event in completed["events"] if event["type"] == "round_completed"]
+        assert len(round_events) == 1
 
     asyncio.run(scenario())
 

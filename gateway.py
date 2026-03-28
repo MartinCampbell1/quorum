@@ -24,11 +24,14 @@ Multi-Agent Gateway v3 - FastAPI + Profile Rotation + Orchestrator
 """
 
 import asyncio
+import contextlib
+import functools
 import json
 import os
 import re
 import shlex
 import shutil
+import subprocess
 import tempfile
 import time
 from contextlib import asynccontextmanager
@@ -50,6 +53,14 @@ from orchestrator.tool_configs import (
     normalize_tool_id,
     tool_config_store,
 )
+from provider_sessions import (
+    VALID_PROVIDERS,
+    get_account_label,
+    import_current_session,
+    open_login_terminal,
+    open_login_terminal_for_profile,
+    set_account_label,
+)
 
 
 # =========================================================================
@@ -68,8 +79,12 @@ CODEX_BIN = os.getenv("CODEX_BIN", "codex")
 REAL_HOME = str(Path.home())
 
 # Таймауты
-DEFAULT_TIMEOUT = 300  # 5 минут на один вызов
+# Для CLI-backed моделей длинные reasoning шаги нормальны. По умолчанию даём 10x запас.
+# Если явно передать timeout=0, таймаут для конкретного вызова будет отключён.
+DEFAULT_TIMEOUT = int(os.getenv("MULTI_AGENT_CLI_TIMEOUT_SEC", "3000"))
 COOLDOWN_SECONDS = 300  # 5 минут кулдаун после rate limit
+PROFILE_ACQUIRE_WAIT_SECONDS = float(os.getenv("MULTI_AGENT_PROFILE_WAIT_SEC", "45"))
+DEFAULT_STALL_TIMEOUT = int(os.getenv("MULTI_AGENT_CLI_STALL_TIMEOUT_SEC", "420"))
 
 # Рабочая директория по умолчанию
 DEFAULT_WORKDIR = REAL_HOME
@@ -123,6 +138,13 @@ class Profile:
     last_used: float = 0
     cooldown_until: float = 0
     consecutive_errors: int = 0
+    label: str = ""
+    identity: str = ""
+    auth_state: str = "unknown"
+    last_error: str = ""
+    last_failure_at: float = 0
+    last_checked_at: float = 0
+    in_flight: bool = False
 
 
 @dataclass
@@ -133,60 +155,196 @@ class ProfilePool:
     _index: int = 0
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
-    async def get_next(self) -> Optional[Profile]:
-        """Получить следующий доступный профиль."""
-        async with self._lock:
-            if not self.profiles:
+    def _restore_cooled_profiles_locked(self, now: float) -> None:
+        for profile in self.profiles:
+            if not profile.is_available and now >= profile.cooldown_until:
+                profile.is_available = True
+                profile.consecutive_errors = 0
+
+    def _next_profile_locked(self, now: float) -> Optional[Profile]:
+        self._restore_cooled_profiles_locked(now)
+
+        for i in range(len(self.profiles)):
+            idx = (self._index + i) % len(self.profiles)
+            profile = self.profiles[idx]
+            if profile.is_available and not profile.in_flight:
+                self._index = (idx + 1) % len(self.profiles)
+                profile.last_used = now
+                profile.requests_made += 1
+                profile.in_flight = True
+                return profile
+
+        return None
+
+    def status_locked(self, now: float | None = None) -> list[dict]:
+        snapshot_time = now or time.time()
+        self._restore_cooled_profiles_locked(snapshot_time)
+        return [
+            {
+                "name": p.name,
+                "label": p.label,
+                "identity": p.identity or None,
+                "display_name": p.label or p.identity or p.name,
+                "available": p.is_available and not p.in_flight and p.auth_state != "error",
+                "auth_state": p.auth_state,
+                "requests_made": p.requests_made,
+                "in_flight": p.in_flight,
+                "last_error": p.last_error or None,
+                "last_failure_at": round(p.last_failure_at) if p.last_failure_at else None,
+                "last_used_at": round(p.last_used) if p.last_used else None,
+                "last_checked_at": round(p.last_checked_at) if p.last_checked_at else None,
+                "cooldown_remaining_sec": max(0, round(p.cooldown_until - snapshot_time))
+                if not p.is_available and snapshot_time < p.cooldown_until else 0,
+            }
+            for p in self.profiles
+        ]
+
+    async def get_next(self, wait_timeout: float | None = None) -> Optional[Profile]:
+        """Получить следующий доступный профиль, при необходимости немного подождать освобождения."""
+        if not self.profiles:
+            return None
+
+        deadline = None if wait_timeout is None else time.time() + max(0.0, wait_timeout)
+
+        while True:
+            now = time.time()
+            async with self._lock:
+                profile = self._next_profile_locked(now)
+                if profile is not None:
+                    return profile
+
+                statuses = self.status_locked(now)
+
+            if wait_timeout is None:
                 return None
 
-            now = time.time()
+            remaining = deadline - now if deadline is not None else 0
+            if remaining <= 0:
+                return None
 
-            for i in range(len(self.profiles)):
-                idx = (self._index + i) % len(self.profiles)
-                p = self.profiles[idx]
+            cooldowns = [status["cooldown_remaining_sec"] for status in statuses if status["cooldown_remaining_sec"] > 0]
+            if cooldowns:
+                sleep_for = min(remaining, max(0.1, min(cooldowns)))
+            else:
+                # Все профили просто заняты in-flight: коротко ждём освобождения lease.
+                sleep_for = min(remaining, 0.5)
+            await asyncio.sleep(sleep_for)
 
-                # Проверить кулдаун
-                if not p.is_available and now >= p.cooldown_until:
-                    p.is_available = True
-                    p.consecutive_errors = 0
-
-                if p.is_available:
-                    self._index = (idx + 1) % len(self.profiles)
-                    p.last_used = now
-                    p.requests_made += 1
-                    return p
-
-            return None  # все на кулдауне
-
-    async def mark_rate_limited(self, profile: Profile):
+    async def mark_rate_limited(self, profile: Profile, reason: str | None = None):
         """Пометить профиль как rate-limited."""
         async with self._lock:
+            profile.in_flight = False
             profile.is_available = False
             profile.consecutive_errors += 1
+            if reason:
+                profile.last_error = reason.strip()[:400]
+                profile.last_failure_at = time.time()
+                profile.last_checked_at = time.time()
+                if _looks_like_auth_error(reason):
+                    profile.auth_state = "error"
             # Экспоненциальный бэкофф: 5 мин, 10 мин, 15 мин... макс 30 мин
             cd = COOLDOWN_SECONDS + min(profile.consecutive_errors * 60, 1800)
             profile.cooldown_until = time.time() + cd
 
     async def mark_success(self, profile: Profile):
         """Сбросить счетчик ошибок при успехе."""
-        profile.consecutive_errors = 0
+        async with self._lock:
+            profile.in_flight = False
+            profile.consecutive_errors = 0
+            profile.last_error = ""
+            profile.last_checked_at = time.time()
+            profile.auth_state = "verified"
+
+    async def mark_failure(self, profile: Profile, reason: str | None = None):
+        """Release an in-flight lease after a non-rate-limit failure."""
+        async with self._lock:
+            profile.in_flight = False
+            if reason:
+                profile.last_error = reason.strip()[:400]
+                profile.last_failure_at = time.time()
+                profile.last_checked_at = time.time()
+
+    async def release(self, profile: Profile):
+        async with self._lock:
+            profile.in_flight = False
 
     def status(self) -> list[dict]:
         now = time.time()
-        return [
-            {
-                "name": p.name,
-                "available": p.is_available or now >= p.cooldown_until,
-                "requests_made": p.requests_made,
-                "cooldown_remaining_sec": max(0, round(p.cooldown_until - now))
-                if not p.is_available and now < p.cooldown_until else 0,
-            }
-            for p in self.profiles
-        ]
+        return self.status_locked(now)
 
 
 # ---- Глобальные пулы ----
 pools: dict[str, ProfilePool] = {}
+
+
+def _read_json_file(path: Path) -> dict | list | None:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _profile_identity_hint(provider: str, acc_dir: Path) -> str:
+    if provider == "gemini":
+        data = _read_json_file(acc_dir / "home" / ".gemini" / "google_accounts.json")
+        if isinstance(data, dict):
+            active = str(data.get("active", "")).strip()
+            if active:
+                return active
+    if provider == "claude":
+        credentials = _read_json_file(acc_dir / "home" / ".claude" / ".credentials.json")
+        if isinstance(credentials, dict):
+            oauth = credentials.get("claudeAiOauth")
+            if isinstance(oauth, dict):
+                maybe_email = str(oauth.get("email", "")).strip()
+                if maybe_email:
+                    return maybe_email
+    return ""
+
+
+def _looks_like_auth_error(message: str) -> bool:
+    lowered = message.lower()
+    return any(
+        marker in lowered
+        for marker in [
+            "auth method",
+            "authentication",
+            "not logged in",
+            "login required",
+            "credential",
+            "invalid api key",
+            "api key",
+            "unauthorized",
+        ]
+    )
+
+
+def _extract_json_payload(text: str) -> dict | None:
+    rendered = str(text or "").strip()
+    if not rendered:
+        return None
+    try:
+        data = json.loads(rendered)
+        return data if isinstance(data, dict) else None
+    except json.JSONDecodeError:
+        pass
+    start = rendered.find("{")
+    end = rendered.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    try:
+        data = json.loads(rendered[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _probe_warning(text: str) -> str:
+    rendered = str(text or "").strip()
+    lowered = rendered.lower()
+    if "mcp issues detected" in lowered:
+        return "MCP issues detected. Run /mcp list for status."
+    return ""
 
 
 def discover_profiles():
@@ -194,7 +352,7 @@ def discover_profiles():
     global pools
     pools.clear()
 
-    for provider in ["gemini", "codex", "claude"]:
+    for provider in VALID_PROVIDERS:
         provider_dir = PROFILES_DIR / provider
         if not provider_dir.exists():
             continue
@@ -219,6 +377,8 @@ def discover_profiles():
                 name=acc_dir.name,
                 provider=provider,
                 path=str(acc_dir),
+                label=get_account_label(PROFILES_DIR, provider, acc_dir.name),
+                identity=_profile_identity_hint(provider, acc_dir),
             ))
 
         if pool.profiles:
@@ -271,6 +431,98 @@ def build_env(profile: Profile) -> dict:
 def default_env() -> dict:
     """Environment по умолчанию (без подмены HOME)."""
     return os.environ.copy()
+
+
+async def probe_profile(profile: Profile, timeout: int = 25) -> None:
+    """Run a cheap auth probe for a specific account profile."""
+    env = build_env(profile)
+    profile.last_checked_at = time.time()
+    profile.identity = profile.identity or _profile_identity_hint(profile.provider, Path(profile.path))
+
+    if profile.provider == "codex":
+        cmd = ["codex", "login", "status"]
+    elif profile.provider == "claude":
+        cmd = ["claude", "auth", "status"]
+    elif profile.provider == "gemini":
+        cmd = [
+            "gemini",
+            "-p",
+            "Reply with exactly OK.",
+            "--output-format",
+            "json",
+            "--approval-mode",
+            "yolo",
+        ]
+    else:
+        profile.auth_state = "error"
+        profile.is_available = False
+        profile.last_error = f"Unsupported provider: {profile.provider}"
+        profile.last_failure_at = time.time()
+        return
+
+    try:
+        stdout, stderr, rc = await run_cli(cmd, DEFAULT_WORKDIR, timeout, env)
+    except Exception as exc:
+        profile.auth_state = "error"
+        profile.is_available = False
+        profile.last_error = str(exc)[:400]
+        profile.last_failure_at = time.time()
+        return
+
+    combined = f"{stdout}\n{stderr}".strip()
+    probe_warning = _probe_warning(combined)
+
+    if profile.provider == "codex":
+        if rc == 0 and "logged in" in combined.lower():
+            profile.auth_state = "verified"
+            profile.is_available = True
+            profile.last_error = probe_warning
+            return
+        error_message = combined or "Codex login status failed."
+    elif profile.provider == "claude":
+        try:
+            data = json.loads(stdout)
+        except json.JSONDecodeError:
+            data = None
+        if rc == 0 and isinstance(data, dict) and data.get("loggedIn") is True:
+            email = str(data.get("email", "")).strip()
+            if email:
+                profile.identity = email
+            profile.auth_state = "verified"
+            profile.is_available = True
+            profile.last_error = probe_warning
+            return
+        error_message = combined or "Claude auth status failed."
+    else:
+        data = _extract_json_payload(stdout)
+        if isinstance(data, dict) and str(data.get("response", "")).strip().upper() == "OK":
+            profile.auth_state = "verified"
+            profile.is_available = True
+            profile.last_error = probe_warning
+            return
+        if rc == 0 and isinstance(data, dict) and not data.get("error"):
+            profile.auth_state = "verified"
+            profile.is_available = True
+            profile.last_error = probe_warning
+            return
+        if isinstance(data, dict) and isinstance(data.get("error"), dict):
+            error_message = str(data["error"].get("message", "")).strip() or combined or "Gemini auth probe failed."
+        else:
+            error_message = combined or "Gemini auth probe failed."
+
+    profile.last_error = error_message[:400]
+    profile.last_failure_at = time.time()
+    profile.is_available = False
+    profile.auth_state = "error" if _looks_like_auth_error(error_message) else "unknown"
+
+
+async def probe_all_profiles() -> None:
+    for provider in VALID_PROVIDERS:
+        pool = pools.get(provider)
+        if not pool:
+            continue
+        for profile in pool.profiles:
+            await probe_profile(profile)
 
 
 def _strip_mcp_sections_from_toml(raw_toml: str) -> str:
@@ -340,12 +592,30 @@ def is_rate_limited(text: str) -> bool:
     return any(p in lower for p in RATE_LIMIT_PATTERNS)
 
 
+def should_cooldown_profile(message: str) -> bool:
+    rendered = str(message or "").strip()
+    if not rendered:
+        return False
+    return is_rate_limited(rendered) or _looks_like_auth_error(rendered)
+
+
 TOOL_SCAFFOLD_BLOCK_RE = re.compile(r"<tool_(?:call|result)>.*?</tool_(?:call|result)>", re.DOTALL | re.IGNORECASE)
+RUNTIME_WARNING_PREFIX_RE = re.compile(
+    r"^(?:MCP issues detected\. Run /mcp list for status\.\s*)+",
+    re.IGNORECASE,
+)
+
+
+def strip_runtime_warning_prefix(text: str) -> str:
+    rendered = str(text or "").strip()
+    if not rendered:
+        return ""
+    return RUNTIME_WARNING_PREFIX_RE.sub("", rendered).strip()
 
 
 def has_usable_output(output: str) -> bool:
     """Treat blank or scaffold-only CLI output as a failed agent response."""
-    normalized = str(output or "").strip()
+    normalized = strip_runtime_warning_prefix(output)
     if not normalized:
         return False
     stripped = TOOL_SCAFFOLD_BLOCK_RE.sub("", normalized).strip()
@@ -361,6 +631,38 @@ def output_error_message(provider: str, stderr: str, output: str) -> str:
     return f"{provider} returned an empty response."
 
 
+def resolve_timeout(timeout: int | None) -> int | None:
+    """Resolve per-request timeout. `0` disables the timeout, `None` uses the default."""
+    if timeout is None:
+        return DEFAULT_TIMEOUT
+
+    try:
+        resolved = int(timeout)
+    except (TypeError, ValueError):
+        return DEFAULT_TIMEOUT
+
+    if resolved <= 0:
+        return None
+
+    return resolved
+
+
+def resolve_stall_timeout(timeout: int | None) -> int | None:
+    """Resolve per-request stall timeout. `0` disables the stall detector."""
+    if timeout is None:
+        return DEFAULT_STALL_TIMEOUT
+
+    try:
+        resolved = int(timeout)
+    except (TypeError, ValueError):
+        return DEFAULT_STALL_TIMEOUT
+
+    if resolved <= 0:
+        return None
+
+    return resolved
+
+
 # =========================================================================
 #  CLI RUNNERS
 # =========================================================================
@@ -368,10 +670,12 @@ def output_error_message(provider: str, stderr: str, output: str) -> str:
 async def run_cli(
     cmd: list[str],
     workdir: str = None,
-    timeout: int = DEFAULT_TIMEOUT,
+    timeout: int | None = DEFAULT_TIMEOUT,
+    stall_timeout: int | None = None,
     env: dict = None,
 ) -> tuple[str, str, int]:
     """Запустить CLI команду, вернуть (stdout, stderr, returncode)."""
+    stall_timeout = resolve_stall_timeout(stall_timeout)
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -379,15 +683,53 @@ async def run_cli(
         cwd=workdir or DEFAULT_WORKDIR,
         env=env,
     )
+    stdout_chunks: list[bytes] = []
+    stderr_chunks: list[bytes] = []
+    last_activity_at = time.time()
+
+    async def _drain_stream(stream, sink: list[bytes]) -> None:
+        nonlocal last_activity_at
+        while True:
+            chunk = await stream.read(4096)
+            if not chunk:
+                return
+            sink.append(chunk)
+            last_activity_at = time.time()
+
+    stdout_task = asyncio.create_task(_drain_stream(proc.stdout, stdout_chunks))
+    stderr_task = asyncio.create_task(_drain_stream(proc.stderr, stderr_chunks))
+    wait_task = asyncio.create_task(proc.wait())
+
+    async def _terminate_process() -> None:
+        if proc.returncode is None:
+            proc.kill()
+        with contextlib.suppress(ProcessLookupError):
+            await proc.wait()
+
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
-        raise HTTPException(408, f"Timeout after {timeout}s")
+        started_at = time.time()
+        while True:
+            if wait_task.done():
+                break
+
+            now = time.time()
+            if timeout is not None and now - started_at >= timeout:
+                await _terminate_process()
+                raise HTTPException(408, f"Timeout after {timeout}s")
+
+            if stall_timeout is not None and now - last_activity_at >= stall_timeout:
+                await _terminate_process()
+                raise HTTPException(408, f"CLI stalled after {stall_timeout}s without stdout/stderr activity")
+
+            await asyncio.sleep(0.25)
+    finally:
+        await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+        if not wait_task.done():
+            await asyncio.gather(wait_task, return_exceptions=True)
 
     return (
-        stdout.decode("utf-8", errors="replace"),
-        stderr.decode("utf-8", errors="replace"),
+        b"".join(stdout_chunks).decode("utf-8", errors="replace"),
+        b"".join(stderr_chunks).decode("utf-8", errors="replace"),
         proc.returncode,
     )
 
@@ -781,7 +1123,8 @@ def build_cmd(
         if model:
             cmd.extend(["--model", model])
         if allowed_mcp_servers:
-            cmd.extend(["--allowed-mcp-server-names", *allowed_mcp_servers])
+            for server_name in allowed_mcp_servers:
+                cmd.extend(["--allowed-mcp-server-names", server_name])
         for workspace_path in workspace_paths:
             cmd.extend(["--include-directories", workspace_path])
         return cmd
@@ -790,7 +1133,7 @@ def build_cmd(
         cmd = [CODEX_BIN, "exec", "--skip-git-repo-check", prompt]
         if model:
             cmd.extend(["--model", model])
-        if selected_tools and "web_search" in selected_tools:
+        if selected_tools and "web_search" in selected_tools and codex_supports_search_flag():
             cmd.append("--search")
         for workspace_path in workspace_paths:
             cmd.extend(["--add-dir", workspace_path])
@@ -804,14 +1147,28 @@ def parse_output(provider: str, stdout: str) -> str:
     if provider == "claude":
         try:
             data = json.loads(stdout)
-            return data.get("result", stdout)
+            return strip_runtime_warning_prefix(data.get("result", stdout))
         except json.JSONDecodeError:
-            return stdout.strip()
+            return strip_runtime_warning_prefix(stdout)
 
     # codex exec: clean response goes to stdout, metadata to stderr
     # gemini: plain text to stdout
 
-    return stdout.strip()
+    return strip_runtime_warning_prefix(stdout)
+
+
+@functools.lru_cache(maxsize=1)
+def codex_supports_search_flag() -> bool:
+    try:
+        result = subprocess.run(
+            [CODEX_BIN, "exec", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return False
+    return "--search" in f"{result.stdout}\n{result.stderr}"
 
 
 # =========================================================================
@@ -824,7 +1181,7 @@ async def call_agent(
     workdir: str = None,
     model: str = None,
     system_prompt: str = None,
-    timeout: int = DEFAULT_TIMEOUT,
+    timeout: int | None = DEFAULT_TIMEOUT,
     mcp_tools: list[str] = None,
     workspace_paths: list[str] | None = None,
     session_id: str | None = None,
@@ -840,6 +1197,8 @@ async def call_agent(
     """
     if system_prompt:
         prompt = f"[System]: {system_prompt}\n\n{prompt}"
+
+    timeout = resolve_timeout(timeout)
 
     selected_tools = [normalize_tool_id(tool) for tool in (mcp_tools or []) if str(tool).strip()]
     native_tools = [tool for tool in selected_tools if capability_for_tool(provider, tool) == "native"]
@@ -913,11 +1272,30 @@ async def call_agent(
         max_attempts = len(pool.profiles)
 
         for attempt in range(max_attempts):
-            profile = await pool.get_next()
+            profile = await pool.get_next(wait_timeout=PROFILE_ACQUIRE_WAIT_SECONDS)
 
             if profile is None:
                 statuses = pool.status()
                 soonest = min((s["cooldown_remaining_sec"] for s in statuses), default=0)
+                busy = sum(1 for status in statuses if status["in_flight"])
+                cooling = sum(1 for status in statuses if status["cooldown_remaining_sec"] > 0)
+                auth_failed = sum(1 for status in statuses if status["auth_state"] == "error")
+                if busy and busy == len(statuses):
+                    error = (
+                        f"All {len(pool.profiles)} {provider} profiles are busy with other requests. "
+                        f"Waited {PROFILE_ACQUIRE_WAIT_SECONDS:.0f}s for a free lease."
+                    )
+                elif cooling:
+                    error = (
+                        f"All {len(pool.profiles)} {provider} profiles are cooling down. "
+                        f"Soonest recovery: {soonest}s"
+                    )
+                elif auth_failed:
+                    error = (
+                        f"All {len(pool.profiles)} {provider} profiles are unavailable due to auth errors."
+                    )
+                else:
+                    error = f"No {provider} profile became available within {PROFILE_ACQUIRE_WAIT_SECONDS:.0f}s."
                 return {
                     "agent": provider,
                     "profile_used": None,
@@ -925,8 +1303,7 @@ async def call_agent(
                     "elapsed_sec": round(time.time() - t0, 2),
                     "success": False,
                     "usable_output": False,
-                    "error": f"All {len(pool.profiles)} accounts rate-limited. "
-                             f"Soonest recovery: {soonest}s",
+                    "error": error,
                     "retries": retries,
                     "pool_status": statuses,
                 }
@@ -950,12 +1327,16 @@ async def call_agent(
                     + (["configured-tools"] if bridge_payload_path and provider in {"gemini", "codex"} else [])
                 )
             )
-            await ensure_registered_mcp_servers(provider, env, bootstrap_servers)
 
             try:
+                await ensure_registered_mcp_servers(provider, env, bootstrap_servers)
                 stdout, stderr, rc = await run_cli(cmd, workdir, timeout, env)
             except Exception as e:
-                await pool.mark_rate_limited(profile)
+                error_text = str(e)
+                if should_cooldown_profile(error_text):
+                    await pool.mark_rate_limited(profile, error_text)
+                else:
+                    await pool.mark_failure(profile, error_text)
                 retries += 1
                 print(f"[ROTATE] {provider}/{profile.name} error: {e}")
                 continue
@@ -963,13 +1344,11 @@ async def call_agent(
             combined = stdout + " " + stderr
 
             if is_rate_limited(combined):
-                await pool.mark_rate_limited(profile)
+                await pool.mark_rate_limited(profile, combined.strip() or "Rate limited")
                 retries += 1
                 print(f"[ROTATE] {provider}/{profile.name} rate-limited, switching...")
                 continue
 
-            # Успех
-            await pool.mark_success(profile)
             output = parse_output(provider, stdout)
             usable_output = has_usable_output(output)
 
@@ -977,14 +1356,40 @@ async def call_agent(
             if not output and stdout.strip() == "" and stderr.strip():
                 print(f"[DEBUG] {provider}/{profile.name} stdout empty, stderr: {stderr[:300]}")
 
+            if rc != 0 or not usable_output:
+                error_message = output_error_message(provider, stderr, output)
+                if attempt < max_attempts - 1:
+                    if should_cooldown_profile(error_message):
+                        await pool.mark_rate_limited(profile, error_message)
+                    else:
+                        await pool.mark_failure(profile, error_message)
+                    retries += 1
+                    print(f"[ROTATE] {provider}/{profile.name} unusable response, switching... {error_message[:180]}")
+                    continue
+                await pool.mark_failure(profile, error_message)
+                profile.last_error = error_message
+                profile.last_failure_at = time.time()
+                return {
+                    "agent": provider,
+                    "profile_used": profile.name,
+                    "output": output,
+                    "elapsed_sec": round(time.time() - t0, 2),
+                    "success": False,
+                    "usable_output": usable_output,
+                    "error": error_message,
+                    "retries": retries,
+                }
+
+            await pool.mark_success(profile)
+
             return {
                 "agent": provider,
                 "profile_used": profile.name,
                 "output": output,
                 "elapsed_sec": round(time.time() - t0, 2),
-                "success": rc == 0 and usable_output,
-                "usable_output": usable_output,
-                "error": output_error_message(provider, stderr, output) if rc != 0 or not usable_output else None,
+                "success": True,
+                "usable_output": True,
+                "error": None,
                 "retries": retries,
             }
 
@@ -1085,26 +1490,150 @@ class ConsensusRequest(BaseModel):
     workdir: Optional[str] = None
 
 
+class AccountLabelRequest(BaseModel):
+    label: str = ""
+
+
+def _provider_pool(provider: str) -> ProfilePool:
+    if provider not in VALID_PROVIDERS:
+        raise HTTPException(404, f"Unknown provider: {provider}")
+    return pools.get(provider, ProfilePool(provider=provider))
+
+
+def _find_profile(provider: str, account_name: str) -> Profile:
+    pool = _provider_pool(provider)
+    for profile in pool.profiles:
+        if profile.name == account_name:
+            return profile
+    raise HTTPException(404, f"Unknown account '{account_name}' for provider '{provider}'")
+
+
+def _accounts_payload(rediscover: bool = True) -> dict[str, list[dict]]:
+    if rediscover or not pools:
+        discover_profiles()
+    return {
+        provider: _provider_pool(provider).status()
+        for provider in VALID_PROVIDERS
+    }
+
+
+# ---- Endpoints: Accounts ----
+
+@app.get("/accounts")
+async def ep_accounts():
+    return {"accounts": _accounts_payload()}
+
+
+@app.get("/accounts/health")
+async def ep_accounts_health():
+    accounts = _accounts_payload(rediscover=False)
+    total = sum(len(provider_accounts) for provider_accounts in accounts.values())
+    available = sum(
+        1
+        for provider_accounts in accounts.values()
+        for account in provider_accounts
+        if account["available"]
+    )
+    return {
+        "total": total,
+        "available": available,
+        "on_cooldown": total - available,
+    }
+
+
+@app.post("/accounts/reload")
+async def ep_accounts_reload():
+    discover_profiles()
+    await probe_all_profiles()
+    return {"status": "ok", "accounts": _accounts_payload(rediscover=False)}
+
+
+@app.post("/accounts/{provider}/open-login")
+async def ep_accounts_open_login(provider: str):
+    if provider not in VALID_PROVIDERS:
+        raise HTTPException(404, f"Unknown provider: {provider}")
+    command = open_login_terminal(provider)
+    return {
+        "status": "ok",
+        "provider": provider,
+        "command": command,
+        "message": "Login flow opened in Terminal. Complete auth there, then import or reauthorize from this page.",
+    }
+
+
+@app.post("/accounts/{provider}/import")
+async def ep_accounts_import(provider: str):
+    if provider not in VALID_PROVIDERS:
+        raise HTTPException(404, f"Unknown provider: {provider}")
+    try:
+        account_name = import_current_session(provider, PROFILES_DIR)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    discover_profiles()
+    try:
+        await probe_profile(_find_profile(provider, account_name))
+    except HTTPException:
+        pass
+    payload = _accounts_payload(rediscover=False)
+    return {
+        "status": "ok",
+        "provider": provider,
+        "account_name": account_name,
+        "accounts": payload[provider],
+        "message": f"Imported current {provider} session as {account_name}.",
+    }
+
+
+@app.post("/accounts/{provider}/{account_name}/reauthorize")
+async def ep_accounts_reauthorize(provider: str, account_name: str):
+    profile = _find_profile(provider, account_name)
+    command = open_login_terminal_for_profile(provider, Path(profile.path), real_home=Path(REAL_HOME))
+    payload = _accounts_payload(rediscover=False)
+    return {
+        "status": "ok",
+        "provider": provider,
+        "account_name": account_name,
+        "command": command,
+        "accounts": payload[provider],
+        "message": f"Opened Terminal for {provider}/{account_name}. Complete login there, then press Refresh to re-check this account.",
+    }
+
+
+@app.patch("/accounts/{provider}/{account_name}")
+async def ep_accounts_update(provider: str, account_name: str, req: AccountLabelRequest):
+    _find_profile(provider, account_name)
+    label = set_account_label(PROFILES_DIR, provider, account_name, req.label)
+    payload = _accounts_payload()
+    return {
+        "status": "ok",
+        "provider": provider,
+        "account_name": account_name,
+        "label": label,
+        "accounts": payload[provider],
+        "message": f"Updated label for {provider}/{account_name}.",
+    }
+
+
 # ---- Endpoints: Individual agents ----
 
 @app.post("/claude")
 async def ep_claude(req: AgentRequest):
     return await call_agent("claude", req.prompt, req.workdir, req.model,
-                            req.system_prompt, req.timeout or DEFAULT_TIMEOUT,
+                            req.system_prompt, req.timeout,
                             mcp_tools=req.mcp_tools, workspace_paths=req.workspace_paths,
                             session_id=req.session_id, agent_role=req.agent_role)
 
 @app.post("/gemini")
 async def ep_gemini(req: AgentRequest):
     return await call_agent("gemini", req.prompt, req.workdir, req.model,
-                            req.system_prompt, req.timeout or DEFAULT_TIMEOUT,
+                            req.system_prompt, req.timeout,
                             mcp_tools=req.mcp_tools, workspace_paths=req.workspace_paths,
                             session_id=req.session_id, agent_role=req.agent_role)
 
 @app.post("/codex")
 async def ep_codex(req: AgentRequest):
     return await call_agent("codex", req.prompt, req.workdir, req.model,
-                            req.system_prompt, req.timeout or DEFAULT_TIMEOUT,
+                            req.system_prompt, req.timeout,
                             mcp_tools=req.mcp_tools, workspace_paths=req.workspace_paths,
                             session_id=req.session_id, agent_role=req.agent_role)
 
@@ -1113,7 +1642,7 @@ async def ep_ask(req: AgentRequest):
     if not req.agent:
         raise HTTPException(400, "Specify 'agent': 'claude' | 'gemini' | 'codex'")
     return await call_agent(req.agent, req.prompt, req.workdir, req.model,
-                            req.system_prompt, req.timeout or DEFAULT_TIMEOUT,
+                            req.system_prompt, req.timeout,
                             mcp_tools=req.mcp_tools, workspace_paths=req.workspace_paths,
                             session_id=req.session_id, agent_role=req.agent_role)
 
@@ -1125,7 +1654,7 @@ async def ep_ask_all(req: MultiRequest):
     t0 = time.time()
     tasks = [
         call_agent(agent, req.prompt, req.workdir, system_prompt=req.system_prompt,
-                   timeout=req.timeout or DEFAULT_TIMEOUT)
+                   timeout=req.timeout)
         for agent in req.agents
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)

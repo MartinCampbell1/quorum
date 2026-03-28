@@ -1,13 +1,19 @@
 """Debate mode: proponent vs opponent, judge decides."""
 
-import json
 import operator
+import re
 from typing import Annotated
 
 from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
 
-from orchestrator.modes.base import apply_user_instructions, call_agent_cfg, make_message, require_agent_response
+from orchestrator.modes.base import (
+    apply_user_instructions,
+    build_workspace_context_prompt,
+    call_agent_cfg,
+    make_message,
+    require_agent_response,
+)
 
 
 class DebateState(TypedDict):
@@ -19,7 +25,13 @@ class DebateState(TypedDict):
     current_round: int
     max_rounds: int
     verdict: str
+    judge_action: str
     result: str
+
+
+FINAL_VERDICT_MARKER = "FINAL_VERDICT"
+CONTINUE_MARKER = "NEED_MORE_ROUNDS"
+CONTROL_MARKER_RE = re.compile(r"\b(?:FINAL_VERDICT|NEED_MORE_ROUNDS)\b[:\-\s]*", re.IGNORECASE)
 
 
 def proponent_argues(state: DebateState) -> dict:
@@ -32,6 +44,7 @@ def proponent_argues(state: DebateState) -> dict:
             for r in state["rounds"]
         )
     prompt = (
+        f"{build_workspace_context_prompt(pro)}"
         f"You are arguing FOR the following position. Round {rnd + 1}.\n\n"
         f"TOPIC: {state['task']}\n{history}\n\n"
         f"Make your strongest argument. Be specific and evidence-based. "
@@ -60,6 +73,7 @@ def opponent_argues(state: DebateState) -> dict:
             for r in state["rounds"][:-1]
         )
     prompt = (
+        f"{build_workspace_context_prompt(opp)}"
         f"You are arguing AGAINST the following position. Round {rnd + 1}.\n\n"
         f"TOPIC: {state['task']}\n{history}\n\n"
         f"Proponent's argument this round:\n{pro_arg}\n\n"
@@ -81,30 +95,59 @@ def opponent_argues(state: DebateState) -> dict:
 
 def judge_decides(state: DebateState) -> dict:
     judge = state["agents"][2]
+    current_round = int(state["current_round"] or 0)
+    max_rounds = max(int(state["max_rounds"] or 1), 1)
+    final_round = current_round >= max_rounds
     debate_text = "\n\n".join(
         f"=== Round {r['round']} ===\nPRO: {r['pro_arg']}\nCON: {r['con_arg']}"
         for r in state["rounds"]
     )
+    if final_round:
+        round_instruction = (
+            f"This is round {current_round} of {max_rounds}, which is the final allowed round.\n"
+            f"Return {FINAL_VERDICT_MARKER} and then provide:\n"
+            f"1. Your verdict (which side won and why)\n"
+            f"2. The strongest argument from each side\n"
+            f"3. Your final recommendation"
+        )
+    else:
+        round_instruction = (
+            f"This is round {current_round} of {max_rounds}.\n"
+            f"By default, the debate should continue until the configured round limit.\n"
+            f"If one side has already clearly won and more rounds are unnecessary, start your answer with {FINAL_VERDICT_MARKER}.\n"
+            f"Otherwise start your answer with {CONTINUE_MARKER} and give a short interim assessment plus one concrete challenge for each side to address next round."
+        )
     prompt = (
+        f"{build_workspace_context_prompt(judge)}"
         f"You are the judge. Evaluate this debate.\n\n"
         f"TOPIC: {state['task']}\n\nDEBATE:\n{debate_text}\n\n"
-        f"Provide:\n1. Your verdict (which side won and why)\n"
-        f"2. The strongest argument from each side\n3. Your final recommendation\n\n"
-        f"If you need one more round of debate, say NEED_MORE_ROUNDS."
+        f"{round_instruction}"
     )
     response = require_agent_response(
         judge,
         call_agent_cfg(judge, apply_user_instructions(state, prompt)),
         "Debate judge step failed",
     )
+    cleaned_response = CONTROL_MARKER_RE.sub("", response).strip() or response.strip()
+    if final_round:
+        judge_action = "final"
+    elif FINAL_VERDICT_MARKER in response.upper():
+        judge_action = "final"
+    elif CONTINUE_MARKER in response.upper():
+        judge_action = "continue"
+    else:
+        # Default to using the configured round budget unless the judge explicitly finalizes early.
+        judge_action = "continue"
     return {
-        "verdict": response, "result": response,
-        "messages": [make_message(judge["role"], response, "verdict")],
+        "judge_action": judge_action,
+        "verdict": cleaned_response,
+        "result": cleaned_response,
+        "messages": [make_message(judge["role"], cleaned_response, "verdict")],
     }
 
 
 def route_after_judge(state: DebateState) -> str:
-    if "NEED_MORE_ROUNDS" in state["verdict"] and state["current_round"] < state["max_rounds"]:
+    if state.get("judge_action") == "continue" and state["current_round"] < state["max_rounds"]:
         return "proponent_argues"
     return END
 

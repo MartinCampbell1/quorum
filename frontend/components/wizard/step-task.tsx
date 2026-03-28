@@ -4,15 +4,16 @@ import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { FolderTree, Rocket, Wrench } from "lucide-react";
-import { MODE_LABELS } from "@/lib/constants";
+import { formatAgentRole, formatScenarioLabel, MODE_LABELS } from "@/lib/constants";
 import { getWorkspacePresets } from "@/lib/api";
 import type { AgentConfig, WorkspacePreset } from "@/lib/types";
 import { Stepper } from "./stepper";
 
 interface StepTaskProps {
   mode: string;
+  scenarioId?: string | null;
   agents: AgentConfig[];
-  onLaunch: (task: string, config: Record<string, number>) => void;
+  onLaunch: (task: string, config: Record<string, unknown>) => void;
   onBack: () => void;
   isLaunching: boolean;
   taskPlaceholder?: string;
@@ -21,10 +22,12 @@ interface StepTaskProps {
   workspacePaths: string[];
   onWorkspacePresetIdsChange: (ids: string[]) => void;
   onWorkspacePathsChange: (paths: string[]) => void;
+  defaultConfig?: Record<string, number>;
 }
 
 export function StepTask({
   mode,
+  scenarioId,
   agents,
   onLaunch,
   onBack,
@@ -35,15 +38,18 @@ export function StepTask({
   workspacePaths,
   onWorkspacePresetIdsChange,
   onWorkspacePathsChange,
+  defaultConfig,
 }: StepTaskProps) {
   const [task, setTask] = useState("");
-  const [maxRounds, setMaxRounds] = useState(3);
+  const [maxRounds, setMaxRounds] = useState(defaultConfig?.max_rounds ?? defaultConfig?.max_iterations ?? 3);
   const [unlimited, setUnlimited] = useState(false);
+  const [executionMode, setExecutionMode] = useState<"sequential" | "parallel">("sequential");
   const [workspacePresets, setWorkspacePresets] = useState<WorkspacePreset[]>([]);
   const [extraPathDraft, setExtraPathDraft] = useState("");
 
-  const needsRounds = ["debate", "democracy", "board"].includes(mode);
+  const needsRounds = ["debate", "democracy", "board", "tournament"].includes(mode);
   const needsIterations = ["dictator", "creator_critic"].includes(mode);
+  const isJudgeVerdictMode = mode === "debate" || mode === "tournament";
   const selectedPresetNames = useMemo(
     () =>
       workspacePresets
@@ -103,11 +109,66 @@ export function StepTask({
             autoFocus
           />
 
+          {mode === "tournament" && (
+            <div className="mt-4 rounded-xl border border-border/60 bg-white p-4 text-[12px] leading-6 text-muted-foreground/80 dark:border-slate-800 dark:bg-slate-950/70">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-foreground/70">
+                Подсказка для турнира
+              </div>
+              <div className="mt-2">
+                Лучше просить турнир не “оценить по баллам”, а выбрать, какой проект сильнее в парных матчах.
+              </div>
+              <div className="mt-2">
+                Хороший фокус задачи: скорость до первых денег, надёжность дохода, сложность запуска для соло-фаундера, масштабируемость и реальный AI-edge.
+              </div>
+              <div className="mt-3 rounded-lg border border-border/60 bg-[#fbfcff] px-3 py-3 font-mono text-[11px] leading-5 text-[#273142] dark:border-slate-800 dark:bg-slate-900/80 dark:text-slate-300">
+                Выберите, какой проект мне стоит развивать первым как соло-фаундеру с сильным AI-стеком, чтобы быстрее выйти к стабильным $2K+/мес. В каждом матче пусть участники защищают свой проект и опровергают оппонента. В финале дайте победителя, второе место, что заморозить и почему.
+              </div>
+            </div>
+          )}
+
+          {mode === "tournament" && (
+            <div className="mt-6 rounded-xl border border-border/60 bg-white p-4 dark:border-slate-800 dark:bg-slate-950/70">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="text-[13px] font-medium text-foreground">
+                    Режим исполнения турнирной стадии
+                  </div>
+                  <div className="mt-1 text-[11px] leading-relaxed text-muted-foreground/70">
+                    Sequential проще для checkpoint/resume. Parallel быстрее по wall-clock времени, но сложнее по runtime-координации.
+                  </div>
+                </div>
+                <div className="inline-flex rounded-full border border-border bg-[#f7f8fc] p-1 dark:border-slate-800 dark:bg-slate-900/80">
+                  {([
+                    { value: "sequential", label: "Sequential" },
+                    { value: "parallel", label: "Parallel" },
+                  ] as const).map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setExecutionMode(option.value)}
+                      className={`rounded-full px-3 py-1.5 text-[11px] font-medium transition-colors ${
+                        executionMode === option.value
+                          ? "bg-black text-white dark:bg-slate-100 dark:text-slate-950"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
           {(needsRounds || needsIterations) && (
             <div className="mt-6 rounded-xl border border-border/60 bg-white p-4 dark:border-slate-800 dark:bg-slate-950/70">
               <div className="flex items-center justify-between mb-3">
                 <label className="text-[13px] font-medium text-foreground">
-                  {needsRounds ? "Лимит раундов" : "Лимит итераций"}
+                  {mode === "tournament"
+                    ? "Раундов в каждом матче"
+                    : needsRounds
+                      ? "Лимит раундов"
+                      : "Лимит итераций"}
                 </label>
                 <button
                   onClick={() => setUnlimited(!unlimited)}
@@ -137,9 +198,20 @@ export function StepTask({
               )}
               {unlimited && (
                 <p className="text-[11px] text-muted-foreground/60">
-                  {needsRounds
-                    ? "Агенты будут спорить пока не придут к консенсусу"
-                    : "Итерации продолжатся пока критик не одобрит результат"}
+                  {isJudgeVerdictMode
+                    ? mode === "tournament"
+                      ? "Каждый матч турнира продолжится до явного финального вердикта судьи. Внутри это всё ещё ограничено защитным верхним порогом."
+                      : "Дебаты продолжатся до явного финального вердикта судьи. Внутри это всё ещё ограничено защитным верхним порогом."
+                    : needsRounds
+                      ? "Раунды будут повторяться до достижения результата или защитного лимита."
+                      : "Итерации продолжатся пока критик не одобрит результат"}
+                </p>
+              )}
+              {!unlimited && isJudgeVerdictMode && (
+                <p className="mt-3 text-[11px] text-muted-foreground/60">
+                  {mode === "tournament"
+                    ? `При лимите в ${maxRounds} каждый матч по умолчанию использует весь бюджет раундов. Судья сможет завершить конкретный матч раньше только явным финальным вердиктом.`
+                    : `При лимите в ${maxRounds} система по умолчанию использует весь бюджет раундов. Судья сможет завершить спор раньше только явным финальным вердиктом.`}
                 </p>
               )}
             </div>
@@ -231,8 +303,10 @@ export function StepTask({
             <div className="flex items-center gap-2 text-[13px] mb-3">
               <span className="text-muted-foreground">Режим</span>
               <Badge variant="secondary" className="font-medium">{MODE_LABELS[mode]}</Badge>
-              {scenarioLabel && (
-                <Badge variant="outline" className="font-medium">{scenarioLabel}</Badge>
+              {(scenarioLabel || scenarioId) && (
+                <Badge variant="outline" className="font-medium">
+                  {scenarioLabel ?? formatScenarioLabel(scenarioId ?? "")}
+                </Badge>
               )}
             </div>
             <div className="flex flex-col gap-2 text-[13px]">
@@ -240,8 +314,13 @@ export function StepTask({
               {agents.map((a) => (
                 <div key={a.role} className="flex items-center gap-2 pl-2">
                   <Badge variant="outline" className="font-mono text-[10px] font-normal">
-                    {a.role}
+                    {formatAgentRole(a.role, { mode, scenarioId })}
                   </Badge>
+                  {(a.workspace_paths?.length ?? 0) > 0 && (
+                    <span className="text-[10px] text-muted-foreground/70">
+                      {(a.workspace_paths ?? []).map((path) => path.split("/").filter(Boolean).pop() || path).join(", ")}
+                    </span>
+                  )}
                   {(a.tools?.length ?? 0) > 0 && (
                     <span className="flex items-center gap-1 text-[10px] text-muted-foreground/60">
                       <Wrench size={9} />
@@ -278,9 +357,10 @@ export function StepTask({
           </Button>
           <Button
             onClick={() => {
-              const config: Record<string, number> = {};
+              const config: Record<string, unknown> = {};
               if (needsRounds) config.max_rounds = unlimited ? 99 : maxRounds;
               if (needsIterations) config.max_iterations = unlimited ? 99 : maxRounds;
+              if (mode === "tournament") config.execution_mode = executionMode;
               onLaunch(task, config);
             }}
             disabled={!task.trim() || isLaunching}

@@ -1,5 +1,5 @@
 import { Badge } from "@/components/ui/badge";
-import { AGENT_COLORS } from "@/lib/constants";
+import { AGENT_COLORS, formatAgentRole } from "@/lib/constants";
 import type { Message as MessageType } from "@/lib/types";
 
 interface MessageProps {
@@ -20,6 +20,7 @@ function resolveProvider(agentId: string): string {
 export function Message({ message }: MessageProps) {
   const provider = resolveProvider(message.agent_id);
   const color = AGENT_COLORS[provider] ?? AGENT_COLORS.system;
+  const displayName = ["user", "system"].includes(message.agent_id) ? message.agent_id : formatAgentRole(message.agent_id);
 
   return (
     <div
@@ -34,7 +35,7 @@ export function Message({ message }: MessageProps) {
           />
         </div>
         <span className="font-mono text-[11px] font-semibold" style={{ color }}>
-          {message.agent_id}
+          {displayName}
         </span>
         {message.phase && (
           <Badge variant="outline" className="border-slate-200/80 bg-white/80 px-2 py-0 text-[9px] font-normal text-muted-foreground dark:border-slate-800 dark:bg-slate-900/60">

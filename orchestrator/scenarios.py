@@ -100,6 +100,24 @@ SCENARIOS = {
             AgentConfig(role="risk_critic", provider="codex", tools=["code_exec", "web_search", "shell_exec"]),
         ],
     },
+    "project_tournament": {
+        "id": "project_tournament",
+        "name": "Project Tournament",
+        "mode": "tournament",
+        "headline": "Несколько проектов проходят через head-to-head дебаты по турнирной сетке, а судья выбирает чемпиона.",
+        "description": "Подходит для отбора лучшей идеи или репозитория среди нескольких локальных проектов через серию очных матчей с аргументами и вердиктом судьи.",
+        "recommended_for": "Сравнение нескольких pet-проектов, репозиториев, MVP-идей или направлений развития по одной задаче.",
+        "task_placeholder": "Например: выберите, какой проект соло-фаундеру стоит развивать первым, чтобы быстрее выйти к стабильным $2K+/мес, а в финале назовите победителя, второе место и что заморозить.",
+        "tags": ["tournament", "projects", "comparison"],
+        "default_config": {"max_rounds": 5},
+        "default_agents": [
+            AgentConfig(role="contestant_1", provider="claude", tools=["web_search", "code_exec", "shell_exec"]),
+            AgentConfig(role="contestant_2", provider="codex", tools=["code_exec", "shell_exec", "web_search"]),
+            AgentConfig(role="contestant_3", provider="gemini", tools=["web_search", "http_request", "perplexity"]),
+            AgentConfig(role="contestant_4", provider="claude", tools=["web_search", "perplexity"]),
+            AgentConfig(role="judge", provider="gemini", tools=["web_search", "perplexity", "http_request"]),
+        ],
+    },
 }
 
 

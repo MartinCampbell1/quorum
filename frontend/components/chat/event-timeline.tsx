@@ -4,17 +4,27 @@ import { useMemo, useState } from "react";
 import { AlertTriangle, ChevronDown, ChevronUp } from "lucide-react";
 
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { formatAgentDisplay, formatWorkspaceLabel, type RoleDisplayContext } from "@/lib/constants";
 import { useLocale } from "@/lib/locale";
-import type { Message, SessionEvent } from "@/lib/types";
+import type { AgentConfig, Message, Session, SessionEvent } from "@/lib/types";
+
+import { RichText, sanitizeAgentText } from "./rich-text";
 
 interface EventTimelineProps {
   events: SessionEvent[];
+  mode?: string;
+  scenarioId?: string | null;
+  agents?: AgentConfig[];
 }
 
 interface ConversationPanelProps {
   sessionId: string;
   messages?: Message[];
   events?: SessionEvent[];
+  mode?: string;
+  scenarioId?: string | null;
+  agents?: AgentConfig[];
+  status?: Session["status"];
 }
 
 interface TimelineItem {
@@ -36,54 +46,98 @@ function formatTime(timestamp: number): string {
 }
 
 function compactDetail(text: string, limit: number = 180): string {
-  const normalized = text.replace(/\s+/g, " ").trim();
+  const normalized = sanitizeAgentText(text).replace(/\s+/g, " ").trim();
   if (normalized.length <= limit) {
     return normalized;
   }
   return `${normalized.slice(0, limit - 1)}…`;
 }
 
+function projectLabelForRole(role: string, agents: AgentConfig[] = []): string | null {
+  const agent = agents.find((candidate) => candidate.role === role);
+  return formatWorkspaceLabel(agent?.workspace_paths);
+}
+
+function displayActor(actor: string, context?: RoleDisplayContext, agents: AgentConfig[] = []): string {
+  if (!actor || actor === "system" || actor === "user" || actor === "agent") {
+    return actor || "agent";
+  }
+  return formatAgentDisplay(actor, {
+    ...context,
+    projectLabel: projectLabelForRole(actor, agents),
+  });
+}
+
+function displayEventTitle(
+  title: string,
+  actor?: string,
+  context?: RoleDisplayContext,
+  agents: AgentConfig[] = []
+): string {
+  const normalized = String(title ?? "").trim();
+  if (!normalized) return "";
+  if (actor && normalized === actor) {
+    return displayActor(actor, context, agents);
+  }
+  if (/^[a-z][a-z0-9_]*$/i.test(normalized) && normalized !== "system" && normalized !== "user") {
+    return formatAgentDisplay(normalized, {
+      ...context,
+      projectLabel: projectLabelForRole(normalized, agents),
+    });
+  }
+  return normalized;
+}
+
 function buildExecutionItems(
   events: SessionEvent[],
-  copy: ReturnType<typeof useLocale>["copy"]
+  copy: ReturnType<typeof useLocale>["copy"],
+  context?: RoleDisplayContext,
+  agents: AgentConfig[] = []
 ): TimelineItem[] {
   return events
-    .map((event) => {
+    .reduce<TimelineItem[]>((items, event) => {
+      if (event.type === "agent_message") {
+        return items;
+      }
+
       if (event.type === "tool_call_started") {
-        return {
+        items.push({
           id: `event-${event.id}`,
           timestamp: event.timestamp,
           eyebrow: copy.monitor.toolCall,
-          actor: event.agent_id ?? "agent",
+          actor: displayActor(event.agent_id ?? "agent", context, agents),
           title: event.tool_name ?? event.title,
           detail: compactDetail(event.detail || event.tool_name || event.title),
           meta: event.phase || undefined,
-        };
+        });
+        return items;
       }
 
       if (event.type === "tool_call_finished") {
         const elapsed = typeof event.elapsed_sec === "number" ? `${event.elapsed_sec}s` : "";
-        return {
+        items.push({
           id: `event-${event.id}`,
           timestamp: event.timestamp,
           eyebrow: copy.monitor.toolResult,
-          actor: event.agent_id ?? "agent",
+          actor: displayActor(event.agent_id ?? "agent", context, agents),
           title: event.tool_name ?? event.title,
           detail: compactDetail(event.detail || event.title),
           meta: [elapsed, event.success === false ? copy.monitor.failed : ""].filter(Boolean).join(" · ") || undefined,
-        };
+        });
+        return items;
       }
 
-      return {
+      items.push({
         id: `event-${event.id}`,
         timestamp: event.timestamp,
         eyebrow: copy.monitor.systemEvent,
-        actor: event.agent_id ?? "system",
-        title: event.title,
+        actor: displayActor(event.agent_id ?? "system", context, agents),
+        title: displayEventTitle(event.title, event.agent_id, context, agents),
         detail: compactDetail(event.detail || event.checkpoint_id || event.phase || ""),
         meta: [event.phase, event.checkpoint_id].filter(Boolean).join(" · ") || undefined,
-      };
-    })
+      });
+      return items;
+    }, [])
     .sort((a, b) => b.timestamp - a.timestamp)
     .slice(0, 28);
 }
@@ -109,17 +163,28 @@ export function ConversationPanel({
   sessionId,
   messages = [],
   events = [],
+  mode,
+  scenarioId,
+  agents = [],
+  status,
 }: ConversationPanelProps) {
   const { copy } = useLocale();
-  const [expanded, setExpanded] = useState(false);
+  const shouldAutoExpand = status === "completed" || status === "failed" || messages.length <= 6;
+  const [manualExpanded, setManualExpanded] = useState<boolean | null>(null);
+  const expanded = manualExpanded ?? shouldAutoExpand;
+  const roleContext = useMemo<RoleDisplayContext>(() => ({ mode, scenarioId }), [mode, scenarioId]);
   void sessionId;
 
   const visibleMessages = useMemo(
-    () => messages.filter((message) => message.agent_id && message.content.trim()),
+    () =>
+      messages
+        .map((message) => ({ ...message, content: sanitizeAgentText(message.content) }))
+        .filter((message) => message.agent_id && message.content.trim()),
     [messages]
   );
   const failure = useMemo(() => latestFailure(events), [events]);
-  const hiddenCount = Math.max(0, visibleMessages.length - 4);
+  const canToggleHistory = visibleMessages.length > 4;
+  const hiddenCount = expanded ? 0 : Math.max(0, visibleMessages.length - 4);
   const renderedMessages = expanded ? visibleMessages : visibleMessages.slice(-4);
 
   return (
@@ -128,10 +193,10 @@ export function ConversationPanel({
         <h2 className="text-[19px] font-medium tracking-[-0.03em] text-[#111111] dark:text-slate-100">
           {copy.monitor.conversation}
         </h2>
-        {hiddenCount > 0 ? (
+        {canToggleHistory ? (
           <button
             type="button"
-            onClick={() => setExpanded((value) => !value)}
+            onClick={() => setManualExpanded((value) => !(value ?? shouldAutoExpand))}
             className="inline-flex items-center gap-1 rounded-full border border-[#d6dbe6] bg-white px-3 py-1 text-[11px] uppercase tracking-[0.14em] text-[#6b7280] dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400"
           >
             {expanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
@@ -140,68 +205,69 @@ export function ConversationPanel({
         ) : null}
       </div>
 
-      <div className="mt-3 rounded-[14px] border border-[#d6dbe6] bg-white dark:border-slate-800 dark:bg-slate-950/70">
-        <ScrollArea className="h-[324px] px-4 py-3">
-          <div className="space-y-3">
-            {failure ? (
-              <div className="rounded-[14px] border border-amber-200 bg-amber-50 px-4 py-3 text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100">
-                <div className="flex items-start gap-2">
-                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                  <div>
-                    <div className="text-[11px] uppercase tracking-[0.16em] text-amber-700 dark:text-amber-300">
-                      {copy.monitor.agentFailure}
-                    </div>
-                    <div className="mt-1 text-[14px] font-medium">
-                      {failure.title}
-                    </div>
-                    {failure.detail ? (
-                      <div className="mt-2 text-[13px] leading-6 text-amber-900/80 dark:text-amber-100/80">
-                        {failure.detail}
-                      </div>
-                    ) : null}
+      <div className="mt-3 rounded-[14px] border border-[#d6dbe6] bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-950/70">
+        <div className="space-y-3">
+          {failure ? (
+            <div className="rounded-[14px] border border-amber-200 bg-amber-50 px-4 py-3 text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <div>
+                  <div className="text-[11px] uppercase tracking-[0.16em] text-amber-700 dark:text-amber-300">
+                    {copy.monitor.agentFailure}
                   </div>
+                  <div className="mt-1 text-[14px] font-medium">
+                    {failure.title}
+                  </div>
+                  {failure.detail ? (
+                    <div className="mt-2 text-[13px] leading-6 text-amber-900/80 dark:text-amber-100/80">
+                      {failure.detail}
+                    </div>
+                  ) : null}
                 </div>
               </div>
-            ) : null}
+            </div>
+          ) : null}
 
-            {renderedMessages.map((message) => (
-              <div
-                key={`message-${message.agent_id}-${message.timestamp}-${message.phase}`}
-                className="rounded-[14px] border border-[#e5e7eb] bg-[#fbfcff] px-4 py-3 dark:border-slate-800 dark:bg-slate-900/80"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex min-w-0 flex-wrap items-center gap-2">
-                    <span className="rounded-full border border-[#d6dbe6] bg-white px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-[#6b7280] dark:border-slate-700 dark:bg-slate-950 dark:text-slate-400">
-                      {conversationEyebrow(message, copy)}
+          {renderedMessages.map((message) => (
+            <div
+              key={`message-${message.agent_id}-${message.timestamp}-${message.phase}`}
+              className="rounded-[14px] border border-[#e5e7eb] bg-[#fbfcff] px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <span className="rounded-full border border-[#d6dbe6] bg-white px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-[#6b7280] dark:border-slate-700 dark:bg-slate-950 dark:text-slate-400">
+                    {conversationEyebrow(message, copy)}
+                  </span>
+                  <span className="text-[12px] font-medium text-[#111111] dark:text-slate-100">
+                    {displayActor(message.agent_id, roleContext, agents)}
+                  </span>
+                  {message.phase ? (
+                    <span className="text-[11px] uppercase tracking-[0.12em] text-[#8b94a7] dark:text-slate-500">
+                      {message.phase.replace(/_/g, " ")}
                     </span>
-                    <span className="text-[12px] font-medium text-[#111111] dark:text-slate-100">{message.agent_id}</span>
-                    {message.phase ? (
-                      <span className="text-[11px] uppercase tracking-[0.12em] text-[#8b94a7] dark:text-slate-500">
-                        {message.phase.replace(/_/g, " ")}
-                      </span>
-                    ) : null}
-                  </div>
-                  <div className="text-[11px] text-[#6b7280] dark:text-slate-500">{formatTime(message.timestamp)}</div>
+                  ) : null}
                 </div>
-                <div className="mt-3 whitespace-pre-wrap break-words rounded-[12px] border border-[#e5e7eb] bg-white px-3 py-3 text-[13px] leading-6 text-[#273142] dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300">
-                  {message.content}
-                </div>
+                <div className="text-[11px] text-[#6b7280] dark:text-slate-500">{formatTime(message.timestamp)}</div>
               </div>
-            ))}
+              <div className="mt-3 rounded-[12px] border border-[#e5e7eb] bg-white px-4 py-4 dark:border-slate-800 dark:bg-slate-950">
+                <RichText text={message.content} />
+              </div>
+            </div>
+          ))}
 
-            {visibleMessages.length === 0 && !failure ? (
-              <div className="text-[14px] text-[#6b7280] dark:text-slate-500">{copy.monitor.noConversationYet}</div>
-            ) : null}
-          </div>
-        </ScrollArea>
+          {visibleMessages.length === 0 && !failure ? (
+            <div className="text-[14px] text-[#6b7280] dark:text-slate-500">{copy.monitor.noConversationYet}</div>
+          ) : null}
+        </div>
       </div>
     </section>
   );
 }
 
-export function EventTimeline({ events }: EventTimelineProps) {
+export function EventTimeline({ events, mode, scenarioId, agents = [] }: EventTimelineProps) {
   const { copy } = useLocale();
-  const items = buildExecutionItems(events, copy);
+  const roleContext = useMemo<RoleDisplayContext>(() => ({ mode, scenarioId }), [mode, scenarioId]);
+  const items = buildExecutionItems(events, copy, roleContext, agents);
 
   return (
     <section className="rounded-[18px] border border-[#d6dbe6] bg-[#f8fafc] p-4 shadow-[0_10px_24px_-18px_rgba(17,48,105,0.18)] dark:border-slate-800 dark:bg-slate-950/60 dark:shadow-none">

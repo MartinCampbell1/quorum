@@ -11,6 +11,7 @@ import type { AgentConfig, ScenarioDefinition } from "@/lib/types";
 interface WizardProps {
   onSessionCreated: (sessionId: string) => void;
   onOpenSettings: () => void;
+  resumeDraft?: boolean;
 }
 
 const WIZARD_DRAFT_KEY = "quorum-wizard-draft-v1";
@@ -34,14 +35,14 @@ function readWizardDraft(): WizardDraft | null {
   }
 }
 
-function clearWizardDraft() {
+export function clearWizardDraft() {
   if (typeof window === "undefined") return;
   window.sessionStorage.removeItem(WIZARD_DRAFT_KEY);
 }
 
-export function Wizard({ onSessionCreated, onOpenSettings }: WizardProps) {
+export function Wizard({ onSessionCreated, onOpenSettings, resumeDraft = false }: WizardProps) {
   const { scenarios, isLoading } = useScenarios();
-  const [initialDraft] = useState<WizardDraft | null>(() => readWizardDraft());
+  const [initialDraft] = useState<WizardDraft | null>(() => (resumeDraft ? readWizardDraft() : null));
   const [step, setStep] = useState(initialDraft?.step ?? 0);
   const [selectedScenarioId, setSelectedScenarioId] = useState<string | null>(initialDraft?.selectedScenarioId ?? null);
   const [agents, setAgents] = useState<AgentConfig[]>(initialDraft?.agents ?? []);
@@ -53,6 +54,7 @@ export function Wizard({ onSessionCreated, onOpenSettings }: WizardProps) {
     return source.map((agent) => ({
       ...agent,
       tools: [...(agent.tools ?? [])],
+      workspace_paths: [...(agent.workspace_paths ?? [])],
     }));
   }
 
@@ -72,6 +74,11 @@ export function Wizard({ onSessionCreated, onOpenSettings }: WizardProps) {
     setAgents(cloneAgents(firstScenario.default_agents));
     setStep(0);
   }, [scenarios, selectedScenarioId]);
+
+  useEffect(() => {
+    if (resumeDraft) return;
+    clearWizardDraft();
+  }, [resumeDraft]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -95,7 +102,7 @@ export function Wizard({ onSessionCreated, onOpenSettings }: WizardProps) {
     }
   }
 
-  async function handleLaunch(task: string, config: Record<string, number>) {
+  async function handleLaunch(task: string, config: Record<string, unknown>) {
     const scenario = findScenario(scenarios, selectedScenarioId);
     if (!scenario) return;
     setIsLaunching(true);
@@ -103,7 +110,7 @@ export function Wizard({ onSessionCreated, onOpenSettings }: WizardProps) {
       const result = await runSession({
         mode: scenario.mode,
         task,
-        scenario_id: scenario.id,
+        scenario_id: scenario.is_local_fallback ? undefined : scenario.id,
         agents,
         config,
         workspace_preset_ids: workspacePresetIds,
@@ -145,6 +152,9 @@ export function Wizard({ onSessionCreated, onOpenSettings }: WizardProps) {
     />,
     <StepAgents
       key="agents"
+      mode={selectedScenario?.mode ?? ""}
+      scenarioId={selectedScenario?.id}
+      scenarioLabel={selectedScenario?.name}
       agents={agents}
       onChange={setAgents}
       onNext={() => setStep(2)}
@@ -152,8 +162,9 @@ export function Wizard({ onSessionCreated, onOpenSettings }: WizardProps) {
       onOpenSettings={onOpenSettings}
     />,
     <StepTask
-      key="task"
+      key={`task-${selectedScenario?.id ?? "none"}`}
       mode={selectedScenario?.mode ?? ""}
+      scenarioId={selectedScenario?.id}
       agents={agents}
       onLaunch={handleLaunch}
       onBack={() => setStep(1)}
@@ -164,6 +175,7 @@ export function Wizard({ onSessionCreated, onOpenSettings }: WizardProps) {
       workspacePaths={workspacePaths}
       onWorkspacePresetIdsChange={setWorkspacePresetIds}
       onWorkspacePathsChange={setWorkspacePaths}
+      defaultConfig={selectedScenario?.default_config}
     />,
   ];
 

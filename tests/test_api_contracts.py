@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from orchestrator.api import router
-from orchestrator.models import AgentConfig, AVAILABLE_TOOLS, store
+from orchestrator.models import AgentConfig, AVAILABLE_TOOLS, SessionStore, store
 from orchestrator.tool_configs import ToolConfig, tool_config_store
 
 
@@ -22,6 +22,7 @@ def _agent(role: str, provider: str, tools: list[str]) -> dict:
         "provider": provider,
         "system_prompt": "",
         "tools": tools,
+        "workspace_paths": [],
     }
 
 
@@ -80,6 +81,55 @@ def test_run_accepts_valid_default_tournament_topology():
     mock_run.assert_awaited_once()
 
 
+def test_run_accepts_parallel_execution_mode_for_tournament():
+    with patch("orchestrator.api.run", new=AsyncMock(return_value="sess_parallel")) as mock_run:
+        response = client.post(
+            "/orchestrate/run",
+            json={
+                "mode": "tournament",
+                "task": "Compare implementation approaches",
+                "config": {"execution_mode": "parallel"},
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["session_id"] == "sess_parallel"
+    assert mock_run.await_args.kwargs["config"]["execution_mode"] == "parallel"
+
+
+def test_run_rejects_parallel_execution_mode_for_non_tournament():
+    response = client.post(
+        "/orchestrate/run",
+        json={
+            "mode": "debate",
+            "task": "Debate architecture tradeoffs",
+            "config": {"execution_mode": "parallel"},
+        },
+    )
+
+    assert response.status_code == 422
+    assert "currently supported only for tournament" in response.json()["detail"]
+
+
+def test_run_rejects_tournament_without_last_judge():
+    response = client.post(
+        "/orchestrate/run",
+        json={
+            "mode": "tournament",
+            "task": "Compare implementation approaches",
+            "agents": [
+                _agent("judge", "claude", ["perplexity"]),
+                _agent("contestant_1", "codex", ["code_exec"]),
+                _agent("contestant_2", "gemini", ["web_search"]),
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    payload = response.json()["detail"]
+    assert any("judge" in error for error in payload["errors"])
+
+
 def test_tools_endpoint_returns_builtin_catalog():
     response = client.get("/orchestrate/tools")
 
@@ -102,7 +152,7 @@ def test_scenarios_endpoint_returns_personal_catalog():
 
     assert response.status_code == 200
     payload = response.json()
-    assert {"repo_audit", "pattern_mining", "news_context", "consensus_vote", "structured_debate", "strategy_review"} == {
+    assert {"repo_audit", "pattern_mining", "news_context", "consensus_vote", "structured_debate", "strategy_review", "project_tournament"} == {
         item["id"] for item in payload
     }
 
@@ -112,7 +162,71 @@ def test_scenarios_endpoint_covers_all_primary_wizard_modes():
 
     assert response.status_code == 200
     modes = {item["mode"] for item in response.json()}
-    assert {"dictator", "board", "democracy", "debate", "map_reduce", "creator_critic"}.issubset(modes)
+    assert {"dictator", "board", "democracy", "debate", "map_reduce", "creator_critic", "tournament"}.issubset(modes)
+
+
+def test_run_accepts_agent_specific_workspace_paths():
+    with patch("orchestrator.api.run", new=AsyncMock(return_value="sess_paths")) as mock_run:
+        response = client.post(
+            "/orchestrate/run",
+            json={
+                "mode": "tournament",
+                "task": "Compare local repos",
+                "agents": [
+                    {
+                        "role": "contestant_1",
+                        "provider": "claude",
+                        "system_prompt": "",
+                        "tools": ["code_exec"],
+                        "workspace_paths": [str(store._db_path.parent)],
+                    },
+                    {
+                        "role": "contestant_2",
+                        "provider": "codex",
+                        "system_prompt": "",
+                        "tools": ["code_exec"],
+                        "workspace_paths": [str(store._db_path.parent)],
+                    },
+                    {
+                        "role": "judge",
+                        "provider": "gemini",
+                        "system_prompt": "",
+                        "tools": ["perplexity"],
+                        "workspace_paths": [],
+                    },
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    forwarded_agents = mock_run.await_args.kwargs["agents"]
+    assert forwarded_agents[0].workspace_paths == [str(store._db_path.parent)]
+    assert forwarded_agents[1].workspace_paths == [str(store._db_path.parent)]
+
+
+def test_session_store_hides_parallel_children_from_recent_list(tmp_path):
+    db = SessionStore(db_path=str(tmp_path / "state.db"))
+    agents = [AgentConfig(role="contestant_1", provider="claude"), AgentConfig(role="judge", provider="gemini")]
+    parent_id = db.create("tournament", "Parent run", agents, {"execution_mode": "parallel"})
+    child_id = db.create(
+        "tournament_match",
+        "QF match 1",
+        agents,
+        {"match_result": {"winner_label": "contestant_1"}},
+        parallel_parent_id=parent_id,
+        parallel_group_id="pg_test",
+        parallel_slot_key="qf-1",
+        parallel_stage="QF",
+        parallel_label="QF match 1",
+    )
+
+    recent_ids = [item["id"] for item in db.list_recent()]
+    assert parent_id in recent_ids
+    assert child_id not in recent_ids
+
+    session = db.get(parent_id)
+    assert session is not None
+    assert session["parallel_children"][0]["id"] == child_id
 
 
 def test_custom_tools_compat_layer_round_trips_http_api():

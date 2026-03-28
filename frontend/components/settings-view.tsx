@@ -27,6 +27,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  getAccounts,
+  getAccountsHealth,
   getConfiguredTools,
   getToolTypes,
   addConfiguredTool,
@@ -38,8 +40,15 @@ import {
   updateWorkspacePreset,
   deleteWorkspacePreset,
   validateConfiguredTool,
+  openProviderLogin,
+  importProviderSession,
+  reauthorizeProviderAccount,
+  updateProviderAccount,
+  reloadAccounts,
 } from "@/lib/api";
 import type {
+  AccountHealth,
+  AccountsByProvider,
   ConfiguredTool,
   PromptTemplate,
   ToolFieldSchema,
@@ -47,6 +56,7 @@ import type {
   WorkspacePreset,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { SettingsAccountsPanel } from "@/components/settings-accounts-panel";
 
 const INPUT_CLASS =
   "w-full rounded-2xl border border-[#e0e4ec] bg-white px-3.5 py-2.5 text-xs text-foreground placeholder:text-muted-foreground/50 transition-colors focus:outline-none focus:ring-2 focus:ring-sky-400/25 dark:border-slate-800/80 dark:bg-slate-950/55";
@@ -1204,6 +1214,11 @@ export function SettingsView() {
   const [toolTypes, setToolTypes] = useState<Record<string, ToolTypeDefinition>>({});
   const [templates, setTemplates] = useState<Record<string, PromptTemplate>>({});
   const [workspacePresets, setWorkspacePresets] = useState<WorkspacePreset[]>([]);
+  const [accounts, setAccounts] = useState<AccountsByProvider>({});
+  const [accountsHealth, setAccountsHealth] = useState<AccountHealth | null>(null);
+  const [accountsMessage, setAccountsMessage] = useState("");
+  const [accountBusyKey, setAccountBusyKey] = useState("");
+  const [accountLabelDrafts, setAccountLabelDrafts] = useState<Record<string, string>>({});
   const [addToolType, setAddToolType] = useState<string | null>(null);
   const [addToolDraft, setAddToolDraft] = useState<ToolAddDraft | null>(null);
   const [editingToolId, setEditingToolId] = useState<string | null>(null);
@@ -1224,6 +1239,8 @@ export function SettingsView() {
     async function loadData() {
       setIsLoading(true);
       const results = await Promise.allSettled([
+        getAccounts(),
+        getAccountsHealth(),
         getConfiguredTools(),
         getToolTypes(),
         getPromptTemplates(),
@@ -1232,11 +1249,14 @@ export function SettingsView() {
 
       if (!mounted) return;
 
-      if (results[0].status === "fulfilled") setTools(results[0].value);
-      if (results[1].status === "fulfilled") setToolTypes(results[1].value);
-      if (results[2].status === "fulfilled") setTemplates(results[2].value);
-      if (results[3].status === "fulfilled") setWorkspacePresets(results[3].value);
+      if (results[0].status === "fulfilled") setAccounts(results[0].value.accounts);
+      if (results[1].status === "fulfilled") setAccountsHealth(results[1].value);
+      if (results[2].status === "fulfilled") setTools(results[2].value);
+      if (results[3].status === "fulfilled") setToolTypes(results[3].value);
+      if (results[4].status === "fulfilled") setTemplates(results[4].value);
+      if (results[5].status === "fulfilled") setWorkspacePresets(results[5].value);
       setIsLoading(false);
+      void refreshAccountsState();
     }
 
     loadData();
@@ -1258,6 +1278,83 @@ export function SettingsView() {
       setWorkspacePresets(data);
     } catch {
       // keep stale data on error
+    }
+  }
+
+  async function refreshAccountsState() {
+    try {
+      const [accountsData, healthData] = await Promise.all([
+        reloadAccounts(),
+        getAccountsHealth(),
+      ]);
+      setAccounts(accountsData.accounts);
+      setAccountsHealth(healthData);
+    } catch (error) {
+      setAccountsMessage(error instanceof Error ? error.message : "Failed to refresh accounts.");
+    }
+  }
+
+  function setAccountLabelDraft(provider: string, accountName: string, label: string) {
+    setAccountLabelDrafts((prev) => ({
+      ...prev,
+      [`${provider}:${accountName}`]: label,
+    }));
+  }
+
+  async function handleOpenProviderLogin(provider: string) {
+    setAccountBusyKey(`${provider}:login`);
+    try {
+      const result = await openProviderLogin(provider);
+      setAccountsMessage(result.message);
+    } catch (error) {
+      setAccountsMessage(error instanceof Error ? error.message : "Failed to open login flow.");
+    } finally {
+      setAccountBusyKey("");
+    }
+  }
+
+  async function handleImportProviderSession(provider: string) {
+    setAccountBusyKey(`${provider}:import`);
+    try {
+      const result = await importProviderSession(provider);
+      setAccountsMessage(result.message);
+      await refreshAccountsState();
+    } catch (error) {
+      setAccountsMessage(error instanceof Error ? error.message : "Failed to import provider session.");
+    } finally {
+      setAccountBusyKey("");
+    }
+  }
+
+  async function handleReauthorizeProviderAccount(provider: string, accountName: string) {
+    setAccountBusyKey(`${provider}:${accountName}:reauth`);
+    try {
+      const result = await reauthorizeProviderAccount(provider, accountName);
+      setAccountsMessage(result.message);
+    } catch (error) {
+      setAccountsMessage(error instanceof Error ? error.message : "Failed to reauthorize account.");
+    } finally {
+      setAccountBusyKey("");
+    }
+  }
+
+  async function handleSaveProviderAccountLabel(provider: string, accountName: string) {
+    const key = `${provider}:${accountName}`;
+    const fallbackLabel = accounts[provider]?.find((account) => account.name === accountName)?.label ?? "";
+    const label = accountLabelDrafts[key] ?? fallbackLabel;
+    setAccountBusyKey(`${provider}:${accountName}:label`);
+    try {
+      const result = await updateProviderAccount(provider, accountName, label);
+      setAccountsMessage(result.message);
+      setAccountLabelDrafts((prev) => ({
+        ...prev,
+        [key]: result.label,
+      }));
+      await refreshAccountsState();
+    } catch (error) {
+      setAccountsMessage(error instanceof Error ? error.message : "Failed to update account label.");
+    } finally {
+      setAccountBusyKey("");
     }
   }
 
@@ -1605,6 +1702,30 @@ export function SettingsView() {
               </div>
             </div>
           </section>
+
+          <SettingsAccountsPanel
+            accounts={accounts}
+            health={accountsHealth}
+            message={accountsMessage}
+            busyKey={accountBusyKey}
+            labelDrafts={accountLabelDrafts}
+            onLabelDraftChange={setAccountLabelDraft}
+            onRefresh={() => {
+              void refreshAccountsState();
+            }}
+            onOpenLogin={(provider) => {
+              void handleOpenProviderLogin(provider);
+            }}
+            onImport={(provider) => {
+              void handleImportProviderSession(provider);
+            }}
+            onReauthorize={(provider, accountName) => {
+              void handleReauthorizeProviderAccount(provider, accountName);
+            }}
+            onSaveLabel={(provider, accountName) => {
+              void handleSaveProviderAccountLabel(provider, accountName);
+            }}
+          />
 
           {/* Section 1: Tools */}
           <section className="rounded-[24px] border border-[#e6e8ee] bg-white p-6">

@@ -3,6 +3,7 @@ export interface AgentConfig {
   provider: "claude" | "gemini" | "codex" | "minimax";
   system_prompt: string;
   tools?: string[];
+  workspace_paths?: string[];
 }
 
 export interface ToolDefinition {
@@ -14,6 +15,29 @@ export interface ToolDefinition {
   tool_type?: string;
   transport?: string;
   compatibility?: Record<string, "native" | "bridged" | "unavailable">;
+}
+
+export interface ProviderAccount {
+  name: string;
+  label?: string;
+  identity?: string | null;
+  display_name?: string;
+  available: boolean;
+  auth_state?: "unknown" | "verified" | "error";
+  requests_made: number;
+  cooldown_remaining_sec: number;
+  last_error?: string | null;
+  last_failure_at?: number | null;
+  last_used_at?: number | null;
+  last_checked_at?: number | null;
+}
+
+export type AccountsByProvider = Record<string, ProviderAccount[]>;
+
+export interface AccountHealth {
+  total: number;
+  available: number;
+  on_cooldown: number;
 }
 
 export interface CustomToolConfig {
@@ -115,6 +139,27 @@ export interface SessionEvent {
   round?: number;
 }
 
+export interface ParallelChildSummary {
+  id: string;
+  mode: string;
+  status: string;
+  created_at: number;
+  slot_key?: string | null;
+  stage?: string | null;
+  label: string;
+  winner_label?: string | null;
+}
+
+export interface ParallelProgress {
+  execution_mode?: "sequential" | "parallel";
+  stage_label?: string | null;
+  total?: number;
+  running?: number;
+  completed?: number;
+  failed?: number;
+  group_id?: string | null;
+}
+
 export interface AttachedToolDetail {
   id: string;
   name: string;
@@ -137,6 +182,11 @@ export interface Session {
   active_scenario?: string | null;
   forked_from?: string | null;
   forked_checkpoint_id?: string | null;
+  parallel_parent_id?: string | null;
+  parallel_group_id?: string | null;
+  parallel_slot_key?: string | null;
+  parallel_stage?: string | null;
+  parallel_label?: string | null;
   capabilities?: Record<string, boolean>;
   created_at: number;
   elapsed_sec: number | null;
@@ -171,6 +221,21 @@ export interface Session {
     created_at: number;
     forked_checkpoint_id?: string | null;
   }>;
+  parallel_children?: ParallelChildSummary[];
+  parallel_progress?: ParallelProgress;
+  runtime_state?: {
+    live_runtime_available?: boolean;
+    checkpoint_runtime_available?: boolean;
+    has_checkpoints?: boolean;
+    can_pause?: boolean;
+    can_resume?: boolean;
+    can_send_message?: boolean;
+    can_inject_instruction?: boolean;
+    can_cancel?: boolean;
+    can_continue_conversation?: boolean;
+    can_branch_from_checkpoint?: boolean;
+    reasons?: Record<string, { code: string; message: string } | null>;
+  };
 }
 
 export interface SessionSummary {
@@ -181,6 +246,11 @@ export interface SessionSummary {
   created_at: number;
   active_scenario?: string | null;
   forked_from?: string | null;
+  parallel_parent_id?: string | null;
+  parallel_group_id?: string | null;
+  parallel_slot_key?: string | null;
+  parallel_stage?: string | null;
+  parallel_label?: string | null;
 }
 
 export interface ModeInfo {
@@ -199,4 +269,5 @@ export interface ScenarioDefinition {
   tags: string[];
   default_config: Record<string, number>;
   default_agents: AgentConfig[];
+  is_local_fallback?: boolean;
 }

@@ -71,13 +71,18 @@ export function CheckpointPanel({
       </div>
 
       <div className="mt-4 space-y-3">
-        {session.forked_from ? (
+        {session.forked_from || session.parallel_parent_id ? (
           <div className="rounded-[14px] border border-[#d6dbe6] bg-[#fafbff] px-3 py-3 dark:border-slate-800 dark:bg-slate-900/80">
             <div className="text-[10px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{copy.monitor.parentSession}</div>
-            <div className="mt-1 font-mono text-[12px] text-[#111111] dark:text-slate-100">{session.forked_from}</div>
+            <div className="mt-1 font-mono text-[12px] text-[#111111] dark:text-slate-100">{session.parallel_parent_id ?? session.forked_from}</div>
             {session.forked_checkpoint_id ? (
               <div className="mt-1 text-[11px] text-[#6b7280] dark:text-slate-400">
                 {copy.monitor.fromCheckpoint} {session.forked_checkpoint_id}
+              </div>
+            ) : null}
+            {session.parallel_stage ? (
+              <div className="mt-1 text-[11px] text-[#6b7280] dark:text-slate-400">
+                {session.parallel_stage}{session.parallel_slot_key ? ` · ${session.parallel_slot_key}` : ""}
               </div>
             ) : null}
           </div>
@@ -141,7 +146,7 @@ export function CheckpointPanel({
                     size="sm"
                     className="rounded-[10px] border-[#d6dbe6] bg-white text-[11px] dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:hover:bg-slate-900"
                     onClick={() => branchFromCheckpoint(checkpoint.id)}
-                    disabled={isBranching || ["running", "pause_requested", "cancel_requested"].includes(session.status)}
+                    disabled={isBranching || Boolean(session.parallel_parent_id) || ["running", "pause_requested", "cancel_requested"].includes(session.status)}
                     >
                       {isBranching ? (
                         <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
