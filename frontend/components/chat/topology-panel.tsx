@@ -1,32 +1,30 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import {
+  AlertTriangle,
+  ArrowRight,
+  Folder,
+  Globe,
+  HardDrive,
+  LoaderCircle,
+  PauseCircle,
+  Sparkles,
+  TerminalSquare,
+  type LucideIcon,
+} from "lucide-react";
 
-import { ArrowRight, Folder, Globe, HardDrive, Sparkles, TerminalSquare, type LucideIcon } from "lucide-react";
-
-import { AGENT_COLORS, PROVIDER_LABELS } from "@/lib/constants";
 import { useLocale } from "@/lib/locale";
 import type { AttachedToolDetail, Message, Session, SessionEvent } from "@/lib/types";
 
+import { useTopologyFlowGraph } from "./topology-layout";
+import {
+  buildTournamentStructure,
+  latestRoundLabel,
+} from "./topology-model";
+import { TopologyFlowStage } from "./topology-stage";
+
 interface TopologyPanelProps {
   session: Session;
-}
-
-function useReducedMotion() {
-  const [reduced, setReduced] = useState(false);
-
-  useEffect(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
-      return undefined;
-    }
-    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const update = () => setReduced(media.matches);
-    update();
-    media.addEventListener("change", update);
-    return () => media.removeEventListener("change", update);
-  }, []);
-
-  return reduced;
 }
 
 function humanizeTool(tool: string) {
@@ -50,26 +48,105 @@ function latestMessage(messages: Message[], agentId: string, phasePrefix?: strin
 }
 
 function latestEvent(
-  events: SessionEvent[],
+  events: SessionEvent[] = [],
   type: string,
   predicate?: (event: SessionEvent) => boolean
 ) {
   return [...events].reverse().find((event) => event.type === type && (!predicate || predicate(event)));
 }
 
-function recentEvents(events: SessionEvent[], type: string, limit: number = 3) {
+function recentEvents(events: SessionEvent[] = [], type: string, limit: number = 3) {
   return events.filter((event) => event.type === type).slice(-limit).reverse();
 }
 
-function latestRoundLabel(events: SessionEvent[]) {
-  const latestRoundEvent = [...events]
+function latestStatusEvent(session: Session) {
+  return [...(session.events ?? [])]
     .reverse()
-    .find((event) => event.type === "round_completed" || event.type === "round_started");
-  if (!latestRoundEvent) return null;
-  if (typeof latestRoundEvent.round === "number" && latestRoundEvent.round > 0) {
-    return `Round ${latestRoundEvent.round}`;
+    .find((event) => Boolean(event.status) || ["runtime_recovered", "run_failed", "run_started"].includes(event.type));
+}
+
+function sanitizeSummaryText(text?: string | null, limit: number = 320) {
+  const normalized = (text ?? "").replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return "";
   }
-  return latestRoundEvent.title;
+
+  const withoutTrace = normalized.includes("Traceback")
+    ? normalized.slice(0, normalized.indexOf("Traceback")).trim()
+    : normalized;
+  const flattened = withoutTrace
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(" ");
+
+  if (flattened.length <= limit) {
+    return flattened;
+  }
+
+  return `${flattened.slice(0, limit - 1)}…`;
+}
+
+function latestFailureEvent(session: Session) {
+  return [...(session.events ?? [])]
+    .reverse()
+    .find((event) => event.type === "agent_failed" || event.type === "run_failed");
+}
+
+function summarizedResult(session: Session, fallback: string) {
+  if (session.status === "failed" || session.status === "cancelled") {
+    return (
+      sanitizeSummaryText(latestFailureEvent(session)?.detail) ||
+      sanitizeSummaryText(latestFailureEvent(session)?.title) ||
+      sanitizeSummaryText(latestStatusEvent(session)?.detail) ||
+      sanitizeSummaryText(session.result) ||
+      fallback
+    );
+  }
+
+  return sanitizeSummaryText(session.result) || fallback;
+}
+
+function resolveSessionStateSnapshot(session: Session, copy: ReturnType<typeof useLocale>["copy"]) {
+  const latestStatus = latestStatusEvent(session);
+
+  if (session.status === "failed") {
+    return {
+      tone: "failed" as const,
+      title: latestStatus?.title || copy.monitor.stateTitles.failed,
+      detail: latestStatus?.detail || copy.monitor.stateDetails.failed,
+    };
+  }
+
+  if (session.status === "paused") {
+    return {
+      tone: "paused" as const,
+      title: copy.monitor.stateTitles.paused,
+      detail:
+        latestStatus?.detail ||
+        (session.current_checkpoint_id
+          ? `${copy.monitor.stateDetails.paused} ${copy.monitor.signalLabels.checkpoint}: ${session.current_checkpoint_id}.`
+          : copy.monitor.stateDetails.paused),
+    };
+  }
+
+  if (session.status === "cancelled") {
+    return {
+      tone: "cancelled" as const,
+      title: copy.monitor.stateTitles.cancelled,
+      detail: latestStatus?.detail || copy.monitor.stateDetails.cancelled,
+    };
+  }
+
+  if (session.status === "running" && session.messages.length === 0 && (session.events?.length ?? 0) <= 1) {
+    return {
+      tone: "waiting" as const,
+      title: copy.monitor.stateTitles.waiting,
+      detail: latestStatus?.detail || copy.monitor.stateDetails.waiting,
+    };
+  }
+
+  return null;
 }
 
 function shellTitle(session: Session, copy: ReturnType<typeof useLocale>["copy"]) {
@@ -78,93 +155,9 @@ function shellTitle(session: Session, copy: ReturnType<typeof useLocale>["copy"]
   if (session.mode === "debate") return copy.monitor.topologyTitles.debate;
   if (session.mode === "creator_critic") return copy.monitor.topologyTitles.creator_critic;
   if (session.mode === "map_reduce") return copy.monitor.topologyTitles.map_reduce;
+  if (session.mode === "dictator") return copy.monitor.topologyTitles.dictator;
+  if (session.mode === "tournament") return copy.monitor.topologyTitles.tournament;
   return copy.monitor.topologyTitles.default;
-}
-
-function providerMark(provider: string) {
-  const marks: Record<string, string> = {
-    claude: "Cl",
-    codex: "Cx",
-    gemini: "Ge",
-    minimax: "Mm",
-  };
-  return marks[provider] ?? provider.slice(0, 2).toUpperCase();
-}
-
-function providerAccent(provider: string) {
-  return AGENT_COLORS[provider] ?? "#7b8190";
-}
-
-function fallbackToolDetail(toolId: string): AttachedToolDetail {
-  return {
-    id: toolId,
-    name: humanizeTool(toolId),
-    tool_type: null,
-    transport: "unknown",
-    subtitle: "MCP",
-    icon: "folder",
-    capability: "native",
-  };
-}
-
-interface CanvasNode {
-  id: string;
-  kind: "task" | "agent" | "tool" | "hub";
-  x: number;
-  y: number;
-  size: number;
-  label: string;
-  subtitle?: string;
-  provider?: string;
-  tool?: AttachedToolDetail;
-}
-
-interface CanvasEdge {
-  id: string;
-  path: string;
-  reversePath?: string;
-  active?: boolean;
-}
-
-function mirrorPath(path: string): string {
-  const points = path.match(/-?\d+(?:\.\d+)?/g)?.map(Number);
-  if (!points || points.length < 8) {
-    return path;
-  }
-  const [sx, sy, c1x, c1y, c2x, c2y, ex, ey] = points;
-  return `M ${ex} ${ey} C ${c2x} ${c2y}, ${c1x} ${c1y}, ${sx} ${sy}`;
-}
-
-function connectionPath(
-  start: [number, number],
-  c1: [number, number],
-  c2: [number, number],
-  end: [number, number]
-) {
-  return `M ${start[0]} ${start[1]} C ${c1[0]} ${c1[1]}, ${c2[0]} ${c2[1]}, ${end[0]} ${end[1]}`;
-}
-
-function buildToolNodes(session: Session, x: number, tops: number[]) {
-  const detailMap = new Map((session.attached_tools ?? []).map((tool) => [tool.id, tool]));
-  const visibleToolIds = Array.from(
-    new Set(
-      (session.attached_tool_ids?.length
-        ? session.attached_tool_ids
-        : session.agents.flatMap((agent) => agent.tools ?? [])
-      ).filter(Boolean)
-    )
-  ).slice(0, tops.length);
-
-  return visibleToolIds.map((toolId, index) => ({
-    id: `tool:${toolId}`,
-    kind: "tool" as const,
-    x,
-    y: tops[index] ?? tops[tops.length - 1],
-    size: 64,
-    label: (detailMap.get(toolId) ?? fallbackToolDetail(toolId)).name,
-    subtitle: (detailMap.get(toolId) ?? fallbackToolDetail(toolId)).subtitle,
-    tool: detailMap.get(toolId) ?? fallbackToolDetail(toolId),
-  }));
 }
 
 function latestSignal(session: Session) {
@@ -182,21 +175,21 @@ function latestSignal(session: Session) {
     );
 }
 
-function resolveActiveEdgeIds(session: Session, edges: CanvasEdge[]): Set<string> {
+function resolveActiveEdgeIds(session: Session, edgeIds: string[]): Set<string> {
   const signal = latestSignal(session);
   if (!signal) {
     return new Set();
   }
 
   if ((signal.type === "tool_call_started" || signal.type === "tool_call_finished") && signal.agent_id) {
-    const direct = edges.find((edge) => edge.id.endsWith(`->agent:${signal.agent_id}`) || edge.id.startsWith(`hub->agent:${signal.agent_id}`));
+    const direct = edgeIds.find((edgeId) => edgeId.endsWith(`->agent:${signal.agent_id}`) || edgeId.startsWith(`hub->agent:${signal.agent_id}`));
     if (direct) {
-      return new Set([direct.id + (signal.type === "tool_call_finished" ? ":reverse" : "")]);
+      return new Set([direct]);
     }
   }
 
   if (signal.type === "vote_recorded" && signal.agent_id) {
-    return new Set([`hub->agent:${signal.agent_id}`]);
+    return new Set([`agent:${signal.agent_id}->hub`]);
   }
 
   if (signal.type === "chunk_completed" && signal.agent_id) {
@@ -205,15 +198,53 @@ function resolveActiveEdgeIds(session: Session, edges: CanvasEdge[]): Set<string
 
   if (signal.type === "round_started" || signal.type === "round_completed") {
     if (session.mode === "board") {
-      return new Set(
-        session.agents.slice(0, 3).map((agent) => `hub->agent:${agent.role}`)
-      );
+      return new Set(session.agents.map((agent) => `hub->agent:${agent.role}`));
     }
+
     if (session.mode === "democracy") {
       return new Set(session.agents.map((agent) => `agent:${agent.role}->hub`));
     }
+
     if (session.mode === "debate") {
-      return new Set(["debate:judge:pro", "debate:judge:opp"]);
+      const proponent = session.agents[0]?.role ?? "proponent";
+      const opponent = session.agents[1]?.role ?? "opponent";
+      return new Set(["debate:judge", `agent:${proponent}->agent:${opponent}`]);
+    }
+
+    if (session.mode === "creator_critic") {
+      const creator = session.agents[0]?.role;
+      const critic = session.agents[1]?.role;
+      return new Set(
+        [
+          creator ? `task->agent:${creator}` : null,
+          creator ? `agent:${creator}->draft` : null,
+          critic ? `draft->agent:${critic}` : null,
+          critic ? `agent:${critic}->feedback` : null,
+          creator ? `feedback->agent:${creator}` : null,
+        ].filter((edgeId): edgeId is string => Boolean(edgeId))
+      );
+    }
+
+    if (session.mode === "dictator") {
+      return new Set(session.agents.slice(1).map((agent) => `agent:${session.agents[0]?.role}->agent:${agent.role}`));
+    }
+
+    if (session.mode === "map_reduce") {
+      const planner = session.agents[0]?.role;
+      const workers = session.agents.slice(1, -1).map((agent) => agent.role);
+      return new Set(
+        [
+          planner ? `task->agent:${planner}` : null,
+          ...workers.map((role) => (planner ? `agent:${planner}->agent:${role}` : null)),
+          ...workers.map((role) => `agent:${role}->synth`),
+        ].filter((edgeId): edgeId is string => Boolean(edgeId))
+      );
+    }
+
+    if (session.mode === "tournament") {
+      return new Set(
+        edgeIds.filter((edgeId) => edgeId.includes("match:") || edgeId.includes("playin:") || edgeId.endsWith("->hub"))
+      );
     }
   }
 
@@ -224,6 +255,7 @@ function signalCards(session: Session, copy: ReturnType<typeof useLocale>["copy"
   const latestToolEvent =
     latestEvent(session.events ?? [], "tool_call_finished") ??
     latestEvent(session.events ?? [], "tool_call_started");
+
   return [
     {
       label: copy.monitor.signalLabels.activeNode,
@@ -240,436 +272,180 @@ function signalCards(session: Session, copy: ReturnType<typeof useLocale>["copy"
   ];
 }
 
-function inferMessageTarget(session: Session, message: Message, copy: ReturnType<typeof useLocale>["copy"]) {
-  if (session.mode === "creator_critic") {
-    return message.phase.startsWith("critique_")
-      ? session.agents[0]?.role ?? copy.monitor.sharedContexts.creator_critic
-      : session.agents[1]?.role ?? copy.monitor.sharedContexts.creator_critic;
-  }
-  if (session.mode === "map_reduce") {
-    const synthesizer = session.agents[session.agents.length - 1];
-    if (message.agent_id === session.agents[0]?.role) {
-      return copy.monitor.workers;
-    }
-    return synthesizer?.role ?? copy.monitor.sharedContexts.map_reduce;
-  }
-  if (session.mode === "debate") {
-    if (message.agent_id === session.agents[0]?.role) return session.agents[1]?.role ?? copy.monitor.sharedContexts.default;
-    if (message.agent_id === session.agents[1]?.role) return session.agents[2]?.role ?? copy.monitor.sharedContexts.default;
-    return copy.monitor.sharedContexts.default;
-  }
-  if (session.mode === "board") return copy.monitor.sharedContexts.board;
-  if (session.mode === "democracy") return copy.monitor.sharedContexts.democracy;
-  return copy.monitor.sharedContexts.default;
+interface LiveExchangeItem {
+  id: string;
+  timestamp: number;
+  channel: string;
+  title: string;
+  from: string;
+  to: string;
+  preview: string;
+  raw: string;
+  meta: string[];
 }
 
-function buildLiveExchange(session: Session, copy: ReturnType<typeof useLocale>["copy"]) {
-  const eventItems = (session.events ?? [])
+function normalizeExchangeText(text: string) {
+  return text.replace(/\r\n/g, "\n").trim();
+}
+
+function compactExchangeText(text: string, limit: number = 132) {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= limit) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, limit - 1)}…`;
+}
+
+function formatExchangePayload(text: string) {
+  const normalized = normalizeExchangeText(text);
+  if (!normalized) {
+    return "";
+  }
+
+  try {
+    return JSON.stringify(JSON.parse(normalized), null, 2);
+  } catch {
+    return normalized;
+  }
+}
+
+function buildLiveExchange(session: Session, copy: ReturnType<typeof useLocale>["copy"]): LiveExchangeItem[] {
+  return (session.events ?? [])
     .filter((event) => ["tool_call_started", "tool_call_finished", "vote_recorded", "round_completed", "chunk_completed"].includes(event.type))
-    .map((event) => ({
-      id: `event-${event.id}`,
-      timestamp: event.timestamp,
-      from: event.agent_id ?? copy.monitor.sharedContexts.default,
-      to: event.tool_name ?? copy.monitor.sharedContexts.default,
-      title: event.type === "tool_call_started" ? copy.monitor.toolCall : event.type === "tool_call_finished" ? copy.monitor.toolResult : event.title,
-      preview: (event.detail || event.tool_name || event.title).replace(/\s+/g, " ").slice(0, 132),
-    }));
-
-  const messageItems = session.messages.map((message) => ({
-    id: `message-${message.agent_id}-${message.timestamp}`,
-    timestamp: message.timestamp,
-    from: message.agent_id,
-    to: inferMessageTarget(session, message, copy),
-    title: copy.monitor.agentMessage,
-    preview: message.content.replace(/\s+/g, " ").slice(0, 132),
-  }));
-
-  return [...eventItems, ...messageItems]
+    .map((event) => {
+      const raw = formatExchangePayload(event.detail || event.tool_name || event.title);
+      return {
+        id: `event-${event.id}`,
+        timestamp: event.timestamp,
+        channel:
+          event.type === "tool_call_started"
+            ? copy.monitor.toolCall
+            : event.type === "tool_call_finished"
+              ? copy.monitor.toolResult
+              : event.title,
+        title: event.tool_name ?? event.title,
+        from: event.agent_id ?? copy.monitor.sharedContexts.default,
+        to: event.tool_name ?? copy.monitor.sharedContexts.default,
+        preview: compactExchangeText(raw || event.title),
+        raw,
+        meta: [
+          event.phase,
+          typeof event.round === "number" && event.round > 0 ? `R${event.round}` : null,
+          typeof event.elapsed_sec === "number" ? `${event.elapsed_sec.toFixed(1)}s` : null,
+          event.success === false ? copy.monitor.failed : null,
+        ].filter((value): value is string => Boolean(value)),
+      };
+    })
     .sort((a, b) => b.timestamp - a.timestamp)
     .slice(0, 3);
 }
 
-function renderNode(node: CanvasNode, activeAgentId?: string) {
-  const isActiveAgent = node.kind === "agent" && activeAgentId === node.id.replace(/^agent:/, "");
-  const left = `calc(${(node.x / 760) * 100}% - ${node.kind === "task" ? 61 : node.kind === "tool" ? 55 : node.kind === "hub" ? 66 : 59}px)`;
-  const top = `calc(${(node.y / 364) * 100}% - ${node.kind === "tool" ? 32 : node.kind === "hub" ? 48 : 40}px)`;
-  if (node.kind === "task") {
-    return (
-      <div
-        key={node.id}
-        className="absolute flex w-[122px] flex-col items-center"
-        style={{ left, top }}
-      >
-        <div className="flex h-[78px] w-[78px] items-center justify-center rounded-[18px] border border-[#d1d5db] bg-white shadow-[0_12px_32px_-24px_rgba(17,48,105,0.35)]">
-          <Folder className="h-8 w-8 text-[#7b8190]" />
-        </div>
-        <div className="mt-3 text-center text-[18px] leading-tight tracking-[-0.03em] text-[#111111]">
-          {node.label}
-        </div>
-        <div className="mt-1 text-center text-[12px] leading-5 text-[#7b8190]">{node.subtitle}</div>
-      </div>
-    );
+function SessionStateBanner({ session }: { session: Session }) {
+  const { copy } = useLocale();
+  const snapshot = resolveSessionStateSnapshot(session, copy);
+
+  if (!snapshot) {
+    return null;
   }
 
-  if (node.kind === "tool") {
-    const Icon = resolveToolIcon(node.tool?.id ?? node.id, node.tool);
-    return (
-      <div
-        key={node.id}
-        className="absolute flex w-[110px] flex-col items-center"
-        style={{ left, top }}
-      >
-        <div className="flex h-[64px] w-[64px] items-center justify-center rounded-[16px] border border-[#d6dbe6] bg-white shadow-[0_12px_32px_-24px_rgba(17,48,105,0.25)]">
-          <Icon className="h-7 w-7 text-[#7b8190]" />
-        </div>
-        <div className="mt-2 text-center text-[14px] font-medium tracking-[-0.02em] text-[#111111]">
-          {node.label}
-        </div>
-      </div>
-    );
-  }
-
-  if (node.kind === "hub") {
-    return (
-      <div
-        key={node.id}
-        className="absolute flex w-[132px] flex-col items-center"
-        style={{ left, top }}
-      >
-        <div className="flex h-[96px] w-[96px] items-center justify-center rounded-[26px] border border-[#d6dbe6] bg-[#fbfcff] px-3 text-center shadow-[0_12px_30px_-26px_rgba(17,48,105,0.22)]">
-          <div className="text-[18px] font-medium tracking-[-0.03em] text-[#111111]">{node.label}</div>
-        </div>
-        {node.subtitle ? (
-          <div className="mt-2 text-center text-[11px] uppercase tracking-[0.12em] text-[#7b8190]">{node.subtitle}</div>
-        ) : null}
-      </div>
-    );
-  }
+  const Icon =
+    snapshot.tone === "waiting" ? LoaderCircle : snapshot.tone === "paused" ? PauseCircle : AlertTriangle;
+  const toneClasses =
+    snapshot.tone === "failed"
+      ? "border-amber-200 bg-amber-50/90 text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100"
+      : snapshot.tone === "paused"
+        ? "border-sky-200 bg-sky-50/90 text-sky-900 dark:border-sky-900/70 dark:bg-sky-950/30 dark:text-sky-100"
+        : snapshot.tone === "cancelled"
+          ? "border-slate-200 bg-slate-100/90 text-slate-800 dark:border-slate-800 dark:bg-slate-900/80 dark:text-slate-200"
+          : "border-violet-200 bg-violet-50/90 text-violet-900 dark:border-violet-900/70 dark:bg-violet-950/30 dark:text-violet-100";
 
   return (
-    <div
-      key={node.id}
-      className="absolute flex w-[118px] flex-col items-center"
-      style={{ left, top }}
-    >
-      <div
-        className="flex h-[78px] w-[78px] items-center justify-center rounded-[18px] border bg-white text-[34px] font-semibold shadow-[0_12px_32px_-24px_rgba(17,48,105,0.35)]"
-        style={{
-          borderColor: isActiveAgent ? providerAccent(node.provider ?? "") : "#d1d5db",
-          boxShadow: isActiveAgent
-            ? `0 14px 36px -24px ${providerAccent(node.provider ?? "")}`
-            : "0 12px 32px -24px rgba(17,48,105,0.35)",
-          color: "#6b7280",
-        }}
-      >
-        {providerMark(node.provider ?? "")}
+    <div className={`rounded-[16px] border px-4 py-3 ${toneClasses}`}>
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 rounded-full border border-current/15 bg-white/60 p-2 text-current dark:bg-slate-950/20">
+          <Icon className={`h-4 w-4 ${snapshot.tone === "waiting" ? "animate-spin" : ""}`} />
+        </div>
+        <div className="min-w-0">
+          <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-current/80">
+            {copy.statuses[session.status]}
+          </div>
+          <div className="mt-1 text-[15px] font-semibold tracking-[-0.03em] text-current">
+            {snapshot.title}
+          </div>
+          <div className="mt-1 text-[13px] leading-6 text-current/80">
+            {snapshot.detail}
+          </div>
+        </div>
       </div>
-      <div className="mt-3 text-center text-[18px] leading-tight tracking-[-0.03em] text-[#111111]">
-        {node.label}
-      </div>
-      <div className="mt-1 text-center text-[12px] leading-5 text-[#6b7280]">{node.subtitle}</div>
     </div>
   );
 }
 
-function buildCanvasGraph(session: Session, copy: ReturnType<typeof useLocale>["copy"]) {
-  const agents = session.agents.slice(0, 4);
-  const taskNode: CanvasNode = {
-    id: "task",
-    kind: "task",
-    x: 104,
-    y: 176,
-    size: 78,
-    label: copy.monitor.sessionTask,
-    subtitle: session.task.slice(0, 44),
-  };
-  const getAgent = (index: number, x: number, y: number): CanvasNode | null => {
-    const agent = agents[index];
-    if (!agent) return null;
-    return {
-      id: `agent:${agent.role}`,
-      kind: "agent",
-      x,
-      y,
-      size: 78,
-      label: PROVIDER_LABELS[agent.provider] ?? agent.provider,
-      subtitle: agent.role,
-      provider: agent.provider,
-    };
-  };
-
-  if (session.mode === "board") {
-    const hubNode: CanvasNode = {
-      id: "hub",
-      kind: "hub",
-      x: 318,
-      y: 184,
-      size: 96,
-      label: copy.monitor.sharedContexts.board,
-    };
-    const boardAgents = [
-      getAgent(0, 528, 84),
-      getAgent(1, 648, 196),
-      getAgent(2, 528, 296),
-    ].filter((node): node is CanvasNode => Boolean(node));
-    const edges: CanvasEdge[] = [
-      {
-        id: "task->hub",
-        path: connectionPath([144, 176], [212, 176], [240, 182], [270, 182]),
-      },
-      ...boardAgents.map((node, index) => ({
-        id: `hub->${node.id}`,
-        path: index === 0
-          ? connectionPath([366, 152], [418, 128], [458, 110], [node.x - 42, node.y])
-          : index === 1
-            ? connectionPath([366, 184], [430, 184], [492, 184], [node.x - 42, node.y])
-            : connectionPath([366, 216], [418, 240], [458, 260], [node.x - 42, node.y]),
-      })),
-    ];
-    return { nodes: [taskNode, hubNode, ...boardAgents], edges };
-  }
-
-  if (session.mode === "democracy") {
-    const hubNode: CanvasNode = {
-      id: "hub",
-      kind: "hub",
-      x: 366,
-      y: 184,
-      size: 96,
-      label: copy.monitor.sharedContexts.democracy,
-    };
-    const voteAgents = [
-      getAgent(0, 548, 92),
-      getAgent(1, 612, 184),
-      getAgent(2, 548, 276),
-    ].filter((node): node is CanvasNode => Boolean(node));
-    const edges: CanvasEdge[] = [
-      {
-        id: "task->hub",
-        path: connectionPath([144, 176], [224, 176], [258, 184], [318, 184]),
-      },
-      ...voteAgents.map((node, index) => ({
-        id: `agent:${node.subtitle}->hub`,
-        path: index === 0
-          ? connectionPath([node.x - 42, node.y], [492, 110], [446, 140], [414, 152])
-          : index === 1
-            ? connectionPath([node.x - 42, node.y], [548, 184], [472, 184], [414, 184])
-            : connectionPath([node.x - 42, node.y], [492, 258], [446, 226], [414, 216]),
-      })),
-    ];
-    return { nodes: [taskNode, hubNode, ...voteAgents], edges };
-  }
-
-  if (session.mode === "debate") {
-    const proponent = getAgent(0, 250, 228);
-    const opponent = getAgent(1, 518, 228);
-    const judge = getAgent(2, 384, 82);
-    const nodes = [taskNode, proponent, opponent, judge].filter((node): node is CanvasNode => Boolean(node));
-    const edges: CanvasEdge[] = [];
-    if (proponent) {
-      edges.push({
-        id: `task->${proponent.id}`,
-        path: connectionPath([144, 176], [194, 176], [212, 228], [proponent.x - 42, proponent.y]),
-      });
-    }
-    if (opponent) {
-      edges.push({
-        id: `task->${opponent.id}`,
-        path: connectionPath([144, 176], [230, 176], [328, 228], [opponent.x - 42, opponent.y]),
-      });
-    }
-    if (proponent && judge) {
-      edges.push({
-        id: "debate:judge:pro",
-        path: connectionPath([proponent.x + 18, proponent.y - 40], [284, 164], [326, 112], [judge.x - 18, judge.y + 40]),
-      });
-    }
-    if (opponent && judge) {
-      edges.push({
-        id: "debate:judge:opp",
-        path: connectionPath([opponent.x - 18, opponent.y - 40], [486, 164], [446, 112], [judge.x + 18, judge.y + 40]),
-      });
-    }
-    if (proponent && opponent) {
-      edges.push({
-        id: `${proponent.id}->${opponent.id}`,
-        path: connectionPath([proponent.x + 42, proponent.y], [334, 228], [434, 228], [opponent.x - 42, opponent.y]),
-      });
-    }
-    return { nodes, edges };
-  }
-
-  if (session.mode === "creator_critic") {
-    const creator = getAgent(0, 286, 182);
-    const critic = getAgent(1, 498, 182);
-    const nodes = [taskNode, creator, critic].filter((node): node is CanvasNode => Boolean(node));
-    const edges: CanvasEdge[] = [];
-    if (creator) {
-      edges.push({
-        id: `task->${creator.id}`,
-        path: connectionPath([144, 176], [194, 176], [222, 182], [creator.x - 42, creator.y]),
-      });
-    }
-    if (creator && critic) {
-      const forward = connectionPath([creator.x + 42, creator.y - 10], [356, 124], [432, 124], [critic.x - 42, critic.y - 10]);
-      const backward = connectionPath([critic.x - 42, critic.y + 10], [434, 248], [354, 248], [creator.x + 42, creator.y + 10]);
-      edges.push({
-        id: `${creator.id}->${critic.id}`,
-        path: forward,
-        reversePath: backward,
-      });
-    }
-    return { nodes, edges };
-  }
-
-  if (session.mode === "map_reduce") {
-    const planner = getAgent(0, 272, 88);
-    const workers = agents.slice(1, -1).slice(0, 3).map((agent, index) => ({
-      id: `agent:${agent.role}`,
-      kind: "agent" as const,
-      x: 264 + index * 150,
-      y: 238,
-      size: 78,
-      label: PROVIDER_LABELS[agent.provider] ?? agent.provider,
-      subtitle: agent.role,
-      provider: agent.provider,
-    }));
-    const synthAgent = agents[agents.length - 1];
-    const synth = synthAgent
-      ? {
-          id: "synth",
-          kind: "agent" as const,
-          x: 652,
-          y: 160,
-          size: 78,
-          label: PROVIDER_LABELS[synthAgent.provider] ?? synthAgent.provider,
-          subtitle: synthAgent.role,
-          provider: synthAgent.provider,
-        }
-      : null;
-    const nodes = [taskNode, planner, ...workers, synth].filter((node): node is CanvasNode => Boolean(node));
-    const edges: CanvasEdge[] = [];
-    if (planner) {
-      edges.push({
-        id: `task->${planner.id}`,
-        path: connectionPath([144, 176], [194, 164], [214, 106], [planner.x - 42, planner.y]),
-      });
-      workers.forEach((worker, index) => {
-        edges.push({
-          id: `${planner.id}->${worker.id}`,
-          path: connectionPath([planner.x, planner.y + 40], [planner.x, 152], [worker.x, 162], [worker.x, worker.y - 40]),
-        });
-        if (synth) {
-          edges.push({
-            id: `${worker.id}->synth`,
-            path: connectionPath([worker.x + 42, worker.y], [worker.x + 96, worker.y], [synth.x - 92, synth.y + (index - 1) * 10], [synth.x - 42, synth.y]),
-          });
-        }
-      });
-    }
-    return { nodes, edges };
-  }
-
-  const primaryAgent = getAgent(0, 286, 176);
-  const upperAgent = getAgent(1, 492, 88);
-  const lowerAgent = getAgent(2, 492, 264);
-  const nodes = [taskNode, primaryAgent, upperAgent, lowerAgent].filter((node): node is CanvasNode => Boolean(node));
-  const edges: CanvasEdge[] = [];
-  if (primaryAgent) {
-    edges.push({
-      id: `task->${primaryAgent.id}`,
-      path: connectionPath([144, 176], [194, 176], [220, 176], [primaryAgent.x - 42, primaryAgent.y]),
-    });
-  }
-  if (primaryAgent && upperAgent) {
-    edges.push({
-      id: `${primaryAgent.id}->${upperAgent.id}`,
-      path: connectionPath([primaryAgent.x + 40, primaryAgent.y - 16], [360, 150], [404, 88], [upperAgent.x - 42, upperAgent.y]),
-    });
-  }
-  if (primaryAgent && lowerAgent) {
-    edges.push({
-      id: `${primaryAgent.id}->${lowerAgent.id}`,
-      path: connectionPath([primaryAgent.x + 40, primaryAgent.y + 16], [360, 204], [404, 264], [lowerAgent.x - 42, lowerAgent.y]),
-    });
-  }
-  return { nodes, edges };
-}
-
 function ConnectionCanvas({ session }: { session: Session }) {
   const { copy } = useLocale();
-  const reduceMotion = useReducedMotion();
-  const graph = buildCanvasGraph(session, copy);
-  const activeEdgeIds = resolveActiveEdgeIds(session, graph.edges);
+  const flowGraph = useTopologyFlowGraph(session, copy);
+  const flowViewKey = `${session.id}:${session.mode}:${flowGraph.nodes
+    .map((node) => `${node.id}:${node.position.x}:${node.position.y}:${node.data.kind}:${node.data.dimensions.width}:${node.data.dimensions.height}`)
+    .join("|")}`;
+  const activeEdgeIds = resolveActiveEdgeIds(session, flowGraph.edges.map((edge) => edge.id));
   const activeSignal = latestSignal(session);
   const activeAgentId = activeSignal?.agent_id;
   const cards = signalCards(session, copy);
   const exchanges = buildLiveExchange(session, copy);
 
   return (
-    <div className="overflow-hidden rounded-[20px] border border-[#d6dbe6] bg-white">
+    <div className="overflow-hidden rounded-[20px] border border-[#d6dbe6] bg-white dark:border-slate-800 dark:bg-slate-950/70">
       <div className="absolute inset-x-0 top-0 h-[96px] bg-[radial-gradient(circle_at_top,rgba(226,231,247,0.58),rgba(255,255,255,0))]" />
-      <div className="relative h-[326px] bg-[radial-gradient(circle_at_top,rgba(226,231,247,0.58),rgba(255,255,255,0))]">
-        <svg className="absolute inset-0 h-full w-full" viewBox="0 0 760 364" preserveAspectRatio="none">
-          {graph.edges.map((edge) => {
-            const reverse = activeEdgeIds.has(`${edge.id}:reverse`);
-            const active = edge.active || activeEdgeIds.has(edge.id) || reverse;
-            return (
-              <g key={edge.id}>
-                <path
-                  d={edge.path}
-                  fill="none"
-                  stroke={active ? "#6a7692" : "#a8b0c2"}
-                  strokeWidth={active ? "2.4" : "2"}
-                  className={active && !reduceMotion ? "flow-path-active" : undefined}
-                />
-                {active && !reduceMotion ? (
-                  <>
-                    <circle r="4.5" fill="#94a3b8" opacity="0.8">
-                      <animateMotion
-                        dur="2.2s"
-                        repeatCount="indefinite"
-                        path={reverse ? edge.reversePath ?? mirrorPath(edge.path) : edge.path}
-                      />
-                    </circle>
-                    <circle r="3.2" fill="#111111" opacity="0.35">
-                      <animateMotion
-                        dur="2.2s"
-                        begin="0.45s"
-                        repeatCount="indefinite"
-                        path={reverse ? edge.reversePath ?? mirrorPath(edge.path) : edge.path}
-                      />
-                    </circle>
-                  </>
-                ) : null}
-              </g>
-            );
-          })}
-        </svg>
+      <TopologyFlowStage
+        graph={flowGraph}
+        viewKey={flowViewKey}
+        activeAgentId={activeAgentId}
+        activeEdgeIds={activeEdgeIds}
+      />
 
-        {graph.nodes.map((node) => renderNode(node, activeAgentId))}
-      </div>
-
-      <div className="border-t border-[#e6e8ee] bg-white p-4">
-        <div className="rounded-[18px] border border-[#d6dbe6] bg-[#fafbff] p-4">
-          <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190]">{copy.monitor.liveExchange}</div>
-          {exchanges[0] ? (
-            <div className="mt-3 rounded-[14px] border border-[#d6dbe6] bg-white px-3 py-3">
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-[11px] uppercase tracking-[0.14em] text-[#7b8190]">{exchanges[0].title}</div>
-                <div className="text-[10px] text-[#9aa3b2]">
-                  {new Date(exchanges[0].timestamp * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+      <div className="border-t border-[#e6e8ee] bg-white p-4 dark:border-slate-800 dark:bg-slate-950/70">
+        <div className="rounded-[18px] border border-[#d6dbe6] bg-[#fafbff] p-4 dark:border-slate-800 dark:bg-slate-900/80">
+          <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{copy.monitor.liveExchange}</div>
+          {exchanges.length > 0 ? (
+            <div className="mt-3 space-y-3">
+              {exchanges.map((exchange) => (
+                <div key={exchange.id} className="rounded-[14px] border border-[#d6dbe6] bg-white px-3 py-3 dark:border-slate-800 dark:bg-slate-950/70">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <span className="rounded-full border border-[#d6dbe6] bg-[#fafbff] px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-[#6b7280] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
+                        {exchange.channel}
+                      </span>
+                      <span className="text-[12px] font-medium tracking-[-0.02em] text-[#111111] dark:text-slate-100">{exchange.title}</span>
+                    </div>
+                    <div className="text-[10px] text-[#9aa3b2] dark:text-slate-500">
+                      {new Date(exchange.timestamp * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                    </div>
+                  </div>
+                  <div className="mt-2 text-[13px] font-medium tracking-[-0.02em] text-[#111111] dark:text-slate-100">
+                    {exchange.from} <span className="text-[#9aa3b2]">→</span> {exchange.to}
+                  </div>
+                  {exchange.meta.length > 0 ? (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {exchange.meta.map((meta) => (
+                        <span
+                          key={`${exchange.id}-${meta}`}
+                          className="rounded-full border border-[#e5e7eb] bg-[#fbfcff] px-2.5 py-1 text-[10px] uppercase tracking-[0.12em] text-[#7b8190] dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400"
+                        >
+                          {meta}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                  <div className="mt-2 text-[12px] leading-5 text-[#475569] dark:text-slate-400">{exchange.preview}</div>
+                  <pre className="mt-2 max-h-[132px] overflow-auto whitespace-pre-wrap break-words rounded-[12px] border border-[#e5e7eb] bg-[#fbfcff] px-3 py-2 font-mono text-[11px] leading-5 text-[#344054] dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300">
+                    {exchange.raw || exchange.preview}
+                  </pre>
                 </div>
-              </div>
-              <div className="mt-2 text-[13px] font-medium tracking-[-0.02em] text-[#111111]">
-                {exchanges[0].from} <span className="text-[#9aa3b2]">→</span> {exchanges[0].to}
-              </div>
-              <div className="mt-2 rounded-[12px] border border-[#e5e7eb] bg-[#fbfcff] px-3 py-2 font-mono text-[11px] leading-5 text-[#344054]">
-                {exchanges[0].preview}
-              </div>
+              ))}
             </div>
           ) : (
-            <div className="mt-3 rounded-[14px] border border-[#d6dbe6] bg-white px-3 py-4 text-[13px] text-[#6b7280]">
+            <div className="mt-3 rounded-[14px] border border-[#d6dbe6] bg-white px-3 py-4 text-[13px] text-[#6b7280] dark:border-slate-800 dark:bg-slate-950/60 dark:text-slate-400">
               {copy.monitor.noExchangeYet}
             </div>
           )}
@@ -677,9 +453,9 @@ function ConnectionCanvas({ session }: { session: Session }) {
 
         <div className="mt-4 flex flex-wrap gap-2">
           {cards.map((card) => (
-            <div key={card.label} className="rounded-full border border-[#d6dbe6] bg-[#fafbff] px-3 py-1.5">
-              <span className="text-[10px] uppercase tracking-[0.14em] text-[#7b8190]">{card.label}</span>
-              <span className="ml-2 text-[12px] font-medium tracking-[-0.02em] text-[#111111]">{card.value}</span>
+            <div key={card.label} className="rounded-full border border-[#d6dbe6] bg-[#fafbff] px-3 py-1.5 dark:border-slate-800 dark:bg-slate-900/80">
+              <span className="text-[10px] uppercase tracking-[0.14em] text-[#7b8190] dark:text-slate-500">{card.label}</span>
+              <span className="ml-2 text-[12px] font-medium tracking-[-0.02em] text-[#111111] dark:text-slate-100">{card.value}</span>
             </div>
           ))}
         </div>
@@ -698,16 +474,16 @@ function AgentPill({
   accent?: string;
 }) {
   return (
-    <div className="rounded-[16px] border border-[#d6dbe6] bg-white px-4 py-3">
+    <div className="rounded-[16px] border border-[#d6dbe6] bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-950/70">
       <div className="flex items-center justify-between gap-3">
-        <div className="text-[16px] font-medium tracking-[-0.03em] text-[#111111]">{label}</div>
+        <div className="text-[16px] font-medium tracking-[-0.03em] text-[#111111] dark:text-slate-100">{label}</div>
         {accent ? (
-          <div className="rounded-full border border-[#d6dbe6] bg-[#fafbff] px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-[#6b7280]">
+          <div className="rounded-full border border-[#d6dbe6] bg-[#fafbff] px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-[#6b7280] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
             {accent}
           </div>
         ) : null}
       </div>
-      <div className="mt-1 text-[13px] leading-5 text-[#6b7280]">{subtitle}</div>
+      <div className="mt-1 text-[13px] leading-5 text-[#6b7280] dark:text-slate-400">{subtitle}</div>
     </div>
   );
 }
@@ -723,7 +499,7 @@ function GenericView({ session }: { session: Session }) {
   const attachedDetails = new Map((session.attached_tools ?? []).map((tool) => [tool.id, tool]));
 
   return (
-    <div className="relative min-h-[360px] rounded-[18px] border border-[#d6dbe6] bg-white">
+    <div className="relative min-h-[360px] rounded-[18px] border border-[#d6dbe6] bg-white dark:border-slate-800 dark:bg-slate-950/70">
       <svg className="absolute inset-0 h-full w-full" viewBox="0 0 940 360" preserveAspectRatio="none">
         <path d="M110 180 C 180 180, 210 180, 270 180" fill="none" stroke="#9ca3af" strokeWidth="2.2" />
         <path d="M328 180 C 430 180, 470 80, 620 80" fill="none" stroke="#9ca3af" strokeWidth="2.2" />
@@ -745,10 +521,10 @@ function GenericView({ session }: { session: Session }) {
       {orchestrator ? (
         <div className="absolute left-[184px] top-[150px] flex flex-col items-center">
           <div className="flex h-[74px] w-[74px] items-center justify-center rounded-[14px] border border-[#d1d5db] bg-white text-[44px] font-semibold text-[#6b7280]">
-            {PROVIDER_LABELS[orchestrator.provider]?.[0] ?? "A"}
+            {orchestrator.provider[0]?.toUpperCase() ?? "A"}
           </div>
           <div className="mt-3 text-center text-[20px] leading-tight text-[#111111]">
-            {PROVIDER_LABELS[orchestrator.provider] ?? orchestrator.provider}
+            {orchestrator.provider}
             <br />
             ({orchestrator.role})
           </div>
@@ -758,10 +534,10 @@ function GenericView({ session }: { session: Session }) {
       {upperWorker ? (
         <div className="absolute left-[590px] top-[28px] flex flex-col items-center">
           <div className="flex h-[74px] w-[74px] items-center justify-center rounded-[14px] border border-[#d1d5db] bg-white text-[44px] font-semibold text-[#6b7280]">
-            {PROVIDER_LABELS[upperWorker.provider]?.[0] ?? "A"}
+            {upperWorker.provider[0]?.toUpperCase() ?? "A"}
           </div>
           <div className="mt-3 text-center text-[20px] leading-tight text-[#111111]">
-            {PROVIDER_LABELS[upperWorker.provider] ?? upperWorker.provider}
+            {upperWorker.provider}
             <br />
             ({upperWorker.role})
           </div>
@@ -771,10 +547,10 @@ function GenericView({ session }: { session: Session }) {
       {lowerWorker ? (
         <div className="absolute left-[590px] top-[232px] flex flex-col items-center">
           <div className="flex h-[74px] w-[74px] items-center justify-center rounded-[14px] border border-[#d1d5db] bg-white text-[44px] font-semibold text-[#6b7280]">
-            {PROVIDER_LABELS[lowerWorker.provider]?.[0] ?? "A"}
+            {lowerWorker.provider[0]?.toUpperCase() ?? "A"}
           </div>
           <div className="mt-3 text-center text-[20px] leading-tight text-[#111111]">
-            {PROVIDER_LABELS[lowerWorker.provider] ?? lowerWorker.provider}
+            {lowerWorker.provider}
             <br />
             ({lowerWorker.role})
           </div>
@@ -828,8 +604,9 @@ function BoardView({ session }: { session: Session }) {
   const events = session.events ?? [];
   const roundLabel = latestRoundLabel(events);
   const latestDecision = latestEvent(events, "round_completed");
+
   return (
-    <div className="grid gap-4 rounded-[18px] border border-[#d6dbe6] bg-white p-5 lg:grid-cols-[repeat(3,minmax(0,1fr))]">
+    <div className="grid gap-4 rounded-[18px] border border-[#d6dbe6] bg-white p-5 dark:border-slate-800 dark:bg-slate-950/70 lg:grid-cols-[repeat(3,minmax(0,1fr))]">
       {directors.map((director) => (
         <AgentPill
           key={director.role}
@@ -842,10 +619,10 @@ function BoardView({ session }: { session: Session }) {
           accent={roundLabel ?? undefined}
         />
       ))}
-      <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 lg:col-span-3">
-        <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190]">{copy.monitor.consensusState}</div>
-        <div className="mt-2 text-[16px] leading-7 text-[#111111]">
-          {latestDecision?.detail || session.result || copy.monitor.waitingBoardPosition}
+      <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 lg:col-span-3 dark:border-slate-800 dark:bg-slate-900/80">
+        <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{copy.monitor.consensusState}</div>
+        <div className="mt-2 text-[16px] leading-7 text-[#111111] dark:text-slate-100">
+          {sanitizeSummaryText(latestDecision?.detail) || summarizedResult(session, copy.monitor.waitingBoardPosition)}
         </div>
       </div>
     </div>
@@ -857,8 +634,9 @@ function DemocracyView({ session }: { session: Session }) {
   const events = session.events ?? [];
   const roundLabel = latestRoundLabel(events);
   const latestMajority = latestEvent(events, "round_completed");
+
   return (
-    <div className="grid gap-4 rounded-[18px] border border-[#d6dbe6] bg-white p-5 lg:grid-cols-[repeat(3,minmax(0,1fr))]">
+    <div className="grid gap-4 rounded-[18px] border border-[#d6dbe6] bg-white p-5 dark:border-slate-800 dark:bg-slate-950/70 lg:grid-cols-[repeat(3,minmax(0,1fr))]">
       {session.agents.map((agent) => (
         <AgentPill
           key={agent.role}
@@ -871,10 +649,10 @@ function DemocracyView({ session }: { session: Session }) {
           accent={roundLabel ?? undefined}
         />
       ))}
-      <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 lg:col-span-3">
-        <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190]">{copy.monitor.majorityState}</div>
-        <div className="mt-2 text-[16px] leading-7 text-[#111111]">
-          {latestMajority?.detail || session.result || copy.monitor.noMajorityYet}
+      <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 lg:col-span-3 dark:border-slate-800 dark:bg-slate-900/80">
+        <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{copy.monitor.majorityState}</div>
+        <div className="mt-2 text-[16px] leading-7 text-[#111111] dark:text-slate-100">
+          {sanitizeSummaryText(latestMajority?.detail) || summarizedResult(session, copy.monitor.noMajorityYet)}
         </div>
       </div>
     </div>
@@ -887,8 +665,9 @@ function DebateView({ session }: { session: Session }) {
   const events = session.events ?? [];
   const roundLabel = latestRoundLabel(events);
   const latestVerdict = latestEvent(events, "round_completed");
+
   return (
-    <div className="grid gap-4 rounded-[18px] border border-[#d6dbe6] bg-white p-5 lg:grid-cols-[minmax(0,1fr)_48px_minmax(0,1fr)]">
+    <div className="grid gap-4 rounded-[18px] border border-[#d6dbe6] bg-white p-5 dark:border-slate-800 dark:bg-slate-950/70 lg:grid-cols-[minmax(0,1fr)_48px_minmax(0,1fr)]">
       <AgentPill
         label={proponent?.role ?? "proponent"}
         subtitle={proponent ? latestMessage(session.messages, proponent.role)?.content?.slice(0, 180) || copy.monitor.awaitingArgument : "—"}
@@ -902,10 +681,14 @@ function DebateView({ session }: { session: Session }) {
         subtitle={opponent ? latestMessage(session.messages, opponent.role)?.content?.slice(0, 180) || copy.monitor.awaitingRebuttal : "—"}
         accent={roundLabel ?? undefined}
       />
-      <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 lg:col-span-3">
-        <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190]">{copy.monitor.judgeVerdict}</div>
-        <div className="mt-2 text-[16px] leading-7 text-[#111111]">
-          {latestVerdict?.detail || (judge ? latestMessage(session.messages, judge.role)?.content || session.result || copy.monitor.noVerdictYet : session.result)}
+      <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 lg:col-span-3 dark:border-slate-800 dark:bg-slate-900/80">
+        <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{copy.monitor.judgeVerdict}</div>
+        <div className="mt-2 text-[16px] leading-7 text-[#111111] dark:text-slate-100">
+          {sanitizeSummaryText(latestVerdict?.detail) ||
+            (judge
+              ? sanitizeSummaryText(latestMessage(session.messages, judge.role)?.content) ||
+                summarizedResult(session, copy.monitor.noVerdictYet)
+              : summarizedResult(session, copy.monitor.noVerdictYet))}
         </div>
       </div>
     </div>
@@ -914,22 +697,21 @@ function DebateView({ session }: { session: Session }) {
 
 function CreatorCriticView({ session }: { session: Session }) {
   const { copy } = useLocale();
-  const iterations = session.messages.filter(
-    (message) => message.phase.startsWith("version_") || message.phase.startsWith("critique_")
-  );
+  const iterations = session.messages.filter((message) => message.phase.startsWith("version_") || message.phase.startsWith("critique_"));
+
   return (
-    <div className="rounded-[18px] border border-[#d6dbe6] bg-white p-5">
+    <div className="rounded-[18px] border border-[#d6dbe6] bg-white p-5 dark:border-slate-800 dark:bg-slate-950/70">
       <div className="space-y-3">
         {iterations.map((message) => (
-          <div key={`${message.agent_id}-${message.timestamp}`} className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-3">
-            <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190]">
+          <div key={`${message.agent_id}-${message.timestamp}`} className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-3 dark:border-slate-800 dark:bg-slate-900/80">
+            <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">
               {message.agent_id} · {message.phase.replace(/_/g, " ")}
             </div>
-            <div className="mt-2 text-[14px] leading-6 text-[#111111]">{message.content}</div>
+            <div className="mt-2 text-[14px] leading-6 text-[#111111] dark:text-slate-100">{message.content}</div>
           </div>
         ))}
         {iterations.length === 0 ? (
-          <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 text-[14px] text-[#6b7280]">
+          <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 text-[14px] text-[#6b7280] dark:border-slate-800 dark:bg-slate-900/80 dark:text-slate-400">
             {copy.monitor.iterationsHint}
           </div>
         ) : null}
@@ -944,18 +726,19 @@ function MapReduceView({ session }: { session: Session }) {
   const workers = session.agents.slice(1, -1);
   const synthesizer = session.agents[session.agents.length - 1];
   const chunkEvents = recentEvents(session.events ?? [], "chunk_completed", 4);
+
   return (
-    <div className="grid gap-4 rounded-[18px] border border-[#d6dbe6] bg-white p-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)]">
+    <div className="grid gap-4 rounded-[18px] border border-[#d6dbe6] bg-white p-5 dark:border-slate-800 dark:bg-slate-950/70 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)]">
       <AgentPill
         label={planner?.role ?? "planner"}
         subtitle={planner ? latestMessage(session.messages, planner.role)?.content || copy.monitor.plannerPreparing : "—"}
       />
-      <div className="space-y-3 rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4">
-        <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190]">{copy.monitor.workers}</div>
+      <div className="space-y-3 rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80">
+        <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{copy.monitor.workers}</div>
         {workers.map((worker) => (
-          <div key={worker.role} className="rounded-[14px] border border-[#d6dbe6] bg-white px-3 py-3">
-            <div className="text-[14px] font-medium text-[#111111]">{worker.role}</div>
-            <div className="mt-1 text-[12px] leading-5 text-[#6b7280]">
+          <div key={worker.role} className="rounded-[14px] border border-[#d6dbe6] bg-white px-3 py-3 dark:border-slate-800 dark:bg-slate-950/70">
+            <div className="text-[14px] font-medium text-[#111111] dark:text-slate-100">{worker.role}</div>
+            <div className="mt-1 text-[12px] leading-5 text-[#6b7280] dark:text-slate-400">
               {latestEvent(session.events ?? [], "chunk_completed", (event) => event.agent_id === worker.role)?.detail ||
                 latestMessage(session.messages, worker.role)?.content?.slice(0, 120) ||
                 copy.monitor.waitingChunkOutput}
@@ -963,11 +746,11 @@ function MapReduceView({ session }: { session: Session }) {
           </div>
         ))}
         {chunkEvents.length > 0 ? (
-          <div className="space-y-2 rounded-[14px] border border-dashed border-[#d6dbe6] bg-white px-3 py-3">
-            <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190]">{copy.monitor.recentChunks}</div>
+          <div className="space-y-2 rounded-[14px] border border-dashed border-[#d6dbe6] bg-white px-3 py-3 dark:border-slate-700 dark:bg-slate-950/70">
+            <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{copy.monitor.recentChunks}</div>
             {chunkEvents.map((event) => (
-              <div key={event.id} className="text-[12px] leading-5 text-[#6b7280]">
-                <span className="font-medium text-[#111111]">{event.agent_id || "worker"}</span>
+              <div key={event.id} className="text-[12px] leading-5 text-[#6b7280] dark:text-slate-400">
+                <span className="font-medium text-[#111111] dark:text-slate-100">{event.agent_id || "worker"}</span>
                 {" · "}
                 {event.detail}
               </div>
@@ -977,8 +760,106 @@ function MapReduceView({ session }: { session: Session }) {
       </div>
       <AgentPill
         label={synthesizer?.role ?? "synthesizer"}
-        subtitle={synthesizer ? latestMessage(session.messages, synthesizer.role)?.content || session.result || copy.monitor.synthesisPending : "—"}
+        subtitle={
+          synthesizer
+            ? sanitizeSummaryText(latestMessage(session.messages, synthesizer.role)?.content) ||
+              summarizedResult(session, copy.monitor.synthesisPending)
+            : "—"
+        }
       />
+    </div>
+  );
+}
+
+function DictatorView({ session }: { session: Session }) {
+  const { copy } = useLocale();
+  const dictator = session.agents[0];
+  const workers = session.agents.slice(1, 4);
+  const events = session.events ?? [];
+  const latestDirective = latestEvent(events, "round_started");
+
+  return (
+    <div className="grid gap-4 rounded-[18px] border border-[#d6dbe6] bg-white p-5 dark:border-slate-800 dark:bg-slate-950/70 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.6fr)]">
+      <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80">
+        <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{copy.monitor.dictatorInstruction}</div>
+        <div className="mt-2 text-[16px] font-medium tracking-[-0.03em] text-[#111111] dark:text-slate-100">
+          {dictator?.role ?? "dictator"}
+        </div>
+        <div className="mt-2 text-[14px] leading-6 text-[#6b7280] dark:text-slate-400">
+          {latestDirective?.detail || latestMessage(session.messages, dictator?.role ?? "")?.content?.slice(0, 240) || copy.monitor.idle}
+        </div>
+      </div>
+      <div className="space-y-3">
+        {workers.map((worker) => (
+          <AgentPill
+            key={worker.role}
+            label={worker.role}
+            subtitle={latestMessage(session.messages, worker.role)?.content?.slice(0, 160) || copy.monitor.waitingWorkerResult}
+          />
+        ))}
+        <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80">
+          <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{copy.monitor.dictatorDecision}</div>
+          <div className="mt-2 text-[16px] leading-7 text-[#111111] dark:text-slate-100">
+            {sanitizeSummaryText(latestEvent(events, "round_completed")?.detail) || summarizedResult(session, copy.monitor.idle)}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TournamentView({ session }: { session: Session }) {
+  const { copy } = useLocale();
+  const structure = buildTournamentStructure(session.agents);
+  const events = session.events ?? [];
+  const roundLabel = latestRoundLabel(events) ?? structure.mainRoundLabels[0];
+  const directAccent = structure.playInMatchCount > 0 ? structure.mainRoundLabels[0] ?? roundLabel : roundLabel;
+  const directEntries = structure.slots.filter((slot): slot is Extract<(typeof structure.slots)[number], { kind: "direct" }> => slot.kind === "direct");
+  const playInEntries = structure.slots.filter((slot): slot is Extract<(typeof structure.slots)[number], { kind: "playin" }> => slot.kind === "playin");
+
+  return (
+    <div className="grid gap-4 rounded-[18px] border border-[#d6dbe6] bg-white p-5 dark:border-slate-800 dark:bg-slate-950/70">
+      {playInEntries.map((slot) => {
+        const [a, b] = slot.pair;
+        return (
+          <div
+            key={`playin-${slot.slotIndex}`}
+            className="grid grid-cols-[minmax(0,1fr)_48px_minmax(0,1fr)] items-center gap-2 rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80"
+          >
+            <AgentPill
+              label={a.role}
+              subtitle={latestMessage(session.messages, a.role)?.content?.slice(0, 120) || copy.monitor.noMatchYet}
+              accent="PLAY-IN"
+            />
+            <div className="flex items-center justify-center text-[18px] font-bold tracking-[-0.04em] text-[#9aa3b2] dark:text-slate-500">
+              {copy.monitor.vsLabel}
+            </div>
+            <AgentPill
+              label={b.role}
+              subtitle={latestMessage(session.messages, b.role)?.content?.slice(0, 120) || copy.monitor.noMatchYet}
+              accent="PLAY-IN"
+            />
+          </div>
+        );
+      })}
+      {directEntries.length > 0 ? (
+        <div className="grid gap-3 rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80 lg:grid-cols-2">
+          {directEntries.map((slot) => (
+            <AgentPill
+              key={`seeded-${slot.agent.role}`}
+              label={slot.agent.role}
+              subtitle={latestMessage(session.messages, slot.agent.role)?.content?.slice(0, 140) || copy.monitor.seededForward}
+              accent={directAccent ?? undefined}
+            />
+          ))}
+        </div>
+      ) : null}
+      <div className="rounded-[16px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80">
+        <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{copy.monitor.matchResult}</div>
+        <div className="mt-2 text-[16px] leading-7 text-[#111111] dark:text-slate-100">
+          {sanitizeSummaryText(latestEvent(events, "round_completed")?.detail) || summarizedResult(session, copy.monitor.noMatchYet)}
+        </div>
+      </div>
     </div>
   );
 }
@@ -991,15 +872,18 @@ export function TopologyPanel({ session }: TopologyPanelProps) {
   else if (session.mode === "debate") content = <DebateView session={session} />;
   else if (session.mode === "creator_critic") content = <CreatorCriticView session={session} />;
   else if (session.mode === "map_reduce") content = <MapReduceView session={session} />;
+  else if (session.mode === "dictator") content = <DictatorView session={session} />;
+  else if (session.mode === "tournament") content = <TournamentView session={session} />;
 
   return (
-    <section className="rounded-[18px] border border-[#d6dbe6] bg-white p-4 shadow-[0_10px_24px_-18px_rgba(17,48,105,0.18)]">
-      <h2 className="text-[19px] font-medium tracking-[-0.03em] text-[#111111]">
+    <section className="rounded-[18px] border border-[#d6dbe6] bg-white p-4 shadow-[0_10px_24px_-18px_rgba(17,48,105,0.18)] dark:border-slate-800 dark:bg-slate-950/60 dark:shadow-none">
+      <h2 className="text-[19px] font-medium tracking-[-0.03em] text-[#111111] dark:text-slate-100">
         {shellTitle(session, copy)}
       </h2>
       <div className="mt-5 space-y-4">
+        <SessionStateBanner session={session} />
         <ConnectionCanvas session={session} />
-        {session.mode === "dictator" || session.mode === "tournament" ? null : content}
+        {content}
       </div>
     </section>
   );

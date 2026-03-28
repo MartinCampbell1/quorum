@@ -28,30 +28,30 @@ export function SessionItem({ session, isActive, onClick }: SessionItemProps) {
       type="button"
       onClick={onClick}
       className={cn(
-        "mb-3 w-full rounded-[16px] border bg-white px-4 py-3 text-left transition-all",
+        "mb-3 w-full rounded-[16px] border bg-white px-4 py-3 text-left transition-all dark:bg-slate-950/60",
         isActive
-          ? "border-[#09090b] shadow-none"
-          : "border-[#e2e6ef] hover:border-[#cfd5e2]"
+          ? "border-[#09090b] shadow-none dark:border-slate-400"
+          : "border-[#e2e6ef] hover:border-[#cfd5e2] dark:border-slate-800 dark:hover:border-slate-700"
       )}
     >
       <div className="flex items-start gap-3">
-        <RefreshCcw className="mt-0.5 h-4 w-4 shrink-0 text-[#475569]" />
+        <RefreshCcw className="mt-0.5 h-4 w-4 shrink-0 text-[#475569] dark:text-slate-400" />
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[13px] font-medium text-[#09090b]">
+          <div className="truncate text-[13px] font-medium text-[#09090b] dark:text-slate-100">
             {session.task}
           </div>
           <div className="mt-3 flex items-center gap-2">
-            <span className="text-[11px] text-[#7b8190]">{timeAgo(session.created_at, copy)}</span>
+            <span className="text-[11px] text-[#7b8190] dark:text-slate-500">{timeAgo(session.created_at, copy)}</span>
             <Badge
               variant="outline"
-              className="rounded-full border-[#e2e6ef] bg-white px-2 py-0 text-[10px] font-normal text-[#4b5563]"
+              className="rounded-full border-[#e2e6ef] bg-white px-2 py-0 text-[10px] font-normal text-[#4b5563] dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300"
             >
               {copy.statuses[session.status as keyof typeof copy.statuses] ?? session.status}
             </Badge>
             {session.forked_from ? (
               <Badge
                 variant="outline"
-                className="rounded-full border-[#e2e6ef] bg-white px-2 py-0 text-[10px] font-normal text-[#4b5563]"
+                className="rounded-full border-[#e2e6ef] bg-white px-2 py-0 text-[10px] font-normal text-[#4b5563] dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300"
               >
                 {copy.shell.branch}
               </Badge>

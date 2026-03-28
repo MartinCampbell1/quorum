@@ -1,6 +1,8 @@
 "use client";
 
-import { Clock3, LogOut, PanelLeftClose, PanelLeftOpen, Search, Settings2, SlidersHorizontal, SunMedium } from "lucide-react";
+import { useSyncExternalStore } from "react";
+import { Clock3, LogOut, Moon, PanelLeftClose, PanelLeftOpen, Search, Settings2, SlidersHorizontal, SunMedium } from "lucide-react";
+import { useTheme } from "next-themes";
 
 import { useLocale } from "@/lib/locale";
 import { cn } from "@/lib/utils";
@@ -20,16 +22,28 @@ const PRIMARY_ITEMS: Array<{ id: View; icon: typeof Search; label: string }> = [
   { id: "settings", icon: SlidersHorizontal, label: "Настройки" },
 ];
 
+function useHasHydrated() {
+  return useSyncExternalStore(
+    () => () => {},
+    () => true,
+    () => false
+  );
+}
+
 export function IconBar({ activeView, onViewChange, sessionsCollapsed, onToggleSessions }: IconBarProps) {
   const { copy } = useLocale();
+  const { resolvedTheme, setTheme } = useTheme();
+  const hydrated = useHasHydrated();
+  const isDark = hydrated && resolvedTheme === "dark";
+
   return (
-    <aside className="flex h-full w-[68px] flex-col items-center border-r border-[#e6e8ee] bg-white py-4">
+    <aside className="flex h-full w-[68px] flex-col items-center border-r border-[#e6e8ee] bg-white py-4 dark:border-slate-800/80 dark:bg-[#0b0f17]">
       <div className="flex flex-col items-center gap-4 pt-1">
         <button
           type="button"
           aria-label={sessionsCollapsed ? copy.shell.showSidebar : copy.shell.hideSidebar}
           onClick={onToggleSessions}
-          className="flex h-12 w-12 items-center justify-center rounded-[14px] text-[#09090b] transition-colors hover:bg-[#f7f7fa]"
+          className="flex h-12 w-12 items-center justify-center rounded-[14px] text-[#09090b] transition-colors hover:bg-[#f7f7fa] dark:text-slate-100 dark:hover:bg-slate-800/70"
         >
           {sessionsCollapsed ? (
             <PanelLeftOpen className="h-[23px] w-[23px] stroke-[1.8]" />
@@ -37,7 +51,7 @@ export function IconBar({ activeView, onViewChange, sessionsCollapsed, onToggleS
             <PanelLeftClose className="h-[23px] w-[23px] stroke-[1.8]" />
           )}
         </button>
-        {PRIMARY_ITEMS.map(({ id, icon: Icon, label }) => (
+        {PRIMARY_ITEMS.map(({ id, icon: Icon }) => (
           <button
             key={id}
             type="button"
@@ -46,8 +60,8 @@ export function IconBar({ activeView, onViewChange, sessionsCollapsed, onToggleS
             className={cn(
               "flex h-12 w-12 items-center justify-center rounded-[14px] text-[#09090b] transition-colors",
               activeView === id
-                ? "bg-[#f0f1f5] text-[#09090b]"
-                : "bg-transparent text-[#09090b] hover:bg-[#f7f7fa]"
+                ? "bg-[#f0f1f5] text-[#09090b] dark:bg-slate-800 dark:text-white"
+                : "bg-transparent text-[#09090b] hover:bg-[#f7f7fa] dark:text-slate-300 dark:hover:bg-slate-800/70"
             )}
           >
             <Icon className="h-[25px] w-[25px] stroke-[1.8]" />
@@ -59,21 +73,26 @@ export function IconBar({ activeView, onViewChange, sessionsCollapsed, onToggleS
         <button
           type="button"
           aria-label={copy.shell.theme}
-          className="flex h-12 w-12 items-center justify-center rounded-[14px] text-[#09090b] transition-colors hover:bg-[#f7f7fa]"
+          onClick={() => setTheme(isDark ? "light" : "dark")}
+          className="flex h-12 w-12 items-center justify-center rounded-[14px] text-[#09090b] transition-colors hover:bg-[#f7f7fa] dark:text-slate-100 dark:hover:bg-slate-800/70"
         >
-          <SunMedium className="h-[23px] w-[23px] stroke-[1.8]" />
+          {isDark ? (
+            <SunMedium className="h-[23px] w-[23px] stroke-[1.8]" />
+          ) : (
+            <Moon className="h-[23px] w-[23px] stroke-[1.8]" />
+          )}
         </button>
         <button
           type="button"
           aria-label={copy.shell.account}
-          className="flex h-12 w-12 items-center justify-center rounded-[14px] text-[#09090b] transition-colors hover:bg-[#f7f7fa]"
+          className="flex h-12 w-12 items-center justify-center rounded-[14px] text-[#09090b] transition-colors hover:bg-[#f7f7fa] dark:text-slate-100 dark:hover:bg-slate-800/70"
         >
           <Settings2 className="h-[23px] w-[23px] stroke-[1.8]" />
         </button>
         <button
           type="button"
           aria-label={copy.shell.exit}
-          className="flex h-12 w-12 items-center justify-center rounded-[14px] text-[#09090b] transition-colors hover:bg-[#f7f7fa]"
+          className="flex h-12 w-12 items-center justify-center rounded-[14px] text-[#09090b] transition-colors hover:bg-[#f7f7fa] dark:text-slate-100 dark:hover:bg-slate-800/70"
         >
           <LogOut className="h-[23px] w-[23px] stroke-[1.8]" />
         </button>

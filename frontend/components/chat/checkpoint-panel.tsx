@@ -58,13 +58,13 @@ export function CheckpointPanel({
   }
 
   return (
-    <section className="rounded-[18px] border border-[#d6dbe6] bg-white p-4 shadow-[0_10px_24px_-18px_rgba(17,48,105,0.18)]">
+    <section className="rounded-[18px] border border-[#d6dbe6] bg-white p-4 shadow-[0_10px_24px_-18px_rgba(17,48,105,0.18)] dark:border-slate-800 dark:bg-slate-950/60 dark:shadow-none">
       <div className="flex items-center justify-between">
-        <h2 className="text-[19px] font-medium tracking-[-0.03em] text-[#111111]">
+        <h2 className="text-[19px] font-medium tracking-[-0.03em] text-[#111111] dark:text-slate-100">
           {copy.monitor.checkpointsBranches}
         </h2>
         {session.forked_from ? (
-          <span className="rounded-full border border-[#d6dbe6] bg-white px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-[#6b7280]">
+          <span className="rounded-full border border-[#d6dbe6] bg-white px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-[#6b7280] dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
             {copy.shell.branch}
           </span>
         ) : null}
@@ -72,11 +72,11 @@ export function CheckpointPanel({
 
       <div className="mt-4 space-y-3">
         {session.forked_from ? (
-          <div className="rounded-[14px] border border-[#d6dbe6] bg-[#fafbff] px-3 py-3">
-            <div className="text-[10px] uppercase tracking-[0.16em] text-[#7b8190]">{copy.monitor.parentSession}</div>
-            <div className="mt-1 font-mono text-[12px] text-[#111111]">{session.forked_from}</div>
+          <div className="rounded-[14px] border border-[#d6dbe6] bg-[#fafbff] px-3 py-3 dark:border-slate-800 dark:bg-slate-900/80">
+            <div className="text-[10px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{copy.monitor.parentSession}</div>
+            <div className="mt-1 font-mono text-[12px] text-[#111111] dark:text-slate-100">{session.forked_from}</div>
             {session.forked_checkpoint_id ? (
-              <div className="mt-1 text-[11px] text-[#6b7280]">
+              <div className="mt-1 text-[11px] text-[#6b7280] dark:text-slate-400">
                 {copy.monitor.fromCheckpoint} {session.forked_checkpoint_id}
               </div>
             ) : null}
@@ -84,13 +84,13 @@ export function CheckpointPanel({
         ) : null}
 
         {session.branch_children && session.branch_children.length > 0 ? (
-          <div className="rounded-[14px] border border-[#d6dbe6] bg-[#fafbff] px-3 py-3">
-            <div className="text-[10px] uppercase tracking-[0.16em] text-[#7b8190]">{copy.monitor.childBranches}</div>
+          <div className="rounded-[14px] border border-[#d6dbe6] bg-[#fafbff] px-3 py-3 dark:border-slate-800 dark:bg-slate-900/80">
+            <div className="text-[10px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{copy.monitor.childBranches}</div>
             <div className="mt-2 space-y-1.5">
               {session.branch_children.map((child) => (
-                <div key={child.id} className="flex items-center justify-between text-[11px] text-[#111111]">
+                <div key={child.id} className="flex items-center justify-between text-[11px] text-[#111111] dark:text-slate-100">
                   <span className="font-mono">{child.id}</span>
-                  <span className="text-[#6b7280]">{child.forked_checkpoint_id ?? "checkpoint"}</span>
+                  <span className="text-[#6b7280] dark:text-slate-400">{child.forked_checkpoint_id ?? "checkpoint"}</span>
                 </div>
               ))}
             </div>
@@ -107,7 +107,9 @@ export function CheckpointPanel({
                 key={checkpoint.id}
                 className={cn(
                   "rounded-[14px] border px-3 py-3 transition-colors",
-                  isSelected ? "border-[#111111] bg-white" : "border-[#d6dbe6] bg-white"
+                  isSelected
+                    ? "border-[#111111] bg-white dark:border-slate-500 dark:bg-slate-900/90"
+                    : "border-[#d6dbe6] bg-white dark:border-slate-800 dark:bg-slate-950/60"
                 )}
               >
                 <div className="flex items-start justify-between gap-3">
@@ -117,18 +119,18 @@ export function CheckpointPanel({
                     className="min-w-0 flex-1 text-left"
                   >
                     <div className="flex items-center gap-2">
-                      <span className="font-mono text-[12px] text-[#111111]">{checkpoint.id}</span>
+                      <span className="font-mono text-[12px] text-[#111111] dark:text-slate-100">{checkpoint.id}</span>
                       {isCurrent ? (
-                        <span className="rounded-full border border-[#d6dbe6] bg-[#fafbff] px-2 py-0.5 text-[10px] uppercase tracking-[0.14em] text-[#6b7280]">
+                        <span className="rounded-full border border-[#d6dbe6] bg-[#fafbff] px-2 py-0.5 text-[10px] uppercase tracking-[0.14em] text-[#6b7280] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
                           {copy.monitor.current}
                         </span>
                       ) : null}
                     </div>
-                    <div className="mt-1 text-[11px] text-[#6b7280]">
+                    <div className="mt-1 text-[11px] text-[#6b7280] dark:text-slate-400">
                       {formatTimestamp(checkpoint.timestamp)} · {checkpoint.next_node ?? "terminal"}
                     </div>
                     {checkpoint.result_preview ? (
-                      <div className="mt-2 text-[12px] leading-5 text-[#111111]/80">
+                      <div className="mt-2 text-[12px] leading-5 text-[#111111]/80 dark:text-slate-300">
                         {checkpoint.result_preview}
                       </div>
                     ) : null}
@@ -137,7 +139,7 @@ export function CheckpointPanel({
                     type="button"
                     variant="outline"
                     size="sm"
-                    className="rounded-[10px] border-[#d6dbe6] bg-white text-[11px]"
+                    className="rounded-[10px] border-[#d6dbe6] bg-white text-[11px] dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:hover:bg-slate-900"
                     onClick={() => branchFromCheckpoint(checkpoint.id)}
                     disabled={isBranching || ["running", "pause_requested", "cancel_requested"].includes(session.status)}
                     >
@@ -154,14 +156,14 @@ export function CheckpointPanel({
           })}
 
           {checkpoints.length === 0 ? (
-            <div className="rounded-[14px] border border-[#d6dbe6] bg-white px-3 py-4 text-[12px] text-[#6b7280]">
+            <div className="rounded-[14px] border border-[#d6dbe6] bg-white px-3 py-4 text-[12px] text-[#6b7280] dark:border-slate-800 dark:bg-slate-950/60 dark:text-slate-400">
               {copy.monitor.noCheckpoints}
             </div>
           ) : null}
         </div>
 
         {selectedCheckpointId && selectedCheckpointId !== session.current_checkpoint_id ? (
-          <div className="flex items-center gap-2 rounded-[14px] border border-[#d6dbe6] bg-[#fafbff] px-3 py-3 text-[12px] text-[#6b7280]">
+          <div className="flex items-center gap-2 rounded-[14px] border border-[#d6dbe6] bg-[#fafbff] px-3 py-3 text-[12px] text-[#6b7280] dark:border-slate-800 dark:bg-slate-900/80 dark:text-slate-400">
             <RotateCcw className="h-4 w-4" />
             {copy.monitor.selectedHistoricCheckpoint} {selectedCheckpointId}. {copy.monitor.selectedHistoricHint}
           </div>

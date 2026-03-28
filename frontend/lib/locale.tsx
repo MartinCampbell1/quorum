@@ -54,7 +54,9 @@ const dictionaries = {
       selectedHistoricCheckpoint: "Выбран исторический чекпоинт",
       selectedHistoricHint: "Resume всегда идёт с текущего чекпоинта, branch — с выбранного.",
       executionTrace: "Журнал выполнения",
+      conversation: "Диалог команды",
       traceEmpty: "Трасса появится после запуска сессии.",
+      noConversationYet: "Как только агенты начнут отвечать, здесь появится их диалог.",
       liveExchange: "Живой обмен",
       noExchangeYet: "Пакеты и реплики появятся после первых событий.",
       sharedContexts: {
@@ -62,9 +64,13 @@ const dictionaries = {
         democracy: "Голосование",
         creator_critic: "Редакционный цикл",
         map_reduce: "Синтез",
+        dictator: "Диктатор",
+        tournament: "Турнир",
         default: "Оркестратор",
       },
       agentMessage: "Сообщение агента",
+      userMessage: "Сообщение пользователя",
+      agentFailure: "Сбой шага агента",
       systemEvent: "Системное событие",
       toolPreview: "Пакет / запрос",
       toolCall: "Вызов инструмента",
@@ -76,9 +82,15 @@ const dictionaries = {
         debate: "Арена дебатов",
         creator_critic: "Цикл редакций",
         map_reduce: "Планировщик / исполнители / синтез",
+        dictator: "Вертикаль управления",
+        tournament: "Турнирная сетка",
         default: "Топология агентов и MCP",
       },
       sessionTask: "Задача сессии",
+      expandTask: "Показать полностью",
+      collapseTask: "Свернуть",
+      showEarlierMessages: "Показать раньше",
+      hideEarlierMessages: "Скрыть историю",
       signalLabels: {
         activeNode: "Активный узел",
         checkpoint: "Чекпоинт",
@@ -87,6 +99,18 @@ const dictionaries = {
       noToolActivity: "Пока нет активности по инструментам",
       idle: "ожидание",
       pending: "ожидание",
+      stateTitles: {
+        failed: "Сессия остановилась до финального результата",
+        paused: "Сессия поставлена на паузу",
+        cancelled: "Сессия была остановлена",
+        waiting: "Сессия запущена, ждём первый ход",
+      },
+      stateDetails: {
+        failed: "Показываем последний подтверждённый снимок monitor. Runtime уже не исполняется, поэтому тут важен последний зафиксированный контекст.",
+        paused: "Canvas заморожен на последнем подтверждённом переходе. Можно продолжить с текущего чекпоинта или ответвиться от него.",
+        cancelled: "Исполнение остановлено пользователем или системой. Ниже остаётся последний подтверждённый кадр monitor.",
+        waiting: "Сценарий уже создан, но ещё не появились сообщения, tool calls или новые переходы графа.",
+      },
       genericConnection: "MCP-подключение",
       taskInput: "Входная задача",
       consensusState: "Состояние консенсуса",
@@ -104,6 +128,15 @@ const dictionaries = {
       plannerPreparing: "Планировщик готовит чанки…",
       waitingChunkOutput: "Ожидаем результат по чанку…",
       synthesisPending: "Синтез ещё не завершён…",
+      dictatorInstruction: "Инструкция диктатора",
+      waitingWorkerResult: "Ожидаем результат от исполнителя…",
+      dictatorDecision: "Решение диктатора",
+      tournamentBracket: "Турнирная сетка",
+      currentMatch: "Текущий матч",
+      matchResult: "Результат матча",
+      noMatchYet: "Матч ещё не начался.",
+      seededForward: "Проходит в следующий раунд без play-in матча.",
+      vsLabel: "VS",
     },
     history: {
       title: "История сессий",
@@ -114,6 +147,9 @@ const dictionaries = {
     },
     input: {
       checkpointControl: "Управление чекпоинтом",
+      teamContinue: "Продолжение обсуждения",
+      teamContinueHint: "Напиши новое сообщение команде. Система создаст новую ветку от последнего чекпоинта и продолжит работу с тем же контекстом.",
+      teamContinuePlaceholder: "Например: теперь сфокусируйтесь на рисках, которые вы упустили в первом прогоне",
       sessionPaused: "Сессия остановлена на чекпоинте.",
       sessionPausedHint: "Добавь инструкцию, если хочешь скорректировать следующий шаг, или просто продолжи выполнение.",
       queuedInstructions: "Инструкций в очереди",
@@ -122,6 +158,7 @@ const dictionaries = {
       resumeWithInstruction: "Продолжить с инструкцией",
       resume: "Продолжить",
       newBranch: "Новая ветка",
+      continueDiscussion: "Продолжить обсуждение с командой",
     },
     statuses: {
       running: "работает",
@@ -182,7 +219,9 @@ const dictionaries = {
       selectedHistoricCheckpoint: "Historical checkpoint selected",
       selectedHistoricHint: "Resume always uses the current checkpoint, branch uses the selected checkpoint.",
       executionTrace: "Execution Trace",
+      conversation: "Team Conversation",
       traceEmpty: "Trace will appear after the session starts.",
+      noConversationYet: "Once agents start responding, their conversation will appear here.",
       liveExchange: "Live Exchange",
       noExchangeYet: "Packets and message handoffs will appear after the first events.",
       sharedContexts: {
@@ -190,9 +229,13 @@ const dictionaries = {
         democracy: "Voting",
         creator_critic: "Revision Loop",
         map_reduce: "Synthesis",
+        dictator: "Dictator",
+        tournament: "Tournament",
         default: "Orchestrator",
       },
       agentMessage: "Agent message",
+      userMessage: "User message",
+      agentFailure: "Agent step failed",
       systemEvent: "System event",
       toolPreview: "Packet / request",
       toolCall: "Tool Call",
@@ -204,9 +247,15 @@ const dictionaries = {
         debate: "Debate Arena",
         creator_critic: "Iteration Stack",
         map_reduce: "Planner / Workers / Synthesis",
+        dictator: "Command Hierarchy",
+        tournament: "Tournament Bracket",
         default: "Agent & MCP Server Topology",
       },
       sessionTask: "Session Task",
+      expandTask: "Expand",
+      collapseTask: "Collapse",
+      showEarlierMessages: "Show earlier",
+      hideEarlierMessages: "Hide earlier",
       signalLabels: {
         activeNode: "Active Node",
         checkpoint: "Checkpoint",
@@ -215,6 +264,18 @@ const dictionaries = {
       noToolActivity: "No tool activity yet",
       idle: "idle",
       pending: "pending",
+      stateTitles: {
+        failed: "Session stopped before a final result",
+        paused: "Session is paused",
+        cancelled: "Session was stopped",
+        waiting: "Session started, waiting for the first move",
+      },
+      stateDetails: {
+        failed: "Showing the last confirmed monitor snapshot. The runtime is no longer executing, so the frozen state needs to read clearly.",
+        paused: "The canvas is frozen on the last confirmed transition. You can resume from the current checkpoint or branch from it.",
+        cancelled: "Execution was stopped by the user or the system. The last confirmed monitor frame remains visible below.",
+        waiting: "The scenario exists, but there are still no messages, tool calls, or graph transitions to explain what happened next.",
+      },
       genericConnection: "MCP connection",
       taskInput: "Task Input",
       consensusState: "Consensus state",
@@ -232,6 +293,15 @@ const dictionaries = {
       plannerPreparing: "Planner preparing chunks…",
       waitingChunkOutput: "Waiting for chunk output…",
       synthesisPending: "Synthesis pending…",
+      dictatorInstruction: "Dictator instruction",
+      waitingWorkerResult: "Waiting for worker result…",
+      dictatorDecision: "Dictator decision",
+      tournamentBracket: "Tournament bracket",
+      currentMatch: "Current match",
+      matchResult: "Match result",
+      noMatchYet: "No match started yet.",
+      seededForward: "Seeded directly into the next round.",
+      vsLabel: "VS",
     },
     history: {
       title: "Session History",
@@ -242,6 +312,9 @@ const dictionaries = {
     },
     input: {
       checkpointControl: "Checkpoint Control",
+      teamContinue: "Continue discussion",
+      teamContinueHint: "Send a new message to the team. The system will create a fresh branch from the latest checkpoint and continue with the same context.",
+      teamContinuePlaceholder: "For example: now focus on the risks you missed in the first pass",
       sessionPaused: "The session is paused on a checkpoint.",
       sessionPausedHint: "Add an instruction if you want to adjust the next step, or simply continue execution.",
       queuedInstructions: "Queued instructions",
@@ -250,6 +323,7 @@ const dictionaries = {
       resumeWithInstruction: "Resume with Instruction",
       resume: "Resume",
       newBranch: "New Branch",
+      continueDiscussion: "Continue with the team",
     },
     statuses: {
       running: "running",
@@ -274,14 +348,13 @@ interface LocaleContextValue {
 const LocaleContext = createContext<LocaleContextValue | null>(null);
 
 export function LocaleProvider({ children }: { children: ReactNode }) {
-  const [locale, setLocale] = useState<AppLocale>("ru");
-
-  useEffect(() => {
-    const stored = window.localStorage.getItem("multi-agent-locale");
-    if (stored === "ru" || stored === "en") {
-      setLocale(stored);
+  const [locale, setLocale] = useState<AppLocale>(() => {
+    if (typeof window === "undefined") {
+      return "ru";
     }
-  }, []);
+    const stored = window.localStorage.getItem("multi-agent-locale");
+    return stored === "ru" || stored === "en" ? stored : "ru";
+  });
 
   useEffect(() => {
     window.localStorage.setItem("multi-agent-locale", locale);

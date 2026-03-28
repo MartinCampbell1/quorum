@@ -114,3 +114,54 @@ def test_call_agent_clears_codex_bootstrap_cache_for_isolated_home(tmp_path):
     finally:
         tool_config_store.delete("codex_native_mcp")
         gateway.BOOTSTRAPPED_MCP_SERVERS.clear()
+
+
+def test_custom_shell_tool_routes_through_configured_tools_server(tmp_path):
+    tool = ToolConfig(
+        id="local_probe",
+        name="Local Probe",
+        tool_type="shell",
+        icon="⚡",
+        config={"command_template": "curl -s http://127.0.0.1:8800/health", "description": "Run a local probe"},
+        enabled=True,
+    )
+    tool_config_store.add(tool)
+    created_paths = []
+
+    def fake_write_temp_json(payload: dict, prefix: str) -> str:
+        path = tmp_path / f"{prefix}{len(created_paths)}.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        created_paths.append(path)
+        return str(path)
+
+    try:
+        with patch("gateway._write_temp_json", side_effect=fake_write_temp_json):
+            config_path, temp_paths = gateway.build_mcp_config(["local_probe"])
+
+        assert config_path is not None
+        assert temp_paths
+        rendered = json.loads(next(path.read_text(encoding="utf-8") for path in created_paths if path.name.startswith("mcp_")))
+        assert "configured-tools" in rendered["mcpServers"]
+
+        payload = json.loads(next(path.read_text(encoding="utf-8") for path in created_paths if path.name.startswith("configured_tools_")))
+        assert payload["tools"][0]["id"] == "local_probe"
+        assert payload["tools"][0]["tool_type"] == "shell"
+    finally:
+        tool_config_store.delete("local_probe")
+
+
+def test_call_agent_marks_empty_output_as_failed_even_with_zero_exit_code():
+    with (
+        patch("gateway.run_cli", new=AsyncMock(return_value=("", "no visible response", 0))),
+        patch.dict(gateway.pools, {}, clear=True),
+    ):
+        result = asyncio.run(
+            gateway.call_agent(
+                "codex",
+                "Produce a final verdict",
+            )
+        )
+
+    assert result["success"] is False
+    assert result["usable_output"] is False
+    assert "no visible response" in result["error"]

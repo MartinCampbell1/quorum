@@ -115,20 +115,93 @@ def test_scenarios_endpoint_covers_all_primary_wizard_modes():
     assert {"dictator", "board", "democracy", "debate", "map_reduce", "creator_critic"}.issubset(modes)
 
 
-def test_custom_tools_are_honestly_disabled():
+def test_custom_tools_compat_layer_round_trips_http_api():
+    try:
+        response = client.post(
+            "/orchestrate/tools/custom",
+            json={
+                "key": "internal_api",
+                "name": "Internal API",
+                "description": "Call internal API",
+                "tool_type": "http_api",
+                "config": {
+                    "url": "https://example.com/api",
+                    "method": "POST",
+                    "headers": "{\"Authorization\": \"Bearer secret\", \"X-Trace\": \"1\"}",
+                },
+            },
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["tool_type"] == "http_api"
+        assert payload["config"]["url"] == "https://example.com/api"
+
+        stored = tool_config_store.get("internal_api")
+        assert stored is not None
+        assert stored.tool_type == "http_api"
+        assert stored.config["base_url"] == "https://example.com/api"
+        assert stored.config["auth_header"] == "Bearer secret"
+        assert json.loads(stored.config["headers_json"]) == {"X-Trace": "1"}
+
+        listing = client.get("/orchestrate/tools/custom")
+        assert listing.status_code == 200
+        listed = next(item for item in listing.json() if item["key"] == "internal_api")
+        assert listed["description"] == "Call internal API"
+        assert json.loads(listed["config"]["headers"]) == {
+            "Authorization": "Bearer secret",
+            "X-Trace": "1",
+        }
+
+        delete = client.delete("/orchestrate/tools/custom/internal_api")
+        assert delete.status_code == 200
+        assert tool_config_store.get("internal_api") is None
+    finally:
+        tool_config_store.delete("internal_api")
+
+
+def test_custom_tools_compat_layer_supports_shell_command():
+    try:
+        response = client.post(
+            "/orchestrate/tools/custom",
+            json={
+                "key": "local_probe",
+                "name": "Local Probe",
+                "description": "Run a reusable local shell probe.",
+                "tool_type": "shell_command",
+                "config": {"command": "curl -s http://127.0.0.1:8800/health"},
+            },
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["tool_type"] == "shell_command"
+        assert payload["config"]["command"] == "curl -s http://127.0.0.1:8800/health"
+
+        settings_listing = client.get("/orchestrate/settings/tools")
+        assert settings_listing.status_code == 200
+        tool_row = next(item for item in settings_listing.json() if item["id"] == "local_probe")
+        assert tool_row["tool_type"] == "shell"
+        assert tool_row["transport"] == "bridge"
+    finally:
+        tool_config_store.delete("local_probe")
+
+
+def test_settings_tools_api_rejects_builtin_tool_override():
     response = client.post(
-        "/orchestrate/tools/custom",
+        "/orchestrate/settings/tools",
         json={
-            "key": "internal_api",
-            "name": "Internal API",
-            "description": "Call internal API",
-            "tool_type": "http_api",
-            "config": {"url": "https://example.com"},
+            "id": "code_exec",
+            "name": "Overridden Python",
+            "tool_type": "code_exec",
+            "icon": "🐍",
+            "config": {},
+            "enabled": True,
         },
     )
 
-    assert response.status_code == 501
-    assert "not supported" in response.json()["detail"]
+    assert response.status_code == 409
+    assert "cannot be replaced" in response.json()["detail"]
 
 
 def test_run_rejects_scenario_mode_mismatch():
@@ -162,7 +235,9 @@ def test_live_messages_endpoint_reports_read_only_session():
     )
 
     assert response.status_code == 409
-    assert "Pause the run first" in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert detail["reason"]["code"] == "status_not_messageable"
+    assert "Pause the run first" in detail["message"]
 
 
 def test_session_events_endpoint_streams_backlog_once():
@@ -206,7 +281,9 @@ def test_checkpoint_restart_requires_non_running_session():
     )
 
     assert response.status_code == 409
-    assert "must be paused or finished" in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert detail["reason"]["code"] == "status_not_branchable"
+    assert "must be paused or finished" in detail["message"]
 
 
 def test_resume_reports_missing_runtime_state_after_restart():
@@ -227,7 +304,9 @@ def test_resume_reports_missing_runtime_state_after_restart():
     )
 
     assert response.status_code == 409
-    assert "runtime is unavailable" in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert detail["reason"]["code"] == "runtime_unavailable_after_restart"
+    assert "runtime is unavailable" in detail["message"]
 
 
 def test_session_endpoint_exposes_runtime_state_flags():
@@ -261,7 +340,10 @@ def test_session_endpoint_exposes_runtime_state_flags():
     assert runtime_state["checkpoint_runtime_available"] is False
     assert runtime_state["has_checkpoints"] is True
     assert runtime_state["can_resume"] is False
+    assert runtime_state["can_continue_conversation"] is False
     assert runtime_state["can_branch_from_checkpoint"] is False
+    assert runtime_state["reasons"]["resume"]["code"] == "runtime_unavailable_after_restart"
+    assert runtime_state["reasons"]["branch_from_checkpoint"]["code"] == "checkpoint_runtime_unavailable"
 
 
 def test_sessions_list_exposes_runtime_state_flags():
@@ -302,7 +384,69 @@ def test_cancel_reports_missing_runtime_for_paused_session():
     )
 
     assert response.status_code == 409
-    assert "runtime is unavailable" in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert detail["reason"]["code"] == "runtime_unavailable_after_restart"
+    assert "runtime is unavailable" in detail["message"]
+
+
+def test_continue_endpoint_creates_branch_from_current_checkpoint():
+    session_id = store.create(
+        "debate",
+        "Continue the discussion",
+        [
+            AgentConfig(role="proponent", provider="claude", tools=[]),
+            AgentConfig(role="opponent", provider="codex", tools=[]),
+            AgentConfig(role="judge", provider="gemini", tools=[]),
+        ],
+        {},
+    )
+    store.update(session_id, status="completed", current_checkpoint_id="cp_3")
+    store.add_checkpoint(
+        session_id,
+        {
+            "id": "cp_3",
+            "timestamp": 1.0,
+            "next_node": "judge_decides",
+            "status": "terminal",
+            "result_preview": "Judge verdict",
+            "graph_checkpoint_id": "graph_cp_3",
+        },
+    )
+
+    with patch("orchestrator.api.has_checkpoint_runtime", return_value=True), patch(
+        "orchestrator.api.fork_from_checkpoint", return_value="sess_followup"
+    ) as mock_fork:
+        response = client.post(
+            f"/orchestrate/session/{session_id}/continue",
+            json={"content": "Push the team on operational risks."},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "running", "new_session_id": "sess_followup"}
+    mock_fork.assert_called_once_with(session_id, "cp_3", "Push the team on operational risks.")
+
+
+def test_continue_endpoint_rejects_non_terminal_session():
+    session_id = store.create(
+        "debate",
+        "Still running",
+        [
+            AgentConfig(role="proponent", provider="claude", tools=[]),
+            AgentConfig(role="opponent", provider="codex", tools=[]),
+            AgentConfig(role="judge", provider="gemini", tools=[]),
+        ],
+        {},
+    )
+    store.update(session_id, status="running")
+
+    response = client.post(
+        f"/orchestrate/session/{session_id}/continue",
+        json={"content": "Continue the conversation"},
+    )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["reason"]["code"] == "status_not_continuable"
 
 
 def test_inject_instruction_rejects_terminal_session_status():
@@ -323,7 +467,35 @@ def test_inject_instruction_rejects_terminal_session_status():
     )
 
     assert response.status_code == 409
-    assert "cannot accept instructions" in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert detail["reason"]["code"] == "status_not_instructionable"
+    assert "cannot accept instructions" in detail["message"]
+
+
+def test_checkpoint_restart_surfaces_checkpoint_not_found_reason():
+    session_id = store.create(
+        "dictator",
+        "Missing checkpoint branch",
+        [
+            AgentConfig(role="director", provider="claude", tools=[]),
+            AgentConfig(role="worker", provider="codex", tools=[]),
+        ],
+        {},
+    )
+    store.update(session_id, status="paused", current_checkpoint_id="cp_missing")
+
+    with patch("orchestrator.api.has_checkpoint_runtime", return_value=True), patch(
+        "orchestrator.api.fork_from_checkpoint", return_value=None
+    ):
+        response = client.post(
+            f"/orchestrate/session/{session_id}/control",
+            json={"action": "restart_from_checkpoint", "checkpoint_id": "cp_missing"},
+        )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["reason"]["code"] == "checkpoint_not_found"
+    assert detail["checkpoint_id"] == "cp_missing"
 
 
 def test_run_accepts_configured_tool_for_claude():

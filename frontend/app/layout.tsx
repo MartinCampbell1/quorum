@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import type { CSSProperties, ReactNode } from "react";
 import { ThemeProvider } from "next-themes";
+import "@xyflow/react/dist/style.css";
 import "./globals.css";
 
 export const metadata: Metadata = {

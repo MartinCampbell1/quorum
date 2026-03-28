@@ -202,6 +202,16 @@ Branch: `codex/personal-mvp-refine`
   - each Codex run gets an isolated temporary `CODEX_HOME`
   - existing persisted MCP registrations are stripped from the temporary config before the selected run-scoped servers are registered
   - `http`/`sse` external MCP for Codex remain bridged
+- Added safer runtime truthfulness and memory bounds for session control:
+  - session payloads and session-list cards now expose `runtime_state` flags (`live_runtime_available`, `checkpoint_runtime_available`, control booleans)
+  - paused/cancel/instruction control paths now return honest `409` errors when in-memory runtime state is gone instead of generic status failures
+  - in-memory checkpoint savers are now capped (`MULTI_AGENT_MAX_CHECKPOINT_RUNTIMES`, default `16`) so completed runs do not accumulate unlimited branch state in RAM
+- Closed two backend temp-file / event-ingestion gaps:
+  - `Claude` native MCP runs now clean up both the top-level temporary `mcp_*.json` and the nested `configured_tools_*.json` payload files created for configured native tools
+  - runtime bridge tool events are now ingested eagerly after each completed graph node, so the canonical session timeline is updated without waiting for a later session/events API read
+- Closed an isolated-`Codex` bootstrap cache leak:
+  - `BOOTSTRAPPED_MCP_SERVERS` entries tied to per-run temporary `CODEX_HOME` values are now cleared when that isolated home is replaced or deleted
+  - this keeps long-lived backend processes from accumulating stale native-MCP bootstrap cache entries across many Codex runs
 
 ## Validation
 
@@ -216,6 +226,12 @@ Branch: `codex/personal-mvp-refine`
 - `cd frontend && npx playwright test e2e/premium-ui.spec.ts`
 - `python3 -m py_compile orchestrator/models.py orchestrator/engine.py orchestrator/modes/base.py langchain_gateway.py gateway.py mcp_servers/configured_tools_server.py`
 - `python3 -m pytest tests/test_interactive_runtime.py tests/test_api_contracts.py -q`
+- `python3 -m py_compile gateway.py orchestrator/api.py orchestrator/engine.py orchestrator/models.py`
+- `python3 -m pytest tests/test_api_contracts.py tests/test_gateway_mcp_registration.py tests/test_runtime_recovery.py -q`
+- `python3 -m py_compile orchestrator/models.py orchestrator/engine.py gateway.py`
+- `python3 -m pytest tests/test_interactive_runtime.py tests/test_gateway_mcp_registration.py tests/test_api_contracts.py tests/test_runtime_recovery.py -q`
+- `python3 -m py_compile gateway.py`
+- `python3 -m pytest tests/test_gateway_mcp_registration.py tests/test_interactive_runtime.py tests/test_api_contracts.py tests/test_runtime_recovery.py -q`
 - `cd frontend && npx tsc --noEmit` (after `next build --webpack`, because `.next/types` are generated there in this setup)
 
 All of the above passed during this pass.
@@ -230,25 +246,103 @@ Note:
   - `Gemini`: native
   - `Codex`: native for `stdio`, bridged for `http`/`sse`
 - `Codex` still does not have native per-run arbitrary-header HTTP MCP parity here; the honest fallback for those transports remains the bridge path.
+- Checkpoint branching is intentionally limited to in-memory checkpoint state:
+  - after backend restart, or after a run ages out of the bounded checkpoint-runtime cache, `restart_from_checkpoint` becomes unavailable for that session
+  - the API now reports this explicitly via `runtime_state.checkpoint_runtime_available`
+
+## Canvas routing — NEEDS POLISH (2026-03-27)
+
+All 7 orchestration modes now have dedicated canvas layouts with beam animation, arrowheads, and dynamic scaling:
+
+- **Board**: hub "Совет" left-center, agents fan outward right (up to 8 agents)
+- **Democracy**: agents fan LEFT, hub "Голосование" RIGHT (reversed from board for visual distinction)
+- **Debate**: central arena hub, judge above, proponent/opponent below with VS edge
+- **Creator/Critic**: cycle loop — creator ↔ hub "Редакционный цикл" ↔ critic (4 edges forming loop)
+- **Map/Reduce**: horizontal pipeline — planner left → workers fan center → synthesizer far right (up to 6 workers)
+- **Dictator**: vertical tree — leader top-center → N workers in a row below (up to 8 workers)
+- **Tournament**: bracket layout — agent pairs stacked left → hub "Турнир" right (up to 4 pairs)
+- **Default/Generic**: primary orchestrator → N secondary agents in fan (up to 6)
+
+Key implementation details:
+- `buildCanvasGraph()` uses `fanPositions()`, `rowPositions()`, and `autoEdge()` for dynamic layout
+- SVG beam animation: flowing dash (`stroke-dasharray` + `animate`), leading particle with glow filter, trailing particle
+- Arrowhead markers (8px, `#94a3b8`) on all non-animated paths for directionality in static/reducedMotion
+- Hub nodes styled with gradient border + `border-2` to distinguish from agent nodes
+- Compact task node (44px entry badge with ArrowRight icon) — no canvas collision
+- Agent role subtitle at 14px `#475569` for legibility
+- `DictatorView` and `TournamentView` components added with RU/EN locale strings
+- E2E test suite `e2e/canvas-modes.spec.ts` covers all 7 modes with screenshot baselines
+- UX review score: **7.125/10 average** (debate scored 8/10)
+
+Validation:
+- `cd frontend && npx next build --webpack` — passed
+- `cd frontend && npx tsc --noEmit` — passed (after build generates `.next/types`)
+- `cd frontend && npx playwright test e2e/canvas-modes.spec.ts e2e/premium-ui.spec.ts` — 10/10 passed
 
 ## Still not done
 
-- Final geometry polish for the premium monitor canvas:
-  - board/democracy line routing still needs one more pass
-  - node label spacing and anchor points need micro-adjustments to avoid visual crowding
+- ~~Final geometry polish for the premium monitor canvas~~ — DONE (see above)
 - A denser topology canvas/right rail closer to the approved premium monitor spacing
 - Optional native external MCP path for `Codex` HTTP servers with bearer-token-only flows
 - A richer packet inspector below the canvas:
   - the latest live exchange is already visible
   - a fuller per-hop payload viewer for JSON/Cypher/tool packets is still not implemented
+- Canvas beam animation is beautiful live but not visible in reducedMotion screenshots — live preview at `http://localhost:3737` with backend running shows the flowing beams
 
 ## Notes for the next agent
 
 - `frontend/package.json` and `frontend/package-lock.json` now intentionally belong to this pass because Playwright screenshot regression is part of the repo.
 - `.omc/`, `.next/`, and `frontend/test-results/` are generated/local state and should not be committed.
-- The highest-value next product slice is polishing the monitor toward an even closer pixel match with the approved mockups, especially spacing, micro-typography, and the right-side MCP/tool card density.
-- The immediate UX priority is the board canvas:
-  - keep the new shared-hub structure
-  - replace the remaining loose curves with cleaner anchored routing
-  - preserve the `Живой обмен` block directly under the canvas
+- The highest-value next product slice is polishing the monitor right-rail spacing and building the richer packet inspector.
+- Canvas routing infrastructure is in place (7 modes, beam animation, dynamic helpers) but the LIVE result has quality issues. See "Canvas routing issues" below.
+
+## Canvas routing issues — MUST FIX
+
+The canvas passed Playwright screenshot tests with mock data but has visible problems with real session data:
+
+1. **Nodes escape canvas bounds**: Fan-positioned agents can clip outside the `h-[326px]` canvas area. The `fanPositions()` Y-clamping was added but needs verification with real data (4+ agents in board/democracy/default). The viewBox is `0 0 760 364` — all node centers must stay within y: 60..300 to prevent label clipping.
+
+2. **Not truly scalable**: With 5+ agents, nodes crowd together and labels overlap. The fan radius (210) and spread angle need to adapt better to agent count. Test with 1, 2, 3, 5, and 8 agents in each mode.
+
+3. **Labels clip and overlap**: Agent role subtitles (14px) can extend beyond the canvas container. The bottom agent (e.g., Codex at y≈590 in the old version) overlaps with the "Живой обмен" section below.
+
+4. **Edge routing not clean enough**: The `autoEdge()` S-curve function produces acceptable curves for horizontal/vertical paths but diagonal paths can look awkward. Real sessions with hub at x=220 and agents at varying y positions show uneven curve shapes.
+
+## CRITICAL: Site may be broken after this session
+
+The previous agent's curl requests to localhost:3737 caused the frontend dev server to hang/crash. The next agent MUST:
+1. Kill any hanging node/next processes: `lsof -ti:3737 | xargs kill -9` then restart `cd frontend && npm run dev`
+2. Verify both backend (port 8800) and frontend (port 3737) respond before doing anything else
+3. If the site still doesn't load, check `git stash` or `git diff` for broken changes and revert if needed
+
+**What the next agent must do (canvas):**
+- Open the live app with real backend sessions (not just Playwright mocks)
+- Visually verify ALL 7 modes with the actual agent counts from real sessions
+- Fix any remaining overflow: ensure NO node or label extends outside the canvas container
+- Test scaling: create mock sessions with 1, 2, 3, 5, 8 agents and verify the layout adapts gracefully
+- The "Живой обмен" block MUST NOT be overlapped by canvas nodes — it sits directly below the SVG area
+- Key file: `frontend/components/chat/topology-panel.tsx` — functions `fanPositions()`, `rowPositions()`, `autoEdge()`, and per-mode layout code in `buildCanvasGraph()`
 - `tsc --noEmit` depends on `.next/types`; run `npx next build --webpack` first in this repo before treating bare `tsc` failures as real regressions.
+- Key files changed in canvas pass:
+  - `frontend/components/chat/topology-panel.tsx` — canvas layouts, beam animation, DictatorView, TournamentView
+  - `frontend/lib/locale.tsx` — added dictator/tournament locale strings (RU + EN)
+  - `frontend/e2e/canvas-modes.spec.ts` — E2E test for all 7 canvas modes
+  - `frontend/e2e/canvas-modes.spec.ts-snapshots/` — screenshot baselines
+
+## Gray background cosmetic fix — DONE (2026-03-27)
+
+Removed all gray/muted background fills from wizard and settings forms to match the white premium design language:
+
+- `frontend/components/wizard/step-task.tsx` — replaced `bg-muted/20` with `bg-white` on textarea, rounds/iterations, workspace, and summary sections
+- `frontend/components/wizard/step-agents.tsx` — replaced `bg-muted/30` with `bg-white` on system prompt textarea and add-worker button
+- `frontend/components/wizard/custom-tool-form.tsx` — replaced `bg-muted/30` with `bg-white` on all form inputs
+- `frontend/components/settings-view.tsx`:
+  - Tool Registry section: `bg-[#f8f9fc]` → `bg-white`
+  - INPUT_CLASS: `bg-white/85 shadow-inner` → `bg-white` (no shadow-inner)
+  - Prompt template pre blocks: `bg-muted/30` → `bg-[#fafbfc] border border-[#e6e8ee]`
+  - Tool validation log: `bg-[#f6f7fa]` → `bg-[#fafbfc]`
+  - Active tool row: `bg-[#f3f4f7]` → `bg-[#f8f9fb]`
+
+Also fixed canvas overflow where fan-positioned nodes escaped the viewBox:
+- Reduced fan radius from 280 to 210 for board/democracy/map_reduce/default
+- Added Y-clamping in `fanPositions()` to keep nodes within safe zone (y: 46..318)

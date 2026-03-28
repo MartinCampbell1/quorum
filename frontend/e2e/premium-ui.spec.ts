@@ -164,8 +164,18 @@ const sessionDetail = {
   ],
 };
 
-async function mockApi(page: Page, options?: { sessions?: unknown[] }) {
+async function mockApi(
+  page: Page,
+  options?: {
+    sessions?: unknown[];
+    sessionDetailData?: typeof sessionDetail;
+    continueResponse?: { status: string; new_session_id?: string };
+    followupSessionDetailData?: typeof sessionDetail;
+  }
+) {
   const sessions = options?.sessions ?? [];
+  const sessionDetailData = options?.sessionDetailData ?? sessionDetail;
+  const followupSessionDetailData = options?.followupSessionDetailData;
   await page.route("http://127.0.0.1:8800/**", async (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname;
@@ -212,10 +222,14 @@ async function mockApi(page: Page, options?: { sessions?: unknown[] }) {
       return;
     }
     if (path === "/orchestrate/session/sess_alpha") {
-      await route.fulfill({ json: sessionDetail, headers: corsHeaders });
+      await route.fulfill({ json: sessionDetailData, headers: corsHeaders });
       return;
     }
-    if (path === "/orchestrate/session/sess_alpha/events") {
+    if (followupSessionDetailData && path === `/orchestrate/session/${followupSessionDetailData.id}`) {
+      await route.fulfill({ json: followupSessionDetailData, headers: corsHeaders });
+      return;
+    }
+    if (path === "/orchestrate/session/sess_alpha/events" || (followupSessionDetailData && path === `/orchestrate/session/${followupSessionDetailData.id}/events`)) {
       await route.fulfill({
         status: 200,
         headers: { ...corsHeaders, "content-type": "text/event-stream" },
@@ -225,6 +239,10 @@ async function mockApi(page: Page, options?: { sessions?: unknown[] }) {
     }
     if (path.endsWith("/control")) {
       await route.fulfill({ json: { status: "ok" }, headers: corsHeaders });
+      return;
+    }
+    if (path.endsWith("/continue")) {
+      await route.fulfill({ json: options?.continueResponse ?? { status: "running", new_session_id: "sess_alpha_followup" }, headers: corsHeaders });
       return;
     }
     await route.fulfill({ json: [], headers: corsHeaders });
@@ -273,4 +291,62 @@ test("session monitor matches premium board monitor", async ({ page }) => {
     fullPage: true,
     animations: "disabled",
   });
+});
+
+test("terminal session can continue the conversation as a new branch", async ({ page }) => {
+  const completedSession = {
+    ...sessionDetail,
+    status: "completed",
+    result: "Judge verdict: keep the existing rollout plan.",
+    current_checkpoint_id: "cp_3",
+  } as typeof sessionDetail;
+  const followupSession = {
+    ...sessionDetail,
+    id: "sess_alpha_followup",
+    status: "running",
+    task: "Project Alpha follow-up",
+    messages: [
+      ...sessionDetail.messages,
+      { agent_id: "user", content: "Focus on the biggest operational risks.", timestamp: 1_700_000_030, phase: "user_instruction" },
+    ],
+  } as typeof sessionDetail;
+
+  await page.unroute("http://127.0.0.1:8800/**");
+  await mockApi(page, {
+    sessions: sessionSummary,
+    sessionDetailData: completedSession,
+    continueResponse: { status: "running", new_session_id: "sess_alpha_followup" },
+    followupSessionDetailData: followupSession,
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /Project Alpha/i }).click();
+  await expect(page.getByText("Продолжение обсуждения")).toBeVisible();
+  await page.getByPlaceholder(/теперь сфокусируйтесь на рисках/i).fill("Focus on the biggest operational risks.");
+  await page.getByRole("button", { name: /Продолжить обсуждение с командой/i }).click();
+  await expect(page.locator("div").filter({ hasText: /^Project Alpha follow-up$/ }).first()).toBeVisible();
+});
+
+test("failed session shows explicit agent failure tile and non-empty conversation", async ({ page }) => {
+  const failedSession = {
+    ...sessionDetail,
+    status: "failed",
+    messages: [
+      { agent_id: "creator", content: "Initial draft with evidence.", timestamp: 1_700_000_010, phase: "version_1" },
+      { agent_id: "critic", content: "", timestamp: 1_700_000_020, phase: "critique_1" },
+    ],
+    events: [
+      { id: 1, timestamp: 1_700_000_001, type: "run_started", title: "Сессия запущена", detail: "Project Alpha", status: "running", mode: "creator_critic" },
+      { id: 2, timestamp: 1_700_000_021, type: "agent_failed", title: "Агент critic не завершил шаг", detail: "critic returned an empty response", agent_id: "critic", status: "failed" },
+      { id: 3, timestamp: 1_700_000_022, type: "run_failed", title: "Ошибка: RuntimeError", detail: "critic returned an empty response", status: "failed" },
+    ],
+  } as typeof sessionDetail;
+
+  await page.unroute("http://127.0.0.1:8800/**");
+  await mockApi(page, { sessions: sessionSummary, sessionDetailData: failedSession });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /Project Alpha/i }).click();
+  await expect(page.getByText("Сбой шага агента")).toBeVisible();
+  await expect(page.getByText("Initial draft with evidence.")).toBeVisible();
 });

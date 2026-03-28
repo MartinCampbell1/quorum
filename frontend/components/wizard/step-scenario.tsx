@@ -56,10 +56,10 @@ export function StepScenario({
   const selectedScenario = scenarios.find((scenario) => scenario.id === selectedId) ?? null;
 
   return (
-    <div className="flex h-full flex-col bg-white">
+    <div className="flex h-full flex-col bg-[#f6f7fb] dark:bg-[#05070c]">
       <div className="flex-1 overflow-y-auto">
         <div className="px-12 py-6">
-          <h1 className="mb-10 text-[2.15rem] font-medium uppercase tracking-[0.04em] text-[#09090b]">
+          <h1 className="mb-10 text-[2.15rem] font-medium uppercase tracking-[0.04em] text-[#09090b] dark:text-slate-100">
             MODE SELECTION
           </h1>
 
@@ -86,12 +86,12 @@ export function StepScenario({
         </div>
       </div>
 
-      <div className="flex h-[86px] items-center justify-between border-t border-[#e6e8ee] bg-white px-7">
+      <div className="flex h-[86px] items-center justify-between border-t border-[#e6e8ee] bg-white px-7 dark:border-slate-800/80 dark:bg-[#0b0f17]/95">
         <div>
-          <div className="text-[16px] font-semibold text-[#09090b]">
+          <div className="text-[16px] font-semibold text-[#09090b] dark:text-slate-100">
             {selectedScenario ? MODE_LABELS[selectedScenario.mode] : "Выберите режим"}
           </div>
-          <div className="mt-1 text-[14px] text-[#4b5563]">Шаг 1 из 3</div>
+          <div className="mt-1 text-[14px] text-[#4b5563] dark:text-slate-400">Шаг 1 из 3</div>
         </div>
         <Button
           type="button"

@@ -26,17 +26,11 @@ function maxEventId(events: SessionEvent[]): number {
 
 export function useSessionEvents(
   sessionId: string | null,
-  initialEvents: SessionEvent[] = [],
-  onEvent?: () => void
+  initialEvents: SessionEvent[] = []
 ) {
   const initialSorted = useMemo(() => sortEvents(initialEvents), [initialEvents]);
   const [events, setEvents] = useState<SessionEvent[]>(initialSorted);
   const lastEventIdRef = useRef<number>(maxEventId(initialSorted));
-  const onEventRef = useRef(onEvent);
-
-  useEffect(() => {
-    onEventRef.current = onEvent;
-  }, [onEvent]);
 
   useEffect(() => {
     const seeded = sortEvents(initialEvents);
@@ -72,7 +66,6 @@ export function useSessionEvents(
           lastEventIdRef.current = maxEventId(merged);
           return merged;
         });
-        onEventRef.current?.();
       } catch {
         // Ignore malformed SSE payloads and keep the stream alive.
       }

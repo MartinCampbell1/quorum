@@ -60,7 +60,7 @@ export function CustomToolForm({ onAdd, onCancel }: CustomToolFormProps) {
     onAdd({ key, name: name.trim(), description: description.trim() || name.trim(), tool_type: toolType, config: toolConfig });
   }
 
-  const inputClass = "w-full rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring/30 transition-colors";
+  const inputClass = "w-full rounded-lg border border-border bg-white px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring/30 transition-colors";
 
   return (
     <Card className="py-0 border-dashed border-foreground/20">

@@ -3,8 +3,10 @@
 import asyncio
 import copy
 import os
+import pickle
 import time
 import traceback
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -177,6 +179,78 @@ def _prune_checkpoint_savers(limit: int = MAX_CHECKPOINT_RUNTIMES) -> None:
             CHECKPOINT_SAVERS.pop(session_id, None)
 
 
+def _plain_checkpoint_value(value: Any) -> Any:
+    if isinstance(value, defaultdict):
+        return {key: _plain_checkpoint_value(item) for key, item in value.items()}
+    if isinstance(value, dict):
+        return {key: _plain_checkpoint_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_plain_checkpoint_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_plain_checkpoint_value(item) for item in value)
+    return copy.deepcopy(value)
+
+
+def _persist_checkpointer_state(session_id: str, saver: MemorySaver) -> None:
+    payload = {
+        "version": 1,
+        "session_id": session_id,
+        "storage": _plain_checkpoint_value(saver.storage.get(session_id, {})),
+        "writes": {
+            key: _plain_checkpoint_value(value)
+            for key, value in saver.writes.items()
+            if key[0] == session_id
+        },
+        "blobs": {
+            key: _plain_checkpoint_value(value)
+            for key, value in saver.blobs.items()
+            if key[0] == session_id
+        },
+    }
+    path = store.checkpoint_runtime_path(session_id)
+    temp_path = path.with_name(f"{path.stem}.{os.getpid()}.tmp")
+    with temp_path.open("wb") as handle:
+        pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    temp_path.replace(path)
+
+
+def _load_persisted_checkpointer_state(session_id: str) -> MemorySaver | None:
+    path = store.checkpoint_runtime_path(session_id)
+    if not path.exists():
+        return None
+    try:
+        with path.open("rb") as handle:
+            payload = pickle.load(handle)
+    except Exception:
+        path.unlink(missing_ok=True)
+        return None
+
+    if str(payload.get("session_id", "")).strip() != session_id:
+        path.unlink(missing_ok=True)
+        return None
+
+    saver = MemorySaver()
+    saver.storage.pop(session_id, None)
+    storage_bucket = defaultdict(dict)
+    for namespace, values in dict(payload.get("storage", {})).items():
+        storage_bucket[namespace] = dict(values)
+    if storage_bucket:
+        saver.storage[session_id] = storage_bucket
+    saver.writes.update(
+        {
+            tuple(key): dict(value)
+            for key, value in dict(payload.get("writes", {})).items()
+        }
+    )
+    saver.blobs.update(
+        {
+            tuple(key): value
+            for key, value in dict(payload.get("blobs", {})).items()
+        }
+    )
+    return saver
+
+
 @dataclass
 class SessionRunner:
     session_id: str
@@ -328,6 +402,8 @@ class SessionRunner:
             next_node=next_node,
             status=checkpoint["status"],
         )
+        if self.checkpointer is not None:
+            _persist_checkpointer_state(self.session_id, self.checkpointer)
         store.update(
             self.session_id,
             result=values.get("result", ""),
@@ -526,6 +602,20 @@ class SessionRunner:
                 else:
                     store.update(self.session_id, status="running")
         except Exception as exc:
+            failed_agent = getattr(exc, "agent_role", None)
+            failed_provider = getattr(exc, "provider", None)
+            gateway_error = getattr(exc, "gateway_error", None)
+            if failed_agent or failed_provider:
+                label = failed_agent or failed_provider or "agent"
+                detail = str(gateway_error or exc)
+                self._emit_event(
+                    "agent_failed",
+                    f"Агент {label} не завершил шаг",
+                    detail[:240],
+                    agent_id=failed_agent,
+                    provider=failed_provider,
+                    status="failed",
+                )
             store.update(
                 self.session_id,
                 status="failed",
@@ -610,7 +700,7 @@ def has_live_runtime(session_id: str) -> bool:
 
 
 def has_checkpoint_runtime(session_id: str) -> bool:
-    return session_id in CHECKPOINT_SAVERS
+    return session_id in CHECKPOINT_SAVERS or store.checkpoint_runtime_path(session_id).exists()
 
 
 def reconcile_orphaned_sessions() -> int:
@@ -705,7 +795,7 @@ def fork_from_checkpoint(session_id: str, checkpoint_id: str = "", content: str 
     if not checkpoint or not graph_checkpoint_id:
         return None
 
-    source_saver = CHECKPOINT_SAVERS.get(session_id)
+    source_saver = CHECKPOINT_SAVERS.get(session_id) or _load_persisted_checkpointer_state(session_id)
     if not source_saver:
         return None
 

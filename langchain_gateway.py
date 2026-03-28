@@ -26,6 +26,7 @@ LangChain / LangGraph Adapter for CLI Gateway
 """
 
 import os
+import re
 from typing import Any, Iterator, List, Optional
 
 import httpx
@@ -39,6 +40,74 @@ from langchain_core.messages import (
     SystemMessage,
 )
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
+
+
+TOOL_SCAFFOLD_BLOCK_RE = re.compile(r"<tool_(?:call|result)>.*?</tool_(?:call|result)>", re.DOTALL | re.IGNORECASE)
+
+
+def _has_usable_output(output: str) -> bool:
+    normalized = str(output or "").strip()
+    if not normalized:
+        return False
+    stripped = TOOL_SCAFFOLD_BLOCK_RE.sub("", normalized).strip()
+    return bool(stripped)
+
+
+class GatewayInvocationError(RuntimeError):
+    """Raised when the local CLI gateway cannot provide a usable agent response."""
+
+    def __init__(
+        self,
+        *,
+        provider: str,
+        agent_role: str | None,
+        profile_used: str | None,
+        retries: int,
+        gateway_error: str,
+    ) -> None:
+        role_label = agent_role or "agent"
+        profile_label = profile_used or "default"
+        super().__init__(
+            f"[{provider}:{role_label}] {gateway_error} "
+            f"(profile={profile_label}, retries={retries})"
+        )
+        self.provider = provider
+        self.agent_role = agent_role
+        self.profile_used = profile_used
+        self.retries = retries
+        self.gateway_error = gateway_error
+
+
+def _coerce_gateway_output(agent: str, agent_role: str | None, data: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    output = data.get("output", "")
+    profile_used = data.get("profile_used")
+    retries = int(data.get("retries", 0) or 0)
+    success = bool(data.get("success"))
+    usable_output = data.get("usable_output")
+    usable = bool(usable_output) if usable_output is not None else _has_usable_output(output)
+    if not success:
+        raise GatewayInvocationError(
+            provider=agent,
+            agent_role=agent_role,
+            profile_used=profile_used,
+            retries=retries,
+            gateway_error=str(data.get("error") or "Gateway reported an unsuccessful agent invocation."),
+        )
+    if not usable:
+        raise GatewayInvocationError(
+            provider=agent,
+            agent_role=agent_role,
+            profile_used=profile_used,
+            retries=retries,
+            gateway_error=str(data.get("error") or "Agent returned no usable text output."),
+        )
+
+    metadata = {
+        "profile_used": profile_used,
+        "elapsed_sec": data.get("elapsed_sec"),
+        "retries": retries,
+    }
+    return output, metadata
 
 
 # =========================================================================
@@ -105,7 +174,7 @@ class GatewayChatModel(BaseChatModel):
             resp.raise_for_status()
             data = resp.json()
 
-        output = data.get("output", "")
+        output, metadata = _coerce_gateway_output(self.agent, self.agent_role, data)
 
         # Обработать stop tokens
         if stop:
@@ -115,11 +184,7 @@ class GatewayChatModel(BaseChatModel):
 
         message = AIMessage(
             content=output,
-            additional_kwargs={
-                "profile_used": data.get("profile_used"),
-                "elapsed_sec": data.get("elapsed_sec"),
-                "retries": data.get("retries", 0),
-            },
+            additional_kwargs=metadata,
         )
 
         return ChatResult(
@@ -156,7 +221,7 @@ class GatewayChatModel(BaseChatModel):
             resp.raise_for_status()
             data = resp.json()
 
-        output = data.get("output", "")
+        output, metadata = _coerce_gateway_output(self.agent, self.agent_role, data)
 
         if stop:
             for s in stop:
@@ -165,11 +230,7 @@ class GatewayChatModel(BaseChatModel):
 
         message = AIMessage(
             content=output,
-            additional_kwargs={
-                "profile_used": data.get("profile_used"),
-                "elapsed_sec": data.get("elapsed_sec"),
-                "retries": data.get("retries", 0),
-            },
+            additional_kwargs=metadata,
         )
 
         return ChatResult(

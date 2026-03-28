@@ -78,7 +78,7 @@ export function StepTask({
   }
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full flex-col bg-[#f6f7fb] dark:bg-[#05070c]">
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-xl mx-auto px-10 pt-12 pb-10">
           <Stepper currentStep={2} />
@@ -99,12 +99,12 @@ export function StepTask({
             onChange={(e) => setTask(e.target.value)}
             placeholder={taskPlaceholder ?? "Введите задачу или вопрос..."}
             rows={5}
-            className="w-full rounded-xl border border-border bg-muted/20 px-4 py-3.5 text-sm text-foreground placeholder:text-muted-foreground/50 resize-none focus:outline-none focus:ring-2 focus:ring-ring/30 focus:border-ring transition-colors leading-relaxed"
+            className="w-full rounded-xl border border-border bg-white px-4 py-3.5 text-sm text-foreground placeholder:text-muted-foreground/50 resize-none focus:outline-none focus:ring-2 focus:ring-ring/30 focus:border-ring transition-colors leading-relaxed dark:border-slate-800 dark:bg-slate-950/70"
             autoFocus
           />
 
           {(needsRounds || needsIterations) && (
-            <div className="mt-6 rounded-xl border border-border/60 bg-muted/20 p-4">
+            <div className="mt-6 rounded-xl border border-border/60 bg-white p-4 dark:border-slate-800 dark:bg-slate-950/70">
               <div className="flex items-center justify-between mb-3">
                 <label className="text-[13px] font-medium text-foreground">
                   {needsRounds ? "Лимит раундов" : "Лимит итераций"}
@@ -145,7 +145,7 @@ export function StepTask({
             </div>
           )}
 
-          <div className="mt-6 rounded-xl border border-border/60 bg-muted/20 p-4">
+          <div className="mt-6 rounded-xl border border-border/60 bg-white p-4 dark:border-slate-800 dark:bg-slate-950/70">
             <div className="flex items-center gap-2 mb-3">
               <FolderTree className="h-4 w-4 text-muted-foreground" />
               <label className="text-[13px] font-medium text-foreground">
@@ -167,8 +167,8 @@ export function StepTask({
                       onClick={() => togglePreset(preset.id)}
                       className={`rounded-full border px-3 py-1.5 text-[11px] transition-colors ${
                         active
-                          ? "border-black bg-black text-white"
-                          : "border-border bg-white text-muted-foreground hover:text-foreground"
+                          ? "border-black bg-black text-white dark:border-slate-100 dark:bg-slate-100 dark:text-slate-950"
+                          : "border-border bg-white text-muted-foreground hover:text-foreground dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400 dark:hover:text-slate-100"
                       }`}
                     >
                       {preset.name}
@@ -187,7 +187,7 @@ export function StepTask({
                 value={extraPathDraft}
                 onChange={(e) => setExtraPathDraft(e.target.value)}
                 placeholder="/Users/martin/projects/trading-data"
-                className="flex-1 rounded-lg border border-border bg-white px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring/25"
+                className="flex-1 rounded-lg border border-border bg-white px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring/25 dark:border-slate-800 dark:bg-slate-950/70"
               />
               <Button type="button" variant="outline" size="sm" onClick={addWorkspacePath}>
                 Добавить путь
@@ -212,7 +212,7 @@ export function StepTask({
                         key={path}
                         type="button"
                         onClick={() => removeWorkspacePath(path)}
-                        className="rounded-full border border-border bg-white px-3 py-1.5 text-[10px] text-muted-foreground hover:text-foreground"
+                        className="rounded-full border border-border bg-white px-3 py-1.5 text-[10px] text-muted-foreground hover:text-foreground dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400 dark:hover:text-slate-100"
                       >
                         {path}
                       </button>
@@ -224,7 +224,7 @@ export function StepTask({
           </div>
 
           {/* Summary */}
-          <div className="mt-8 rounded-xl border border-border/60 bg-muted/20 p-5">
+          <div className="mt-8 rounded-xl border border-border/60 bg-white p-5">
             <div className="text-[10px] uppercase tracking-[0.15em] text-muted-foreground/50 font-semibold mb-4">
               Итого
             </div>

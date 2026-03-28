@@ -30,22 +30,22 @@ export function ScenarioCard({
       className={cn(
         "relative flex min-h-[218px] w-full flex-col items-center justify-center rounded-[18px] border px-8 py-10 text-center transition-all",
         isSelected
-          ? "border-[#09090b] bg-[#09090b] text-white"
-          : "border-[#d7dce8] bg-white text-[#09090b] shadow-[0_10px_24px_-16px_rgba(17,48,105,0.18)]",
+          ? "border-[#09090b] bg-[#09090b] text-white dark:border-slate-100 dark:bg-slate-100 dark:text-slate-950"
+          : "border-[#d7dce8] bg-white text-[#09090b] shadow-[0_10px_24px_-16px_rgba(17,48,105,0.18)] dark:border-slate-800 dark:bg-slate-950/70 dark:text-slate-100 dark:shadow-none",
         isDisabled && "cursor-not-allowed opacity-55"
       )}
     >
       <div
         className={cn(
           "mb-8 flex h-[76px] w-[76px] items-center justify-center rounded-[18px]",
-          isSelected ? "bg-white/7" : "bg-white"
+          isSelected ? "bg-white/7 dark:bg-slate-900/10" : "bg-white dark:bg-slate-900"
         )}
       >
         {Icon ? (
           <Icon
             className={cn(
               "h-[44px] w-[44px] stroke-[1.7]",
-              isSelected ? "text-white" : "text-[#09090b]"
+              isSelected ? "text-white dark:text-slate-950" : "text-[#09090b] dark:text-slate-100"
             )}
           />
         ) : null}
@@ -54,7 +54,7 @@ export function ScenarioCard({
       <p
         className={cn(
           "mt-3 max-w-[260px] text-[15px] leading-[1.45]",
-          isSelected ? "text-white/82" : "text-[#444b59]"
+          isSelected ? "text-white/82 dark:text-slate-700" : "text-[#444b59] dark:text-slate-400"
         )}
       >
         {description}

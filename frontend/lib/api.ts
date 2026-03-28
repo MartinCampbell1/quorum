@@ -98,6 +98,16 @@ export async function sendMessage(
   });
 }
 
+export async function continueSession(
+  sessionId: string,
+  content: string
+): Promise<{ status: string; new_session_id?: string }> {
+  return request(`/orchestrate/session/${sessionId}/continue`, {
+    method: "POST",
+    body: JSON.stringify({ content }),
+  });
+}
+
 export async function controlSession(
   sessionId: string,
   action: "pause" | "resume" | "inject_instruction" | "cancel" | "restart_from_checkpoint",

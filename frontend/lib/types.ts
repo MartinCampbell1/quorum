@@ -21,7 +21,7 @@ export interface CustomToolConfig {
   name: string;
   description: string;
   category?: string;
-  tool_type: "http_api" | "ssh" | "shell_command";
+  tool_type: string;
   config: Record<string, string>;
 }
 
