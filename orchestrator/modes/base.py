@@ -24,7 +24,12 @@ from langchain_gateway import (
 from orchestrator.tools.router import route_tool_visibility
 
 
-CRITICAL_ROLE_FALLBACK_PROVIDERS = ("claude", "gemini", "codex")
+FALLBACK_PROVIDER_ORDER = {
+    "claude": ("claude", "codex", "gemini"),
+    "gemini": ("gemini", "codex", "claude"),
+    "codex": ("codex", "claude", "gemini"),
+    "minimax": ("minimax", "claude", "codex", "gemini"),
+}
 
 
 class AgentStepError(ValueError):
@@ -113,26 +118,29 @@ def call_agent(
     return result.content
 
 
-def _needs_provider_fallback(role: str | None) -> bool:
+def _needs_plain_text_contract(role: str | None) -> bool:
     normalized = str(role or "").strip().lower()
     return "critic" in normalized or "judge" in normalized
 
 
-def _provider_attempt_order(primary_provider: str, role: str | None) -> list[str]:
-    if not _needs_provider_fallback(role):
-        return [primary_provider]
-
+def _provider_attempt_order(primary_provider: str) -> list[str]:
     ordered = [primary_provider]
+    preferred = FALLBACK_PROVIDER_ORDER.get(primary_provider, (primary_provider, "codex", "claude", "gemini"))
     ordered.extend(
         provider
-        for provider in CRITICAL_ROLE_FALLBACK_PROVIDERS
+        for provider in preferred
+        if provider != primary_provider and provider not in ordered
+    )
+    ordered.extend(
+        provider
+        for provider in ("codex", "claude", "gemini", "minimax")
         if provider != primary_provider and provider not in ordered
     )
     return ordered
 
 
 def _plain_text_contract(prompt: str, role: str | None) -> str:
-    if not _needs_provider_fallback(role):
+    if not _needs_plain_text_contract(role):
         return prompt
     return (
         f"{prompt}\n\n"
@@ -155,7 +163,7 @@ def call_agent_cfg(agent: dict, prompt: str) -> str:
             tools = _route_tool_visibility_sync(prompt, agent.get("role", ""), tools)
     role = agent.get("role")
     prompt = _plain_text_contract(prompt, role)
-    providers = _provider_attempt_order(str(agent["provider"]), role)
+    providers = _provider_attempt_order(str(agent["provider"]))
     last_error: GatewayInvocationError | None = None
 
     for provider in providers:
