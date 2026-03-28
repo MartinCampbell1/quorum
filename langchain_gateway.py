@@ -294,7 +294,15 @@ from langchain_openai import ChatOpenAI
 
 
 class GatewayMiniMax(ChatOpenAI):
-    """MiniMax m2.7 via OpenRouter. For lightweight tasks: summaries, formatting, voting."""
+    """MiniMax m2.7 via OpenRouter with a local gateway fallback when no API key is configured."""
+
+    gateway_url: str = "http://localhost:8800"
+    fallback_agent: str = "claude"
+    workdir: Optional[str] = None
+    workspace_paths: Optional[list[str]] = None
+    mcp_tools: Optional[list[str]] = None
+    session_id: Optional[str] = None
+    agent_role: Optional[str] = None
 
     def __init__(self, **kwargs):
         super().__init__(
@@ -303,6 +311,45 @@ class GatewayMiniMax(ChatOpenAI):
             base_url=kwargs.pop("base_url", "https://openrouter.ai/api/v1"),
             **kwargs,
         )
+
+    def _has_openrouter_api_key(self) -> bool:
+        return bool(self.openai_api_key and self.openai_api_key.get_secret_value().strip())
+
+    def _fallback_model(self) -> GatewayChatModel:
+        request_timeout = self.request_timeout
+        timeout = int(request_timeout) if isinstance(request_timeout, (int, float)) else 300
+        return GatewayChatModel(
+            gateway_url=self.gateway_url,
+            agent=self.fallback_agent,
+            workdir=self.workdir,
+            workspace_paths=self.workspace_paths,
+            timeout=timeout,
+            mcp_tools=self.mcp_tools,
+            session_id=self.session_id,
+            agent_role=self.agent_role,
+        )
+
+    def _generate(
+        self,
+        messages: List[BaseMessage],
+        stop: Optional[List[str]] = None,
+        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        if self._has_openrouter_api_key():
+            return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+        return self._fallback_model()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    async def _agenerate(
+        self,
+        messages: List[BaseMessage],
+        stop: Optional[List[str]] = None,
+        run_manager=None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        if self._has_openrouter_api_key():
+            return await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+        return await self._fallback_model()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
 
 
 # =========================================================================
