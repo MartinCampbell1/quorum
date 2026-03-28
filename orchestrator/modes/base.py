@@ -14,8 +14,17 @@ import sys
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-from langchain_gateway import GatewayClaude, GatewayGemini, GatewayCodex, GatewayMiniMax
+from langchain_gateway import (
+    GatewayClaude,
+    GatewayCodex,
+    GatewayGemini,
+    GatewayInvocationError,
+    GatewayMiniMax,
+)
 from orchestrator.tools.router import route_tool_visibility
+
+
+CRITICAL_ROLE_FALLBACK_PROVIDERS = ("claude", "gemini", "codex")
 
 
 class AgentStepError(ValueError):
@@ -104,6 +113,36 @@ def call_agent(
     return result.content
 
 
+def _needs_provider_fallback(role: str | None) -> bool:
+    normalized = str(role or "").strip().lower()
+    return "critic" in normalized or "judge" in normalized
+
+
+def _provider_attempt_order(primary_provider: str, role: str | None) -> list[str]:
+    if not _needs_provider_fallback(role):
+        return [primary_provider]
+
+    ordered = [primary_provider]
+    ordered.extend(
+        provider
+        for provider in CRITICAL_ROLE_FALLBACK_PROVIDERS
+        if provider != primary_provider and provider not in ordered
+    )
+    return ordered
+
+
+def _plain_text_contract(prompt: str, role: str | None) -> str:
+    if not _needs_provider_fallback(role):
+        return prompt
+    return (
+        f"{prompt}\n\n"
+        "FINAL RESPONSE CONTRACT:\n"
+        "- Return a direct plain-text answer for the orchestrator.\n"
+        "- Do not return tool XML, tool scaffolding, or an empty response.\n"
+        "- If you used tools internally, finish with a normal final answer."
+    )
+
+
 def call_agent_cfg(agent: dict, prompt: str) -> str:
     """Call an agent using an agent config dict (with provider, system_prompt, tools keys)."""
     tools = list(agent.get("tools") or [])
@@ -114,15 +153,32 @@ def call_agent_cfg(agent: dict, prompt: str) -> str:
             tools = _route_tool_visibility_sync(prompt, agent.get("role", ""), tools)
         else:
             tools = _route_tool_visibility_sync(prompt, agent.get("role", ""), tools)
-    return call_agent(
-        agent["provider"], prompt,
-        agent.get("system_prompt", ""),
-        tools=tools,
-        workdir=agent.get("workdir") or str(PROJECT_ROOT),
-        workspace_paths=list(agent.get("workspace_paths") or []),
-        session_id=agent.get("session_id"),
-        agent_role=agent.get("role"),
-    )
+    role = agent.get("role")
+    prompt = _plain_text_contract(prompt, role)
+    providers = _provider_attempt_order(str(agent["provider"]), role)
+    last_error: GatewayInvocationError | None = None
+
+    for provider in providers:
+        try:
+            return call_agent(
+                provider,
+                prompt,
+                agent.get("system_prompt", ""),
+                tools=tools,
+                workdir=agent.get("workdir") or str(PROJECT_ROOT),
+                workspace_paths=list(agent.get("workspace_paths") or []),
+                session_id=agent.get("session_id"),
+                agent_role=role,
+            )
+        except GatewayInvocationError as exc:
+            last_error = exc
+            if provider == providers[-1]:
+                raise
+
+    if last_error is not None:
+        raise last_error
+
+    raise RuntimeError("Agent invocation failed before any provider attempt was made.")
 
 
 def apply_user_instructions(state: dict, prompt: str) -> str:

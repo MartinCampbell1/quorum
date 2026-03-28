@@ -8,8 +8,12 @@ import asyncio
 import time
 
 import orchestrator.modes.board as board
+import orchestrator.modes.base as mode_base
 import orchestrator.modes.democracy as democracy
 import orchestrator.modes.map_reduce as map_reduce
+import pytest
+
+from langchain_gateway import GatewayInvocationError
 
 
 def _forbidden(*args, **kwargs):
@@ -127,3 +131,64 @@ def test_map_reduce_process_chunks_runs_concurrently(monkeypatch):
     assert elapsed < 0.5
     assert [item["worker"] for item in result["chunk_results"]] == ["worker_1", "worker_2", "worker_1"]
     assert len(result["messages"]) == 3
+
+
+def test_call_agent_cfg_retries_critical_roles_with_provider_fallback(monkeypatch):
+    attempts: list[tuple[str, str | None, str]] = []
+
+    def fake_call_agent(provider, prompt, system_prompt="", tools=None, **kwargs):
+        attempts.append((provider, kwargs.get("agent_role"), prompt))
+        if provider == "claude":
+            raise GatewayInvocationError(
+                provider=provider,
+                agent_role=kwargs.get("agent_role"),
+                profile_used="acc1",
+                retries=0,
+                gateway_error="claude returned tool scaffolding without a usable text response.",
+            )
+        return "APPROVED: concise critique"
+
+    monkeypatch.setattr(mode_base, "call_agent", fake_call_agent)
+
+    response = mode_base.call_agent_cfg(
+        {
+            "role": "critic",
+            "provider": "claude",
+            "system_prompt": "",
+            "tools": [],
+        },
+        "Review the draft and decide if it is ready.",
+    )
+
+    assert response == "APPROVED: concise critique"
+    assert [provider for provider, _, _ in attempts] == ["claude", "gemini"]
+    assert "FINAL RESPONSE CONTRACT" in attempts[0][2]
+
+
+def test_call_agent_cfg_does_not_retry_noncritical_roles(monkeypatch):
+    attempts: list[str] = []
+
+    def fake_call_agent(provider, prompt, system_prompt="", tools=None, **kwargs):
+        attempts.append(provider)
+        raise GatewayInvocationError(
+            provider=provider,
+            agent_role=kwargs.get("agent_role"),
+            profile_used="acc1",
+            retries=0,
+            gateway_error="provider failed",
+        )
+
+    monkeypatch.setattr(mode_base, "call_agent", fake_call_agent)
+
+    with pytest.raises(GatewayInvocationError):
+        mode_base.call_agent_cfg(
+            {
+                "role": "planner",
+                "provider": "claude",
+                "system_prompt": "",
+                "tools": [],
+            },
+            "Plan the work.",
+        )
+
+    assert attempts == ["claude"]
