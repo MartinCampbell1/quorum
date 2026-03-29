@@ -216,7 +216,16 @@ def _session_workspace_paths(session: dict) -> list[str]:
     return list(dict.fromkeys([*direct, *per_agent]))
 
 
-def _brief_prompt(context: str) -> str:
+def _brief_prompt(context: str, scenario_id: str = "") -> str:
+    strengthening_rules = ""
+    normalized_scenario = str(scenario_id or "").strip().lower()
+    if normalized_scenario == "project_strengthening_lab":
+        strengthening_rules = (
+            "- Treat the strongest recommendation as a strengthening plan for an already-promising product, not as a fresh pivot.\n"
+            "- Preserve the core product unless the session explicitly concluded that a deeper pivot is required.\n"
+            "- MVP scope should focus on the first strengthening wedge: monetization fix, packaging, growth loop, onboarding, pricing, or execution bottleneck removal.\n"
+            "- existing_repos should prioritize the concrete repo roots discussed in the strengthening session.\n"
+        )
     return (
         "Convert this orchestration session into an execution-ready brief for an autonomous build system.\n\n"
         "Return ONLY valid JSON with this exact shape:\n"
@@ -240,6 +249,7 @@ def _brief_prompt(context: str) -> str:
         "- Keep execution grounded and MVP-scoped.\n"
         "- existing_repos should include any attached workspace paths when relevant.\n"
         "- required_connectors should only include connectors that are concretely implied by the work.\n\n"
+        f"{strengthening_rules}"
         f"SESSION PACK:\n{context}"
     )
 
@@ -366,9 +376,10 @@ def generate_session_tournament_preparation(session: dict, provider: str | None 
 def generate_session_execution_brief(session: dict, provider: str | None = None) -> ExecutionBrief:
     resolved_provider = _preferred_provider(session, provider)
     context = _session_context_packet(session)
+    scenario_id = str(session.get("active_scenario") or "").strip()
     raw = call_agent(
         resolved_provider,
-        _brief_prompt(context),
+        _brief_prompt(context, scenario_id),
         system_prompt="You produce execution briefs as strict JSON. No markdown fences, no commentary.",
         session_id=str(session.get("id") or "").strip() or None,
         agent_role="execution_brief_exporter",

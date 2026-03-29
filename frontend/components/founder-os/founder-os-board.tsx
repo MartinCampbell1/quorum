@@ -535,6 +535,12 @@ export function FounderOsBoard({ onSelectSession, onOpenDraftWizard }: FounderOs
                   session={session}
                   copy={copy}
                   onOpen={() => onSelectSession(session.id)}
+                  onLaunchWinner={
+                    session.active_scenario === "project_strengthening_lab" && session.status === "completed"
+                      ? () => handleLaunchWinner(session.id)
+                      : undefined
+                  }
+                  isLaunching={busyKey === `launch:${session.id}`}
                 />
               ))
             )}
