@@ -63,6 +63,7 @@ export function StepTask({
   const [extraPathDraft, setExtraPathDraft] = useState("");
 
   const isPortfolioPivotLab = scenarioId === "portfolio_pivot_lab";
+  const isProjectStrengtheningLab = scenarioId === "project_strengthening_lab";
   const needsRounds = ["debate", "democracy", "board", "tournament"].includes(mode);
   const needsIterations = ["dictator", "creator_critic"].includes(mode);
   const isJudgeVerdictMode = mode === "debate" || mode === "tournament";
@@ -166,6 +167,23 @@ export function StepTask({
               </div>
               <div className="mt-3 rounded-lg border border-border/60 bg-[#fbfcff] px-3 py-3 font-mono text-[11px] leading-5 text-[#273142] dark:border-slate-800 dark:bg-slate-900/80 dark:text-slate-300">
                 Возьмите мои текущие проекты из attached workspaces. Для каждого предложите по 2 сильных pivot-варианта. Затем выберите shortlist из 5 лучших `project + pivot` направлений под соло-фаундера с сильным AI-стеком. Для каждого shortlisted варианта дайте thesis, ICP, wedge, путь к первым $2K/мес, kill criteria и отметьте, что стоит отправить дальше в турнир, а что уже можно превращать в Execution Brief для Autopilot.
+              </div>
+            </div>
+          )}
+
+          {isProjectStrengtheningLab && (
+            <div className="mt-4 rounded-xl border border-border/60 bg-white p-4 text-[12px] leading-6 text-muted-foreground/80 dark:border-slate-800 dark:bg-slate-950/70">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-foreground/70">
+                Подсказка для Strengthening Lab
+              </div>
+              <div className="mt-2">
+                Это режим не про новые пивоты, а про усиление уже сильных проектов. Проси агентов найти, что реально тормозит рост: монетизацию, packaging, distribution wedge, retention, onboarding, pricing или execution bottlenecks.
+              </div>
+              <div className="mt-2">
+                Самые полезные выходы здесь: top weaknesses, лучшие стратегии усиления, 30-дневный план, что делать самому руками, а что потом можно отдавать в Autopilot.
+              </div>
+              <div className="mt-3 rounded-lg border border-border/60 bg-[#fbfcff] px-3 py-3 font-mono text-[11px] leading-5 text-[#273142] dark:border-slate-800 dark:bg-slate-900/80 dark:text-slate-300">
+                Возьмите мои сильные проекты из attached workspaces. Не предлагайте смену ядра продукта без необходимости. Для каждого проекта найдите 3-5 главных слабых мест, предложите лучшие стратегии усиления, distribution wedge, способ монетизации, простые growth loops и конкретный план на ближайшие 30 дней. В финале скажите, какой проект усиливать первым, что именно делать в первую неделю и что потом можно отправить в Execution Brief для Autopilot.
               </div>
             </div>
           )}

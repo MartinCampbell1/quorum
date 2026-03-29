@@ -325,7 +325,13 @@ export function FounderOsBoard({ onSelectSession, onOpenDraftWizard }: FounderOs
   }, [projectsError]);
 
   const researchSessions = useMemo(
-    () => sortSessions(sessions.filter((session) => RESEARCH_SCENARIOS.has(String(session.active_scenario ?? "")))),
+    () =>
+      sortSessions(
+        sessions.filter((session) =>
+          RESEARCH_SCENARIOS.has(String(session.active_scenario ?? "")) ||
+          session.active_scenario === "project_strengthening_lab"
+        )
+      ),
     [sessions]
   );
   const pivotSessions = useMemo(
@@ -484,6 +490,10 @@ export function FounderOsBoard({ onSelectSession, onOpenDraftWizard }: FounderOs
               <Button type="button" variant="outline" onClick={() => openScenarioDraft("portfolio_pivot_lab")} className="h-10 rounded-full">
                 <GitBranchPlus className="mr-2 h-4 w-4" />
                 {copy.founderOs.newPivotLab}
+              </Button>
+              <Button type="button" variant="outline" onClick={() => openScenarioDraft("project_strengthening_lab")} className="h-10 rounded-full">
+                <FlaskConical className="mr-2 h-4 w-4" />
+                {copy.founderOs.newStrengtheningLab}
               </Button>
               <Button type="button" onClick={() => openScenarioDraft("project_tournament")} className="h-10 rounded-full bg-black text-white hover:bg-black/90">
                 <Swords className="mr-2 h-4 w-4" />

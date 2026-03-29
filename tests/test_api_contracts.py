@@ -170,7 +170,7 @@ def test_scenarios_endpoint_returns_personal_catalog():
 
     assert response.status_code == 200
     payload = response.json()
-    assert {"repo_audit", "pattern_mining", "news_context", "portfolio_pivot_lab", "consensus_vote", "structured_debate", "strategy_review", "project_tournament"} == {
+    assert {"repo_audit", "pattern_mining", "news_context", "portfolio_pivot_lab", "project_strengthening_lab", "consensus_vote", "structured_debate", "strategy_review", "project_tournament"} == {
         item["id"] for item in payload
     }
 
@@ -180,7 +180,7 @@ def test_scenarios_endpoint_allows_multiple_presets_per_mode():
 
     assert response.status_code == 200
     board_scenarios = [item["id"] for item in response.json() if item["mode"] == "board"]
-    assert {"news_context", "portfolio_pivot_lab"}.issubset(set(board_scenarios))
+    assert {"news_context", "portfolio_pivot_lab", "project_strengthening_lab"}.issubset(set(board_scenarios))
 
 
 def test_scenarios_endpoint_covers_all_primary_wizard_modes():
