@@ -253,6 +253,107 @@ export interface SessionSummary {
   parallel_label?: string | null;
 }
 
+export interface ExecutionBrief {
+  version: string;
+  title: string;
+  thesis: string;
+  summary: string;
+  tags: string[];
+  founder: {
+    mode: string;
+    strengths: string[];
+    interests: string[];
+    constraints: string[];
+    unfair_advantages: string[];
+    available_capital_usd?: number | null;
+    weekly_hours?: number | null;
+  };
+  market: {
+    icp: string;
+    pain: string;
+    why_now: string;
+    wedge: string;
+  };
+  execution: {
+    mvp_scope: string[];
+    non_goals: string[];
+    required_capabilities: string[];
+    required_connectors: string[];
+    existing_repos: string[];
+  };
+  monetization: {
+    revenue_model: string;
+    pricing_hint: string;
+    time_to_first_dollar: string;
+  };
+  evaluation: {
+    success_metrics: string[];
+    kill_criteria: string[];
+    open_questions: string[];
+    major_risks: string[];
+  };
+  provenance: {
+    source_system: string;
+    source_session_id: string;
+    source_mode: string;
+    source_scenario_id: string;
+    ranking_rationale: string;
+  };
+}
+
+export interface TournamentPreparationCandidate {
+  label: string;
+  thesis: string;
+  rationale: string;
+  source_workspace_path: string;
+  tags: string[];
+}
+
+export interface TournamentPreparation {
+  version: string;
+  title: string;
+  scenario_id: string;
+  mode: string;
+  task: string;
+  recommended_max_rounds: number;
+  recommended_execution_mode: "sequential" | "parallel";
+  contestants: TournamentPreparationCandidate[];
+  agents: AgentConfig[];
+  workspace_paths: string[];
+}
+
+export interface AutopilotLaunchProfile {
+  preset: string;
+  story_execution_mode?: string | null;
+  project_concurrency_mode?: string | null;
+  max_parallel_stories?: number | null;
+}
+
+export interface AutopilotLaunchPreset {
+  id: string;
+  label: string;
+  description: string;
+  launch_profile: AutopilotLaunchProfile;
+}
+
+export interface AutopilotProjectSummary {
+  id: string;
+  name: string;
+  path: string;
+  priority: string;
+  archived: boolean;
+  status: string;
+  paused: boolean;
+  stories_done: number;
+  stories_total: number;
+  current_story_id: number | null;
+  current_story_title: string | null;
+  last_activity_at: string | null;
+  last_message: string;
+  pid: number | null;
+  launch_profile: AutopilotLaunchProfile;
+}
+
 export interface ModeInfo {
   description: string;
   default_agents: AgentConfig[];

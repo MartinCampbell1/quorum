@@ -1,13 +1,13 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
-import { Clock3, LogOut, Moon, PanelLeftClose, PanelLeftOpen, Search, Settings2, SlidersHorizontal, SunMedium } from "lucide-react";
+import { Clock3, KanbanSquare, LogOut, Moon, PanelLeftClose, PanelLeftOpen, Search, Settings2, SlidersHorizontal, SunMedium } from "lucide-react";
 import { useTheme } from "next-themes";
 
 import { useLocale } from "@/lib/locale";
 import { cn } from "@/lib/utils";
 
-type View = "chat" | "history" | "settings";
+type View = "chat" | "founderos" | "history" | "settings";
 
 interface IconBarProps {
   activeView: View;
@@ -18,6 +18,7 @@ interface IconBarProps {
 
 const PRIMARY_ITEMS: Array<{ id: View; icon: typeof Search; label: string }> = [
   { id: "chat", icon: Search, label: "Сессии" },
+  { id: "founderos", icon: KanbanSquare, label: "FounderOS" },
   { id: "history", icon: Clock3, label: "История" },
   { id: "settings", icon: SlidersHorizontal, label: "Настройки" },
 ];
@@ -55,7 +56,15 @@ export function IconBar({ activeView, onViewChange, sessionsCollapsed, onToggleS
           <button
             key={id}
             type="button"
-            aria-label={id === "chat" ? copy.shell.sessions : id === "history" ? copy.shell.history : copy.shell.settings}
+            aria-label={
+              id === "chat"
+                ? copy.shell.sessions
+                : id === "founderos"
+                  ? copy.shell.founderOs
+                  : id === "history"
+                    ? copy.shell.history
+                    : copy.shell.settings
+            }
             onClick={() => onViewChange(id)}
             className={cn(
               "flex h-12 w-12 items-center justify-center rounded-[14px] text-[#09090b] transition-colors",

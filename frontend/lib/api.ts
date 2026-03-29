@@ -1,14 +1,18 @@
 import type {
   AccountHealth,
   AccountsByProvider,
+  AutopilotLaunchPreset,
+  AutopilotProjectSummary,
   ConfiguredTool,
   CustomToolConfig,
+  ExecutionBrief,
   ModeInfo,
   PromptTemplate,
   RunRequest,
   ScenarioDefinition,
   Session,
   SessionSummary,
+  TournamentPreparation,
   ToolDefinition,
   ToolTypeDefinition,
   WorkspacePreset,
@@ -36,6 +40,24 @@ export async function getModes(): Promise<Record<string, ModeInfo>> {
 
 export async function getScenarios(): Promise<ScenarioDefinition[]> {
   return request("/orchestrate/scenarios");
+}
+
+export async function getAutopilotLaunchPresets(): Promise<AutopilotLaunchPreset[]> {
+  const payload = await request<{ launch_presets: AutopilotLaunchPreset[] }>("/orchestrate/autopilot/launch-presets");
+  return payload.launch_presets;
+}
+
+export async function getAutopilotProjects(): Promise<AutopilotProjectSummary[]> {
+  const payload = await request<{ projects: AutopilotProjectSummary[] }>("/orchestrate/autopilot/projects");
+  return payload.projects;
+}
+
+export async function pauseAutopilotProject(projectId: string): Promise<{ status: string; message: string }> {
+  return request(`/orchestrate/autopilot/projects/${projectId}/pause`, { method: "POST" });
+}
+
+export async function resumeAutopilotProject(projectId: string): Promise<{ status: string; message: string }> {
+  return request(`/orchestrate/autopilot/projects/${projectId}/resume`, { method: "POST" });
 }
 
 export function getSessionEventsStreamUrl(sessionId: string, since: number = 0): string {
@@ -79,6 +101,49 @@ export async function getSessions(): Promise<SessionSummary[]> {
 
 export async function getSession(id: string): Promise<Session> {
   return request(`/orchestrate/session/${id}`);
+}
+
+export async function exportExecutionBrief(
+  sessionId: string,
+  provider?: string
+): Promise<{ status: string; brief: ExecutionBrief }> {
+  return request(`/orchestrate/session/${sessionId}/execution-brief`, {
+    method: "POST",
+    body: JSON.stringify({ provider: provider ?? null }),
+  });
+}
+
+export async function sendExecutionBriefToAutopilot(
+  sessionId: string,
+  body?: {
+    provider?: string;
+    autopilot_url?: string;
+    project_name?: string;
+    project_path?: string;
+    priority?: string;
+    launch?: boolean;
+    launch_profile?: {
+      preset?: string;
+      story_execution_mode?: string | null;
+      project_concurrency_mode?: string | null;
+      max_parallel_stories?: number | null;
+    } | null;
+  }
+): Promise<{ status: string; brief: ExecutionBrief; autopilot: Record<string, unknown> }> {
+  return request(`/orchestrate/session/${sessionId}/send-to-autopilot`, {
+    method: "POST",
+    body: JSON.stringify(body ?? {}),
+  });
+}
+
+export async function prepareTournamentFromSession(
+  sessionId: string,
+  provider?: string
+): Promise<{ status: string; tournament: TournamentPreparation }> {
+  return request(`/orchestrate/session/${sessionId}/tournament-preparation`, {
+    method: "POST",
+    body: JSON.stringify({ provider: provider ?? null }),
+  });
 }
 
 export async function runSession(
