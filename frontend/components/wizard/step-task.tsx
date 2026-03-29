@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useEffectEvent, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { FolderTree, Rocket, Wrench } from "lucide-react";
@@ -73,6 +73,9 @@ export function StepTask({
         .map((preset) => preset.name),
     [workspacePresets, workspacePresetIds]
   );
+  const emitDraftChange = useEffectEvent((nextTask: string, nextConfig: Record<string, unknown>) => {
+    onDraftChange?.(nextTask, nextConfig);
+  });
 
   useEffect(() => {
     getWorkspacePresets().then(setWorkspacePresets).catch(() => {});
@@ -83,8 +86,8 @@ export function StepTask({
     if (needsRounds) config.max_rounds = unlimited ? 99 : maxRounds;
     if (needsIterations) config.max_iterations = unlimited ? 99 : maxRounds;
     if (mode === "tournament") config.execution_mode = executionMode;
-    onDraftChange?.(task, config);
-  }, [task, maxRounds, unlimited, executionMode, needsRounds, needsIterations, mode, onDraftChange]);
+    emitDraftChange(task, config);
+  }, [task, maxRounds, unlimited, executionMode, needsRounds, needsIterations, mode]);
 
   function togglePreset(id: string) {
     if (workspacePresetIds.includes(id)) {
