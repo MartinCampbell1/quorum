@@ -41,6 +41,17 @@ from orchestrator.engine import (
     AVAILABLE_MODES,
     DEFAULT_AGENTS,
 )
+from orchestrator.execution_brief import (
+    AutopilotLaunchPreset,
+    DEFAULT_AUTOPILOT_API_BASE,
+    ExecutionBrief,
+    ExecutionBriefExportRequest,
+    SendExecutionBriefRequest,
+    TournamentPreparation,
+    TournamentPreparationRequest,
+    generate_session_execution_brief,
+    generate_session_tournament_preparation,
+)
 from orchestrator.scenarios import get_scenario, list_scenarios
 from orchestrator.tool_configs import (
     PROMPT_TEMPLATES,
@@ -443,6 +454,112 @@ def _validate_workspace_paths_exist(paths: list[str]) -> list[str]:
     return errors
 
 
+async def _send_brief_to_autopilot(brief: ExecutionBrief, request: SendExecutionBriefRequest) -> dict:
+    payload = {
+        "brief": brief.model_dump(),
+        "project_name": request.project_name,
+        "project_path": request.project_path,
+        "priority": request.priority,
+        "launch": request.launch,
+        "launch_profile": request.launch_profile.model_dump() if request.launch_profile else None,
+    }
+    base = str(request.autopilot_url or DEFAULT_AUTOPILOT_API_BASE).rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(f"{base}/projects/from-execution-brief", json=payload)
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"Failed to reach Autopilot bridge: {exc}") from exc
+
+    try:
+        data = response.json()
+    except ValueError:
+        data = {"detail": response.text}
+
+    if response.status_code >= 400:
+        detail = data.get("detail") if isinstance(data, dict) else data
+        raise HTTPException(502, f"Autopilot rejected execution brief: {detail}")
+    return data
+
+
+async def _fetch_autopilot_launch_presets(base_url: str = DEFAULT_AUTOPILOT_API_BASE) -> list[AutopilotLaunchPreset]:
+    base = str(base_url or DEFAULT_AUTOPILOT_API_BASE).rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(f"{base}/capabilities/launch-presets")
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"Failed to reach Autopilot launch presets: {exc}") from exc
+
+    try:
+        data = response.json()
+    except ValueError:
+        data = {"detail": response.text}
+
+    if response.status_code >= 400:
+        detail = data.get("detail") if isinstance(data, dict) else data
+        raise HTTPException(502, f"Autopilot launch presets request failed: {detail}")
+
+    raw_presets = data.get("launch_presets") if isinstance(data, dict) else None
+    if not isinstance(raw_presets, list):
+        raise HTTPException(502, "Autopilot launch presets response is malformed.")
+    return [AutopilotLaunchPreset.model_validate(item) for item in raw_presets]
+
+
+async def _fetch_autopilot_projects(
+    *,
+    include_archived: bool = False,
+    base_url: str = DEFAULT_AUTOPILOT_API_BASE,
+) -> list[dict]:
+    base = str(base_url or DEFAULT_AUTOPILOT_API_BASE).rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(
+                f"{base}/projects/",
+                params={"include_archived": "true" if include_archived else "false"},
+            )
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"Failed to reach Autopilot projects: {exc}") from exc
+
+    try:
+        data = response.json()
+    except ValueError:
+        data = {"detail": response.text}
+
+    if response.status_code >= 400:
+        detail = data.get("detail") if isinstance(data, dict) else data
+        raise HTTPException(502, f"Autopilot projects request failed: {detail}")
+
+    projects = data.get("projects") if isinstance(data, dict) else None
+    if not isinstance(projects, list):
+        raise HTTPException(502, "Autopilot projects response is malformed.")
+    return projects
+
+
+async def _post_autopilot_project_action(
+    project_id: str,
+    action: str,
+    *,
+    base_url: str = DEFAULT_AUTOPILOT_API_BASE,
+) -> dict:
+    base = str(base_url or DEFAULT_AUTOPILOT_API_BASE).rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(f"{base}/projects/{project_id}/{action}")
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"Failed to reach Autopilot project action '{action}': {exc}") from exc
+
+    try:
+        data = response.json()
+    except ValueError:
+        data = {"detail": response.text}
+
+    if response.status_code >= 400:
+        detail = data.get("detail") if isinstance(data, dict) else data
+        raise HTTPException(502, f"Autopilot project action '{action}' failed: {detail}")
+    if not isinstance(data, dict):
+        raise HTTPException(502, f"Autopilot project action '{action}' returned malformed payload.")
+    return data
+
+
 async def _validate_mcp_stdio(tool: ToolConfig) -> dict:
     logs = ["> Connecting to server..."]
     command_text = str(tool.config.get("command", "")).strip()
@@ -671,6 +788,78 @@ async def ep_session(session_id: str):
     if not session:
         raise HTTPException(404, f"Session not found: {session_id}")
     return _session_payload(session)
+
+
+@router.get("/execution-brief/schema")
+async def ep_execution_brief_schema():
+    return ExecutionBrief.model_json_schema()
+
+
+@router.get("/autopilot/launch-presets")
+async def ep_autopilot_launch_presets():
+    presets = await _fetch_autopilot_launch_presets()
+    return {"launch_presets": [preset.model_dump() for preset in presets]}
+
+
+@router.get("/autopilot/projects")
+async def ep_autopilot_projects(include_archived: bool = False):
+    projects = await _fetch_autopilot_projects(include_archived=include_archived)
+    return {"projects": projects}
+
+
+@router.post("/autopilot/projects/{project_id}/pause")
+async def ep_autopilot_project_pause(project_id: str):
+    return await _post_autopilot_project_action(project_id, "pause")
+
+
+@router.post("/autopilot/projects/{project_id}/resume")
+async def ep_autopilot_project_resume(project_id: str):
+    return await _post_autopilot_project_action(project_id, "resume")
+
+
+@router.post("/session/{session_id}/execution-brief")
+async def ep_execution_brief(session_id: str, req: ExecutionBriefExportRequest | None = None):
+    session = store.get(session_id)
+    if not session:
+        raise HTTPException(404, f"Session not found: {session_id}")
+    try:
+        brief = await asyncio.to_thread(
+            generate_session_execution_brief,
+            session,
+            req.provider if req else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return {"status": "ok", "brief": brief.model_dump()}
+
+
+@router.post("/session/{session_id}/tournament-preparation")
+async def ep_tournament_preparation(session_id: str, req: TournamentPreparationRequest | None = None):
+    session = store.get(session_id)
+    if not session:
+        raise HTTPException(404, f"Session not found: {session_id}")
+    try:
+        preparation = await asyncio.to_thread(
+            generate_session_tournament_preparation,
+            session,
+            req.provider if req else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return {"status": "ok", "tournament": preparation.model_dump()}
+
+
+@router.post("/session/{session_id}/send-to-autopilot")
+async def ep_send_to_autopilot(session_id: str, req: SendExecutionBriefRequest):
+    session = store.get(session_id)
+    if not session:
+        raise HTTPException(404, f"Session not found: {session_id}")
+    try:
+        brief = await asyncio.to_thread(generate_session_execution_brief, session, req.provider)
+    except ValueError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    autopilot = await _send_brief_to_autopilot(brief, req)
+    return {"status": "ok", "brief": brief.model_dump(), "autopilot": autopilot}
 
 
 @router.get("/session/{session_id}/events")

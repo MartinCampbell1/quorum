@@ -53,6 +53,22 @@ SCENARIOS = {
             AgentConfig(role="skeptic", provider="codex", tools=["web_search", "code_exec"]),
         ],
     },
+    "portfolio_pivot_lab": {
+        "id": "portfolio_pivot_lab",
+        "name": "Portfolio Pivot Lab",
+        "mode": "board",
+        "headline": "Совет агентов перерабатывает текущие проекты в более сильные pivot-варианты под founder fit.",
+        "description": "Подходит для работы с портфелем локальных проектов: найти по 2-3 сильных пивота на каждый, отсеять слабые направления и собрать shortlist для турнира или Autopilot.",
+        "recommended_for": "Когда есть несколько интересных репозиториев и нужно не просто выбрать победителя, а пересобрать их в более сильные бизнес-направления.",
+        "task_placeholder": "Например: возьмите мои AI, crypto и automation проекты, предложите по 2-3 сильных pivot-версии для каждого, затем соберите shortlist с founder-fit, time-to-money и тем, что стоит отправить в турнир или сразу в Autopilot.",
+        "tags": ["founderos", "portfolio", "pivots"],
+        "default_config": {"max_rounds": 3},
+        "default_agents": [
+            AgentConfig(role="portfolio_strategist", provider="claude", tools=["web_search", "perplexity"]),
+            AgentConfig(role="market_scout", provider="gemini", tools=["web_search", "perplexity", "http_request"]),
+            AgentConfig(role="pivot_critic", provider="codex", tools=["web_search", "code_exec", "shell_exec"]),
+        ],
+    },
     "consensus_vote": {
         "id": "consensus_vote",
         "name": "Consensus Vote",

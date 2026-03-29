@@ -4,11 +4,18 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Folder, Globe, HardDrive, Loader2, Sparkles, TerminalSquare } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { controlSession } from "@/lib/api";
+import {
+  controlSession,
+  exportExecutionBrief,
+  getAutopilotLaunchPresets,
+  prepareTournamentFromSession,
+  sendExecutionBriefToAutopilot,
+} from "@/lib/api";
 import { useLocale } from "@/lib/locale";
 import { useSession } from "@/hooks/use-session";
 import { useSessionEvents } from "@/hooks/use-session-events";
-import type { AttachedToolDetail, Session } from "@/lib/types";
+import type { AttachedToolDetail, AutopilotLaunchPreset, Session } from "@/lib/types";
+import { saveWizardDraft } from "@/components/wizard/wizard";
 
 import { ChatHeader } from "./chat-header";
 import { CheckpointPanel } from "./checkpoint-panel";
@@ -21,6 +28,7 @@ interface ChatViewProps {
   sessionId: string;
   onForkSession?: (sessionId: string) => void;
   onOpenHome?: () => void;
+  onOpenDraftWizard?: () => void;
   onOpenSessions?: () => void;
 }
 
@@ -103,18 +111,27 @@ export function ChatView({
   sessionId,
   onForkSession,
   onOpenHome,
+  onOpenDraftWizard,
   onOpenSessions,
 }: ChatViewProps) {
   const { copy } = useLocale();
   const { session, isLoading, refresh } = useSession(sessionId);
   const { events } = useSessionEvents(session?.id ?? null, session?.events ?? []);
   const [isWorking, setIsWorking] = useState(false);
+  const [isExportingBrief, setIsExportingBrief] = useState(false);
+  const [isPreparingTournament, setIsPreparingTournament] = useState(false);
+  const [isSendingToAutopilot, setIsSendingToAutopilot] = useState(false);
+  const [isLaunchingInAutopilot, setIsLaunchingInAutopilot] = useState(false);
+  const [autopilotLaunchPresets, setAutopilotLaunchPresets] = useState<AutopilotLaunchPreset[]>([]);
+  const [selectedLaunchPresetId, setSelectedLaunchPresetId] = useState("team");
+  const [bridgeStatus, setBridgeStatus] = useState<string | null>(null);
   const [selectedCheckpointId, setSelectedCheckpointId] = useState<string | null>(null);
   const trackedSessionIdRef = useRef<string | null>(null);
   const trackedCurrentCheckpointRef = useRef<string | null>(null);
   const currentSessionId = session?.id ?? null;
   const currentCheckpointId = session?.current_checkpoint_id ?? null;
   const isParallelChild = Boolean(session?.parallel_parent_id);
+  const canPrepareTournament = session?.active_scenario === "portfolio_pivot_lab";
 
   const activeConnections = useMemo(() => {
     if (!session) return [];
@@ -130,6 +147,21 @@ export function ChatView({
       capability: "native" as const,
     }));
   }, [session, copy.monitor.genericConnection]);
+
+  useEffect(() => {
+    getAutopilotLaunchPresets()
+      .then((presets) => {
+        setAutopilotLaunchPresets(presets);
+        if (presets.length === 0) return;
+        const recommended = session?.mode === "tournament" || session?.mode === "debate" ? "team" : "fast";
+        const fallback = presets[0]?.id ?? "fast";
+        const preferred = presets.some((preset) => preset.id === recommended) ? recommended : fallback;
+        setSelectedLaunchPresetId((current) =>
+          presets.some((preset) => preset.id === current) ? current : preferred
+        );
+      })
+      .catch(() => {});
+  }, [session?.mode]);
 
   useEffect(() => {
     if (!currentSessionId) return;
@@ -176,15 +208,93 @@ export function ChatView({
     }
   }
 
-  function handleExport() {
+  async function handleExport() {
     if (!session) return;
-    const blob = new Blob([JSON.stringify(session, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `${session.id}.json`;
-    anchor.click();
-    URL.revokeObjectURL(url);
+    setIsExportingBrief(true);
+    setBridgeStatus(null);
+    try {
+      const exported = await exportExecutionBrief(session.id);
+      const blob = new Blob([JSON.stringify(exported.brief, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${session.id}-execution-brief.json`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      setBridgeStatus(copy.monitor.briefExported);
+    } catch (error) {
+      setBridgeStatus(error instanceof Error ? error.message : "Execution Brief export failed.");
+    } finally {
+      setIsExportingBrief(false);
+    }
+  }
+
+  async function handleSendToAutopilot() {
+    if (!session) return;
+    setIsSendingToAutopilot(true);
+    setBridgeStatus(null);
+    try {
+      const response = await sendExecutionBriefToAutopilot(session.id, {});
+      const projectName =
+        typeof response.autopilot?.project_name === "string" && response.autopilot.project_name
+          ? ` ${response.autopilot.project_name}`
+          : "";
+      setBridgeStatus(`${copy.monitor.briefSent}${projectName}`.trim());
+    } catch (error) {
+      setBridgeStatus(error instanceof Error ? error.message : "Autopilot bridge failed.");
+    } finally {
+      setIsSendingToAutopilot(false);
+    }
+  }
+
+  async function handleLaunchInAutopilot() {
+    if (!session) return;
+    setIsLaunchingInAutopilot(true);
+    setBridgeStatus(null);
+    try {
+      const preset = autopilotLaunchPresets.find((item) => item.id === selectedLaunchPresetId);
+      const response = await sendExecutionBriefToAutopilot(session.id, {
+        priority: session.mode === "tournament" ? "high" : "normal",
+        launch: true,
+        launch_profile: preset?.launch_profile ?? { preset: selectedLaunchPresetId },
+      });
+      const projectName =
+        typeof response.autopilot?.project_name === "string" && response.autopilot.project_name
+          ? ` ${response.autopilot.project_name}`
+          : "";
+      setBridgeStatus(`${copy.monitor.launchedInAutopilot}${projectName}`.trim());
+    } catch (error) {
+      setBridgeStatus(error instanceof Error ? error.message : "Autopilot launch failed.");
+    } finally {
+      setIsLaunchingInAutopilot(false);
+    }
+  }
+
+  async function handlePrepareTournament() {
+    if (!session) return;
+    setIsPreparingTournament(true);
+    setBridgeStatus(null);
+    try {
+      const response = await prepareTournamentFromSession(session.id);
+      saveWizardDraft({
+        step: 2,
+        selectedScenarioId: response.tournament.scenario_id,
+        agents: response.tournament.agents,
+        workspacePresetIds: [],
+        workspacePaths: response.tournament.workspace_paths,
+        taskDraft: response.tournament.task,
+        launchConfig: {
+          max_rounds: response.tournament.recommended_max_rounds,
+          execution_mode: response.tournament.recommended_execution_mode,
+        },
+      });
+      setBridgeStatus(`${copy.monitor.tournamentPrepared} ${response.tournament.contestants.length}`.trim());
+      onOpenDraftWizard?.();
+    } catch (error) {
+      setBridgeStatus(error instanceof Error ? error.message : "Tournament preparation failed.");
+    } finally {
+      setIsPreparingTournament(false);
+    }
   }
 
   function primaryLabel() {
@@ -285,7 +395,35 @@ export function ChatView({
                   Этот дочерний матч управляется из родительского турнира. Здесь доступен monitor, но pause / cancel / branch выполняются только из parent run.
                 </div>
               ) : (
-                <div className="flex gap-3">
+                <div className="flex flex-col gap-3">
+                  {autopilotLaunchPresets.length > 0 ? (
+                    <div className="rounded-[14px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 dark:border-slate-800 dark:bg-slate-900/80">
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#6b7280] dark:text-slate-500">
+                        {copy.monitor.autopilotLaunchMode}
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {autopilotLaunchPresets.map((preset) => (
+                          <button
+                            key={preset.id}
+                            type="button"
+                            onClick={() => setSelectedLaunchPresetId(preset.id)}
+                            className={`rounded-full border px-3 py-1.5 text-[11px] transition-colors ${
+                              selectedLaunchPresetId === preset.id
+                                ? "border-black bg-black text-white dark:border-slate-100 dark:bg-slate-100 dark:text-slate-950"
+                                : "border-[#d6dbe6] bg-white text-[#4b5563] hover:text-[#111111] dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400 dark:hover:text-slate-100"
+                            }`}
+                          >
+                            {preset.label}
+                          </button>
+                        ))}
+                      </div>
+                      {autopilotLaunchPresets.find((preset) => preset.id === selectedLaunchPresetId)?.description ? (
+                        <div className="mt-3 text-[12px] leading-6 text-[#4b5563] dark:text-slate-400">
+                          {autopilotLaunchPresets.find((preset) => preset.id === selectedLaunchPresetId)?.description}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
                   <Button
                     type="button"
                     onClick={handlePrimaryAction}
@@ -297,14 +435,55 @@ export function ChatView({
                     ) : null}
                     {primaryLabel()}
                   </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={handleExport}
-                    className="h-[46px] flex-1 rounded-[12px] border-[#111111] bg-white text-[15px] font-medium text-[#111111] dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:hover:bg-slate-900"
-                  >
-                    {copy.monitor.exportResults}
-                  </Button>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={handleExport}
+                      disabled={isExportingBrief || isPreparingTournament || isSendingToAutopilot || isLaunchingInAutopilot}
+                      className="h-[46px] rounded-[12px] border-[#111111] bg-white text-[15px] font-medium text-[#111111] dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:hover:bg-slate-900"
+                    >
+                      {isExportingBrief ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                      {copy.monitor.exportBrief}
+                    </Button>
+                    {canPrepareTournament ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={handlePrepareTournament}
+                        disabled={isExportingBrief || isPreparingTournament || isSendingToAutopilot || isLaunchingInAutopilot}
+                        className="h-[46px] rounded-[12px] border-[#111111] bg-white text-[15px] font-medium text-[#111111] dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:hover:bg-slate-900"
+                      >
+                        {isPreparingTournament ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                        {copy.monitor.prepareTournament}
+                      </Button>
+                    ) : null}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={handleLaunchInAutopilot}
+                      disabled={isExportingBrief || isPreparingTournament || isSendingToAutopilot || isLaunchingInAutopilot}
+                      className="h-[46px] rounded-[12px] border-[#111111] bg-white text-[15px] font-medium text-[#111111] dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:hover:bg-slate-900"
+                    >
+                      {isLaunchingInAutopilot ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                      {copy.monitor.launchInAutopilot}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={handleSendToAutopilot}
+                      disabled={isExportingBrief || isPreparingTournament || isSendingToAutopilot || isLaunchingInAutopilot}
+                      className="h-[46px] rounded-[12px] border-[#111111] bg-white text-[15px] font-medium text-[#111111] dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:hover:bg-slate-900"
+                    >
+                      {isSendingToAutopilot ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                      {copy.monitor.sendToAutopilot}
+                    </Button>
+                  </div>
+                  {bridgeStatus ? (
+                    <div className="rounded-[14px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-3 text-[13px] leading-6 text-[#4b5563] dark:border-slate-800 dark:bg-slate-900/80 dark:text-slate-300">
+                      {bridgeStatus}
+                    </div>
+                  ) : null}
                 </div>
               )}
             </div>

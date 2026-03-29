@@ -23,6 +23,9 @@ interface StepTaskProps {
   onWorkspacePresetIdsChange: (ids: string[]) => void;
   onWorkspacePathsChange: (paths: string[]) => void;
   defaultConfig?: Record<string, number>;
+  initialTask?: string;
+  initialConfig?: Record<string, unknown>;
+  onDraftChange?: (task: string, config: Record<string, unknown>) => void;
 }
 
 export function StepTask({
@@ -39,14 +42,27 @@ export function StepTask({
   onWorkspacePresetIdsChange,
   onWorkspacePathsChange,
   defaultConfig,
+  initialTask,
+  initialConfig,
+  onDraftChange,
 }: StepTaskProps) {
-  const [task, setTask] = useState("");
-  const [maxRounds, setMaxRounds] = useState(defaultConfig?.max_rounds ?? defaultConfig?.max_iterations ?? 3);
-  const [unlimited, setUnlimited] = useState(false);
-  const [executionMode, setExecutionMode] = useState<"sequential" | "parallel">("sequential");
+  const initialRoundBudget = Number(
+    initialConfig?.max_rounds ??
+      initialConfig?.max_iterations ??
+      defaultConfig?.max_rounds ??
+      defaultConfig?.max_iterations ??
+      3
+  );
+  const [task, setTask] = useState(initialTask ?? "");
+  const [maxRounds, setMaxRounds] = useState(initialRoundBudget);
+  const [unlimited, setUnlimited] = useState(initialRoundBudget >= 99);
+  const [executionMode, setExecutionMode] = useState<"sequential" | "parallel">(
+    initialConfig?.execution_mode === "parallel" ? "parallel" : "sequential"
+  );
   const [workspacePresets, setWorkspacePresets] = useState<WorkspacePreset[]>([]);
   const [extraPathDraft, setExtraPathDraft] = useState("");
 
+  const isPortfolioPivotLab = scenarioId === "portfolio_pivot_lab";
   const needsRounds = ["debate", "democracy", "board", "tournament"].includes(mode);
   const needsIterations = ["dictator", "creator_critic"].includes(mode);
   const isJudgeVerdictMode = mode === "debate" || mode === "tournament";
@@ -61,6 +77,14 @@ export function StepTask({
   useEffect(() => {
     getWorkspacePresets().then(setWorkspacePresets).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    const config: Record<string, unknown> = {};
+    if (needsRounds) config.max_rounds = unlimited ? 99 : maxRounds;
+    if (needsIterations) config.max_iterations = unlimited ? 99 : maxRounds;
+    if (mode === "tournament") config.execution_mode = executionMode;
+    onDraftChange?.(task, config);
+  }, [task, maxRounds, unlimited, executionMode, needsRounds, needsIterations, mode, onDraftChange]);
 
   function togglePreset(id: string) {
     if (workspacePresetIds.includes(id)) {
@@ -122,6 +146,23 @@ export function StepTask({
               </div>
               <div className="mt-3 rounded-lg border border-border/60 bg-[#fbfcff] px-3 py-3 font-mono text-[11px] leading-5 text-[#273142] dark:border-slate-800 dark:bg-slate-900/80 dark:text-slate-300">
                 Выберите, какой проект мне стоит развивать первым как соло-фаундеру с сильным AI-стеком, чтобы быстрее выйти к стабильным $2K+/мес. В каждом матче пусть участники защищают свой проект и опровергают оппонента. В финале дайте победителя, второе место, что заморозить и почему.
+              </div>
+            </div>
+          )}
+
+          {isPortfolioPivotLab && (
+            <div className="mt-4 rounded-xl border border-border/60 bg-white p-4 text-[12px] leading-6 text-muted-foreground/80 dark:border-slate-800 dark:bg-slate-950/70">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-foreground/70">
+                Подсказка для FounderOS
+              </div>
+              <div className="mt-2">
+                Дай совету не просто список идей, а структуру `project -&gt; 2-3 pivots -&gt; shortlist -&gt; что отправлять в турнир -&gt; что можно сразу слать в Autopilot`.
+              </div>
+              <div className="mt-2">
+                Лучше просить агентов учитывать founder-fit, time-to-first-dollar, реальный AI-edge, сложность дистрибуции и то, насколько проект можно быстро превратить в execution brief.
+              </div>
+              <div className="mt-3 rounded-lg border border-border/60 bg-[#fbfcff] px-3 py-3 font-mono text-[11px] leading-5 text-[#273142] dark:border-slate-800 dark:bg-slate-900/80 dark:text-slate-300">
+                Возьмите мои текущие проекты из attached workspaces. Для каждого предложите по 2 сильных pivot-варианта. Затем выберите shortlist из 5 лучших `project + pivot` направлений под соло-фаундера с сильным AI-стеком. Для каждого shortlisted варианта дайте thesis, ICP, wedge, путь к первым $2K/мес, kill criteria и отметьте, что стоит отправить дальше в турнир, а что уже можно превращать в Execution Brief для Autopilot.
               </div>
             </div>
           )}

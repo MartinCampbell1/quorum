@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Circle, Search, UserCircle2 } from "lucide-react";
 
 import { ChatView } from "@/components/chat/chat-view";
+import { FounderOsBoard } from "@/components/founder-os/founder-os-board";
 import { SettingsView } from "@/components/settings-view";
 import { HistoryView } from "@/components/history-view";
 import { IconBar } from "@/components/sidebar/icon-bar";
@@ -11,7 +12,7 @@ import { SessionList } from "@/components/sidebar/session-list";
 import { clearWizardDraft, Wizard } from "@/components/wizard/wizard";
 import { LocaleProvider, useLocale } from "@/lib/locale";
 
-type View = "chat" | "history" | "settings";
+type View = "chat" | "founderos" | "history" | "settings";
 
 function BrandMark() {
   return (
@@ -44,6 +45,14 @@ function HomeShell() {
   function openFreshWizard() {
     clearWizardDraft();
     setResumeWizardDraft(false);
+    setActiveSessionId(null);
+    setShowWizard(true);
+    setView("chat");
+    setWizardVersion((value) => value + 1);
+  }
+
+  function openDraftWizard() {
+    setResumeWizardDraft(true);
     setActiveSessionId(null);
     setShowWizard(true);
     setView("chat");
@@ -145,6 +154,17 @@ function HomeShell() {
         <main className="min-w-0 flex-1 overflow-hidden bg-[#f6f7fb] dark:bg-[#05070c]">
           {view === "history" ? (
             <HistoryView onSelectSession={handleSelectSession} />
+          ) : view === "founderos" ? (
+            <FounderOsBoard
+              onSelectSession={handleSelectSession}
+              onOpenDraftWizard={() => {
+                setResumeWizardDraft(true);
+                setActiveSessionId(null);
+                setShowWizard(true);
+                setView("chat");
+                setWizardVersion((value) => value + 1);
+              }}
+            />
           ) : view === "settings" ? (
             <SettingsView />
           ) : showWizard ? (
@@ -167,6 +187,7 @@ function HomeShell() {
               sessionId={activeSessionId}
               onForkSession={handleSelectSession}
               onOpenHome={handleOpenHome}
+              onOpenDraftWizard={openDraftWizard}
               onOpenSessions={handleOpenHome}
             />
           ) : (

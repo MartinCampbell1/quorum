@@ -16,12 +16,14 @@ interface WizardProps {
 
 const WIZARD_DRAFT_KEY = "quorum-wizard-draft-v1";
 
-interface WizardDraft {
+export interface WizardDraft {
   step: number;
   selectedScenarioId: string | null;
   agents: AgentConfig[];
   workspacePresetIds: string[];
   workspacePaths: string[];
+  taskDraft?: string;
+  launchConfig?: Record<string, unknown>;
 }
 
 function readWizardDraft(): WizardDraft | null {
@@ -33,6 +35,11 @@ function readWizardDraft(): WizardDraft | null {
   } catch {
     return null;
   }
+}
+
+export function saveWizardDraft(draft: WizardDraft) {
+  if (typeof window === "undefined") return;
+  window.sessionStorage.setItem(WIZARD_DRAFT_KEY, JSON.stringify(draft));
 }
 
 export function clearWizardDraft() {
@@ -49,6 +56,8 @@ export function Wizard({ onSessionCreated, onOpenSettings, resumeDraft = false }
   const [isLaunching, setIsLaunching] = useState(false);
   const [workspacePresetIds, setWorkspacePresetIds] = useState<string[]>(initialDraft?.workspacePresetIds ?? []);
   const [workspacePaths, setWorkspacePaths] = useState<string[]>(initialDraft?.workspacePaths ?? []);
+  const [taskDraft, setTaskDraft] = useState(initialDraft?.taskDraft ?? "");
+  const [launchConfigDraft, setLaunchConfigDraft] = useState<Record<string, unknown>>(initialDraft?.launchConfig ?? {});
 
   function cloneAgents(source: AgentConfig[]): AgentConfig[] {
     return source.map((agent) => ({
@@ -82,17 +91,16 @@ export function Wizard({ onSessionCreated, onOpenSettings, resumeDraft = false }
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    window.sessionStorage.setItem(
-      WIZARD_DRAFT_KEY,
-      JSON.stringify({
-        step,
-        selectedScenarioId,
-        agents,
-        workspacePresetIds,
-        workspacePaths,
-      } satisfies WizardDraft)
-    );
-  }, [step, selectedScenarioId, agents, workspacePresetIds, workspacePaths]);
+    saveWizardDraft({
+      step,
+      selectedScenarioId,
+      agents,
+      workspacePresetIds,
+      workspacePaths,
+      taskDraft,
+      launchConfig: launchConfigDraft,
+    } satisfies WizardDraft);
+  }, [step, selectedScenarioId, agents, workspacePresetIds, workspacePaths, taskDraft, launchConfigDraft]);
 
   function handleScenarioSelect(scenarioId: string) {
     setSelectedScenarioId(scenarioId);
@@ -176,6 +184,12 @@ export function Wizard({ onSessionCreated, onOpenSettings, resumeDraft = false }
       onWorkspacePresetIdsChange={setWorkspacePresetIds}
       onWorkspacePathsChange={setWorkspacePaths}
       defaultConfig={selectedScenario?.default_config}
+      initialTask={taskDraft}
+      initialConfig={launchConfigDraft}
+      onDraftChange={(task, config) => {
+        setTaskDraft(task);
+        setLaunchConfigDraft(config);
+      }}
     />,
   ];
 

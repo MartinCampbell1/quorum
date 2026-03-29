@@ -1,12 +1,22 @@
 """Regression coverage for API boundary validation and honest capability reporting."""
 
 import json
+import sys
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import orchestrator.api as orchestrator_api
 from orchestrator.api import router
+from orchestrator.execution_brief import (
+    AutopilotLaunchPreset,
+    AutopilotLaunchProfile,
+    ExecutionBrief,
+    TournamentPreparation,
+    TournamentCandidate,
+)
 from orchestrator.models import AgentConfig, AVAILABLE_TOOLS, SessionStore, store
 from orchestrator.tool_configs import ToolConfig, tool_config_store
 
@@ -14,6 +24,14 @@ from orchestrator.tool_configs import ToolConfig, tool_config_store
 app = FastAPI()
 app.include_router(router)
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def isolated_session_store(tmp_path, monkeypatch):
+    isolated = SessionStore(db_path=str(tmp_path / "state.db"))
+    monkeypatch.setattr(orchestrator_api, "store", isolated)
+    monkeypatch.setattr(sys.modules[__name__], "store", isolated)
+    yield isolated
 
 
 def _agent(role: str, provider: str, tools: list[str]) -> dict:
@@ -152,9 +170,17 @@ def test_scenarios_endpoint_returns_personal_catalog():
 
     assert response.status_code == 200
     payload = response.json()
-    assert {"repo_audit", "pattern_mining", "news_context", "consensus_vote", "structured_debate", "strategy_review", "project_tournament"} == {
+    assert {"repo_audit", "pattern_mining", "news_context", "portfolio_pivot_lab", "consensus_vote", "structured_debate", "strategy_review", "project_tournament"} == {
         item["id"] for item in payload
     }
+
+
+def test_scenarios_endpoint_allows_multiple_presets_per_mode():
+    response = client.get("/orchestrate/scenarios")
+
+    assert response.status_code == 200
+    board_scenarios = [item["id"] for item in response.json() if item["mode"] == "board"]
+    assert {"news_context", "portfolio_pivot_lab"}.issubset(set(board_scenarios))
 
 
 def test_scenarios_endpoint_covers_all_primary_wizard_modes():
@@ -538,6 +564,227 @@ def test_continue_endpoint_creates_branch_from_current_checkpoint():
     assert response.status_code == 200
     assert response.json() == {"status": "running", "new_session_id": "sess_followup"}
     mock_fork.assert_called_once_with(session_id, "cp_3", "Push the team on operational risks.")
+
+
+def test_execution_brief_schema_route_exposes_contract():
+    response = client.get("/orchestrate/execution-brief/schema")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["title"] == "ExecutionBrief"
+    assert "properties" in payload
+    assert "founder" in payload["properties"]
+
+
+def test_execution_brief_endpoint_exports_brief_from_session():
+    session_id = store.create(
+        "tournament",
+        "Choose the best product to build next.",
+        [
+            AgentConfig(role="contestant_1", provider="codex", tools=[]),
+            AgentConfig(role="contestant_2", provider="claude", tools=[]),
+            AgentConfig(role="judge", provider="gemini", tools=[]),
+        ],
+        {},
+        scenario_id="project_tournament",
+    )
+    store.update(
+        session_id,
+        status="completed",
+        result="Champion: graphrag-affiliate",
+        messages=[{"agent_id": "judge", "phase": "verdict", "content": "GraphRAG should win and be productized next."}],
+        workspace_paths=["/Users/example/Desktop/Projects/graphrag-affiliate"],
+    )
+
+    exported = ExecutionBrief(
+        title="GraphRAG Affiliate",
+        thesis="Build the GraphRAG affiliate product first.",
+        summary="It is the strongest candidate from the tournament.",
+    )
+
+    with patch("orchestrator.api.generate_session_execution_brief", return_value=exported) as mock_export:
+        response = client.post(f"/orchestrate/session/{session_id}/execution-brief", json={})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["brief"]["title"] == "GraphRAG Affiliate"
+    mock_export.assert_called_once()
+
+
+def test_send_to_autopilot_endpoint_forwards_brief():
+    session_id = store.create(
+        "debate",
+        "Decide which product should become the next execution candidate.",
+        [
+            AgentConfig(role="proponent", provider="codex", tools=[]),
+            AgentConfig(role="opponent", provider="claude", tools=[]),
+            AgentConfig(role="judge", provider="gemini", tools=[]),
+        ],
+        {},
+        scenario_id="structured_debate",
+    )
+    store.update(session_id, status="completed", result="Autopilot should be executed next.")
+
+    exported = ExecutionBrief(
+        title="Autopilot",
+        thesis="Push Autopilot into multi-agent execution and self-improvement.",
+        summary="The debate recommended Autopilot as the best next execution candidate.",
+    )
+
+    with patch("orchestrator.api.generate_session_execution_brief", return_value=exported) as mock_export, patch(
+        "orchestrator.api._send_brief_to_autopilot",
+        new=AsyncMock(return_value={"project_id": "proj_123", "status": "ok", "launched": False}),
+    ) as mock_send:
+        response = client.post(
+            f"/orchestrate/session/{session_id}/send-to-autopilot",
+            json={
+                "project_path": "/Users/example/Desktop/autopilot/projects/autopilot-child",
+                "priority": "high",
+                "launch": False,
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["brief"]["title"] == "Autopilot"
+    assert payload["autopilot"]["project_id"] == "proj_123"
+    mock_export.assert_called_once()
+    assert mock_send.await_count == 1
+
+
+def test_tournament_preparation_endpoint_returns_wizard_ready_payload():
+    session_id = store.create(
+        "board",
+        "Generate pivots for my current portfolio.",
+        [
+            AgentConfig(role="portfolio_strategist", provider="claude", tools=[]),
+            AgentConfig(role="market_scout", provider="gemini", tools=[]),
+            AgentConfig(role="pivot_critic", provider="codex", tools=[]),
+        ],
+        {},
+        scenario_id="portfolio_pivot_lab",
+    )
+    store.update(
+        session_id,
+        status="completed",
+        result="Shortlist prepared.",
+        workspace_paths=[
+            "/Users/example/Desktop/Projects/graphrag-affiliate",
+            "/Users/example/Desktop/autopilot",
+        ],
+    )
+
+    preparation = TournamentPreparation(
+        title="FounderOS shortlist",
+        task="Run a tournament between the strongest pivots.",
+        contestants=[
+            TournamentCandidate(
+                label="GraphRAG Affiliate -> paid intelligence terminal",
+                thesis="Sell the graph-backed corpus as a subscription tool.",
+                rationale="Fastest path to first money.",
+                source_workspace_path="/Users/example/Desktop/Projects/graphrag-affiliate",
+            ),
+            TournamentCandidate(
+                label="Autopilot -> execution OS for solo founders",
+                thesis="Package Autopilot as a high-value execution engine.",
+                rationale="Strongest AI-edge.",
+                source_workspace_path="/Users/example/Desktop/autopilot",
+            ),
+        ],
+        agents=[
+            AgentConfig(role="contestant_1", provider="claude", tools=["web_search"], workspace_paths=["/Users/example/Desktop/Projects/graphrag-affiliate"]),
+            AgentConfig(role="contestant_2", provider="codex", tools=["code_exec"], workspace_paths=["/Users/example/Desktop/autopilot"]),
+            AgentConfig(role="judge", provider="gemini", tools=["perplexity"]),
+        ],
+        workspace_paths=[
+            "/Users/example/Desktop/Projects/graphrag-affiliate",
+            "/Users/example/Desktop/autopilot",
+        ],
+    )
+
+    with patch("orchestrator.api.generate_session_tournament_preparation", return_value=preparation) as mock_prepare:
+        response = client.post(f"/orchestrate/session/{session_id}/tournament-preparation", json={})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["tournament"]["scenario_id"] == "project_tournament"
+    assert len(payload["tournament"]["contestants"]) == 2
+    assert payload["tournament"]["agents"][-1]["role"] == "judge"
+    mock_prepare.assert_called_once()
+
+
+def test_autopilot_launch_presets_route_proxies_presets():
+    with patch(
+        "orchestrator.api._fetch_autopilot_launch_presets",
+        new=AsyncMock(
+            return_value=[
+                AutopilotLaunchPreset(
+                    id="team",
+                    label="Team",
+                    description="Primary worker plus critic.",
+                    launch_profile=AutopilotLaunchProfile(
+                        preset="team",
+                        story_execution_mode="team",
+                        project_concurrency_mode="sequential",
+                        max_parallel_stories=1,
+                    ),
+                )
+            ]
+        ),
+    ):
+        response = client.get("/orchestrate/autopilot/launch-presets")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["launch_presets"][0]["id"] == "team"
+
+
+def test_autopilot_projects_route_proxies_project_list():
+    with patch(
+        "orchestrator.api._fetch_autopilot_projects",
+        new=AsyncMock(
+            return_value=[
+                {
+                    "id": "proj_123",
+                    "name": "Autopilot Winner",
+                    "path": "/Users/example/.autopilot/projects/autopilot-winner",
+                    "priority": "high",
+                    "archived": False,
+                    "status": "paused",
+                    "paused": True,
+                    "stories_done": 2,
+                    "stories_total": 5,
+                    "current_story_id": 3,
+                    "current_story_title": "Refine execution loop",
+                    "last_activity_at": "2026-03-29T01:00:00+00:00",
+                    "last_message": "Project paused by user.",
+                    "pid": None,
+                    "launch_profile": {"preset": "team"},
+                }
+            ]
+        ),
+    ) as mock_projects:
+        response = client.get("/orchestrate/autopilot/projects")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["projects"][0]["id"] == "proj_123"
+    assert mock_projects.await_count == 1
+
+
+def test_autopilot_project_pause_route_proxies_action():
+    with patch(
+        "orchestrator.api._post_autopilot_project_action",
+        new=AsyncMock(return_value={"status": "ok", "message": "Paused Autopilot Winner"}),
+    ) as mock_action:
+        response = client.post("/orchestrate/autopilot/projects/proj_123/pause")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    mock_action.assert_awaited_once_with("proj_123", "pause")
 
 
 def test_continue_endpoint_rejects_non_terminal_session():
