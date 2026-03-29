@@ -69,6 +69,22 @@ SCENARIOS = {
             AgentConfig(role="pivot_critic", provider="codex", tools=["web_search", "code_exec", "shell_exec"]),
         ],
     },
+    "project_strengthening_lab": {
+        "id": "project_strengthening_lab",
+        "name": "Project Strengthening Lab",
+        "mode": "board",
+        "headline": "Совет агентов не пивотит сильный проект, а находит, что именно усилить, чтобы он быстрее дошёл до денег и реального роста.",
+        "description": "Подходит для уже сильных проектов, которым нужен не новый вектор, а жёсткий разбор слабых мест: упаковка, монетизация, distribution wedge, retention, execution roadmap и то, что тормозит рост прямо сейчас.",
+        "recommended_for": "Когда проект уже выглядит жизнеспособным, и нужно понять, как его усилить: что фиксить первым, как продавать, как упаковать, какой wedge выбрать и что запускать в ближайшие 14-30 дней.",
+        "task_placeholder": "Например: возьмите мои сильные проекты GraphRAG и Autopilot, разберите их узкие места, предложите лучшие стратегии усиления, distribution wedge, monetization path и конкретный 30-дневный execution plan без смены ядра продукта.",
+        "tags": ["founderos", "strengthening", "growth"],
+        "default_config": {"max_rounds": 3},
+        "default_agents": [
+            AgentConfig(role="product_strengthener", provider="claude", tools=["web_search", "perplexity"]),
+            AgentConfig(role="growth_operator", provider="gemini", tools=["web_search", "perplexity", "http_request"]),
+            AgentConfig(role="execution_critic", provider="codex", tools=["web_search", "code_exec", "shell_exec"]),
+        ],
+    },
     "consensus_vote": {
         "id": "consensus_vote",
         "name": "Consensus Vote",
