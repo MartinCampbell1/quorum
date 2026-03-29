@@ -2,7 +2,6 @@
 
 import { Plus, Search } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useLocale } from "@/lib/locale";
 import { useSessions } from "@/hooks/use-sessions";
@@ -80,15 +79,6 @@ export function SessionList({
         ) : null}
       </ScrollArea>
 
-      <div className="mt-auto px-4 pb-5 pt-3">
-        <Button
-          type="button"
-          variant="outline"
-          className="h-10 w-full rounded-[12px] border-[#d9dde7] bg-white text-[14px] font-medium text-[#09090b] shadow-none hover:bg-[#f7f7fa] dark:border-slate-800 dark:bg-slate-950/60 dark:text-slate-100 dark:hover:bg-slate-900"
-        >
-          {copy.shell.issues}
-        </Button>
-      </div>
     </aside>
   );
 }

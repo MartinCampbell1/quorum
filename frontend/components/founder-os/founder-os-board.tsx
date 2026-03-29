@@ -508,8 +508,8 @@ export function FounderOsBoard({ onSelectSession, onOpenDraftWizard }: FounderOs
         ) : null}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden px-8 py-6">
-        <div className="flex min-h-full gap-4 pb-2">
+      <div className="min-h-0 flex-1 overflow-auto px-8 py-6">
+        <div className="flex min-h-max items-start gap-4 pb-6">
           <StageShell
             stage="research"
             title={copy.founderOs.stages.research.title}
