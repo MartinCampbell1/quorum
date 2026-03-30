@@ -346,11 +346,11 @@ function buildDebateFlowGraph(session: Session, copy: LocaleCopy): FlowCanvasGra
 
   const nodes = [
     placeTaskNode(session, copy, { x: 236, y: 110 }),
-    placeFlowNode("hub", { x: 520, y: 190 }, { kind: "hub", label: copy.monitor.sharedContexts.default, subtitle: "arena" }),
+    placeFlowNode("hub", { x: 520, y: 190 }, { kind: "hub", label: copy.monitor.sharedContexts.default, subtitle: copy.monitor.graphLabels.arena }),
   ];
 
   if (judge) {
-    nodes.push(placeAgentNode(judge, { x: 520, y: 74 }, { density: "compact", eyebrow: "judge" }));
+    nodes.push(placeAgentNode(judge, { x: 520, y: 74 }, { density: "compact", eyebrow: copy.monitor.graphLabels.judge }));
   }
 
   if (proponent) {
@@ -428,20 +428,20 @@ function buildCreatorCriticFlowGraph(session: Session, copy: LocaleCopy): FlowCa
     placeFlowNode("draft", intent.relay, {
       kind: "hub",
       label: copy.monitor.sharedContexts.creator_critic,
-      subtitle: "draft relay",
+      subtitle: copy.monitor.graphLabels.draftRelay,
       density: "compact",
     }),
     placeFlowNode("feedback", intent.feedback, {
       kind: "match",
-      label: "FEEDBACK",
-      subtitle: "critic -> creator",
+      label: copy.monitor.graphLabels.feedback,
+      subtitle: copy.monitor.graphLabels.criticToCreator,
       density: "compact",
     }),
   ];
   const edges: FlowEdge[] = [];
 
   if (creator) {
-    nodes.push(placeAgentNode(creator, intent.creator, { eyebrow: "author" }));
+    nodes.push(placeAgentNode(creator, intent.creator, { eyebrow: copy.monitor.graphLabels.author }));
     edges.push(
       {
         id: `task->agent:${creator.role}`,
@@ -463,7 +463,7 @@ function buildCreatorCriticFlowGraph(session: Session, copy: LocaleCopy): FlowCa
   }
 
   if (critic) {
-    nodes.push(placeAgentNode(critic, intent.critic, { eyebrow: "review" }));
+    nodes.push(placeAgentNode(critic, intent.critic, { eyebrow: copy.monitor.graphLabels.review }));
     edges.push(
       {
         id: `draft->agent:${critic.role}`,
@@ -518,7 +518,7 @@ function buildDictatorFlowGraph(session: Session, copy: LocaleCopy): FlowCanvasG
     return { nodes, edges };
   }
 
-  nodes.push(placeAgentNode(dictator, { x: 520, y: 92 }, { eyebrow: "lead" }));
+  nodes.push(placeAgentNode(dictator, { x: 520, y: 92 }, { eyebrow: copy.monitor.graphLabels.lead }));
   edges.push({
     id: `task->agent:${dictator.role}`,
     source: "task",
@@ -561,7 +561,7 @@ function buildMapReduceFlowGraph(session: Session, copy: LocaleCopy): FlowCanvas
   const edges: FlowEdge[] = [];
 
   if (planner) {
-    nodes.push(placeAgentNode(planner, intent.planner, { eyebrow: "plan" }));
+    nodes.push(placeAgentNode(planner, intent.planner, { eyebrow: copy.monitor.graphLabels.plan }));
     edges.push({
       id: `task->agent:${planner.role}`,
       source: "task",
@@ -577,7 +577,7 @@ function buildMapReduceFlowGraph(session: Session, copy: LocaleCopy): FlowCanvas
     nodes.push(
       placeAgentNode(worker, intent.workers[index] ?? intent.planner, {
         density: denseWorkers ? "compact" : "default",
-        eyebrow: "worker",
+        eyebrow: copy.monitor.graphLabels.worker,
       })
     );
 
@@ -652,7 +652,7 @@ function buildDefaultFlowGraph(session: Session, copy: LocaleCopy): FlowCanvasGr
   const edges: FlowEdge[] = [];
 
   if (primary) {
-    nodes.push(placeAgentNode(primary, { x: 320, y: 238 }, { eyebrow: "lead" }));
+    nodes.push(placeAgentNode(primary, { x: 320, y: 238 }, { eyebrow: copy.monitor.graphLabels.lead }));
     edges.push({
       id: `task->agent:${primary.role}`,
       source: "task",
@@ -706,11 +706,11 @@ function buildTournamentFallbackFlowGraph(session: Session, copy: LocaleCopy): F
     return {
       nodes: [
         placeTaskNode(session, copy, { x: 228, y: 118 }),
-        placeAgentNode(onlyEntrant, { x: 370, y: 210 }, { eyebrow: "seeded" }),
+        placeAgentNode(onlyEntrant, { x: 370, y: 210 }, { eyebrow: copy.monitor.graphLabels.seeded }),
         placeFlowNode("hub", { x: 720, y: 210 }, {
           kind: "hub",
           label: copy.monitor.sharedContexts.tournament,
-          subtitle: "winner",
+          subtitle: copy.monitor.graphLabels.winner,
           density: "compact",
         }),
       ],
@@ -740,8 +740,8 @@ function buildTournamentFallbackFlowGraph(session: Session, copy: LocaleCopy): F
       backdrop: {
         variant: "bracket",
         zones: [
-          { label: "ENTRANT", left: "18%", width: "18%", top: "20%", height: "56%" },
-          { label: "WINNER", left: "58%", width: "18%", top: "20%", height: "56%" },
+          { label: copy.monitor.graphLabels.entrant, left: "18%", width: "18%", top: "20%", height: "56%" },
+          { label: copy.monitor.graphLabels.winner, left: "58%", width: "18%", top: "20%", height: "56%" },
         ],
       },
     };
@@ -766,7 +766,7 @@ function buildTournamentFallbackFlowGraph(session: Session, copy: LocaleCopy): F
       nodes.push(
         placeAgentNode(slot.agent, { x: entrantX, y: slotY }, {
           density: entrantDensity,
-          eyebrow: structure.playInMatchCount > 0 ? "seeded" : undefined,
+          eyebrow: structure.playInMatchCount > 0 ? copy.monitor.graphLabels.seeded : undefined,
         })
       );
       roundEntries.push({ id: `agent:${slot.agent.role}`, y: slotY });
@@ -780,12 +780,12 @@ function buildTournamentFallbackFlowGraph(session: Session, copy: LocaleCopy): F
     const bottomY = slotY + pairGap;
 
     nodes.push(
-      placeAgentNode(topEntrant, { x: entrantX, y: topY }, { density: entrantDensity, eyebrow: "play-in" }),
-      placeAgentNode(bottomEntrant, { x: entrantX, y: bottomY }, { density: entrantDensity, eyebrow: "play-in" }),
+      placeAgentNode(topEntrant, { x: entrantX, y: topY }, { density: entrantDensity, eyebrow: copy.monitor.graphLabels.playIn }),
+      placeAgentNode(bottomEntrant, { x: entrantX, y: bottomY }, { density: entrantDensity, eyebrow: copy.monitor.graphLabels.playIn }),
       placeFlowNode(playInId, { x: playInX ?? 438, y: slotY }, {
         kind: "match",
-        label: "PLAY-IN",
-        subtitle: `match ${matchIndex + 1}`,
+        label: copy.monitor.graphLabels.playIn,
+        subtitle: `${copy.monitor.matchLabel} ${matchIndex + 1}`,
         density: "compact",
       })
     );
@@ -835,7 +835,7 @@ function buildTournamentFallbackFlowGraph(session: Session, copy: LocaleCopy): F
         placeFlowNode(matchId, { x: matchX, y: matchY }, {
           kind: "match",
           label: roundLabel,
-          subtitle: `match ${Math.floor(entryIndex / 2) + 1}`,
+          subtitle: `${copy.monitor.matchLabel} ${Math.floor(entryIndex / 2) + 1}`,
           density: "compact",
         })
       );
@@ -872,7 +872,7 @@ function buildTournamentFallbackFlowGraph(session: Session, copy: LocaleCopy): F
     placeFlowNode("hub", { x: mainStartX + Math.max(0, structure.mainRoundLabels.length - 1) * roundGap + 220, y: champion?.y ?? Math.round(stageHeight / 2) }, {
       kind: "hub",
       label: copy.monitor.sharedContexts.tournament,
-      subtitle: latestRoundLabel(session.events ?? []) ?? "winner",
+      subtitle: latestRoundLabel(session.events ?? []) ?? copy.monitor.graphLabels.winner,
       density: "compact",
     })
   );
@@ -908,12 +908,12 @@ function buildTournamentFallbackFlowGraph(session: Session, copy: LocaleCopy): F
     backdrop: {
       variant: "bracket",
       zones: [
-        zone("ENTRANTS", 170, 160, "14%", "72%"),
-        ...(playInX ? [zone("PLAY-IN", playInX - 74, 148, "18%", "64%")] : []),
+        zone(copy.monitor.graphLabels.entrants, 170, 160, "14%", "72%"),
+        ...(playInX ? [zone(copy.monitor.graphLabels.playIn, playInX - 74, 148, "18%", "64%")] : []),
         ...Array.from({ length: structure.mainRoundLabels.length }, (_, index) =>
           zone(structure.mainRoundLabels[index] ?? tournamentRoundLabel(Math.max(2, structure.slotCount / 2 ** index)), mainStartX + index * roundGap - 70, 140, "16%", "68%")
         ),
-        zone("WINNER", bounds.right - 170, 160, "18%", "60%"),
+        zone(copy.monitor.graphLabels.winner, bounds.right - 170, 160, "18%", "60%"),
       ],
     },
   };
@@ -974,7 +974,7 @@ async function buildTournamentElkFlowGraph(session: Session, copy: LocaleCopy): 
     if (slot.kind === "direct") {
       const directNode = buildAgentFlowNode(slot.agent, 0, 0, {
         density: entrantDensity,
-        eyebrow: structure.playInMatchCount > 0 ? "seeded" : undefined,
+        eyebrow: structure.playInMatchCount > 0 ? copy.monitor.graphLabels.seeded : undefined,
       });
       registerNode(directNode.id, directNode.data);
       roundOrder.set(directNode.id, slotIndex);
@@ -982,13 +982,13 @@ async function buildTournamentElkFlowGraph(session: Session, copy: LocaleCopy): 
     }
 
     const [top, bottom] = slot.pair;
-    const topNode = buildAgentFlowNode(top, 0, 0, { density: entrantDensity, eyebrow: "play-in" });
-    const bottomNode = buildAgentFlowNode(bottom, 0, 0, { density: entrantDensity, eyebrow: "play-in" });
+    const topNode = buildAgentFlowNode(top, 0, 0, { density: entrantDensity, eyebrow: copy.monitor.graphLabels.playIn });
+    const bottomNode = buildAgentFlowNode(bottom, 0, 0, { density: entrantDensity, eyebrow: copy.monitor.graphLabels.playIn });
     const playInId = `playin:${slotIndex}`;
     const playInNode = flowNode(playInId, 0, 0, {
       kind: "match",
-      label: "PLAY-IN",
-      subtitle: `match ${slotIndex + 1}`,
+      label: copy.monitor.graphLabels.playIn,
+      subtitle: `${copy.monitor.matchLabel} ${slotIndex + 1}`,
       density: "compact",
     });
 
@@ -1024,7 +1024,7 @@ async function buildTournamentElkFlowGraph(session: Session, copy: LocaleCopy): 
       const matchNode = flowNode(matchId, 0, 0, {
         kind: "match",
         label: structure.mainRoundLabels[roundIndex] ?? tournamentRoundLabel(currentRound.length),
-        subtitle: `match ${Math.floor(entryIndex / 2) + 1}`,
+        subtitle: `${copy.monitor.matchLabel} ${Math.floor(entryIndex / 2) + 1}`,
         density: "compact",
       });
 
@@ -1043,7 +1043,7 @@ async function buildTournamentElkFlowGraph(session: Session, copy: LocaleCopy): 
   const hubNode = flowNode("hub", 0, 0, {
     kind: "hub",
     label: copy.monitor.sharedContexts.tournament,
-    subtitle: latestRoundLabel(session.events ?? []) ?? "winner",
+    subtitle: latestRoundLabel(session.events ?? []) ?? copy.monitor.graphLabels.winner,
     density: "compact",
   });
   registerNode("hub", hubNode.data);
@@ -1118,10 +1118,10 @@ async function buildTournamentElkFlowGraph(session: Session, copy: LocaleCopy): 
     backdrop: {
       variant: "bracket",
       zones: [
-        ...(entrantBounds ? [zoneFromBounds("ENTRANTS", entrantBounds, layoutWidth, stageHeight)] : []),
-        ...(playInBounds ? [zoneFromBounds("PLAY-IN", playInBounds, layoutWidth, stageHeight)] : []),
+        ...(entrantBounds ? [zoneFromBounds(copy.monitor.graphLabels.entrants, entrantBounds, layoutWidth, stageHeight)] : []),
+        ...(playInBounds ? [zoneFromBounds(copy.monitor.graphLabels.playIn, playInBounds, layoutWidth, stageHeight)] : []),
         ...roundZones,
-        ...(winnerBounds ? [zoneFromBounds("WINNER", winnerBounds, layoutWidth, stageHeight)] : []),
+        ...(winnerBounds ? [zoneFromBounds(copy.monitor.graphLabels.winner, winnerBounds, layoutWidth, stageHeight)] : []),
       ],
     },
   };
@@ -1160,7 +1160,8 @@ function buildStaticFlowGraph(session: Session, copy: LocaleCopy) {
 }
 
 export function useTopologyFlowGraph(session: Session, copy: ReturnType<typeof useLocale>["copy"]) {
-  const layoutKey = `${session.id}:${session.mode}:${session.task}:${session.agents.map((agent) => `${agent.role}:${agent.provider}`).join("|")}:${latestRoundLabel(session.events ?? []) ?? ""}`;
+  const { locale } = useLocale();
+  const layoutKey = `${session.id}:${session.mode}:${session.task}:${session.agents.map((agent) => `${agent.role}:${agent.provider}`).join("|")}:${latestRoundLabel(session.events ?? []) ?? ""}:${locale}`;
   const tournamentLayoutKey = `${layoutKey}:${copy.monitor.vsLabel}:${copy.monitor.noMatchYet}`;
   const [tournamentGraph, setTournamentGraph] = useState<{ key: string; graph: FlowCanvasGraph } | null>(null);
   const latestSessionRef = useRef(session);
