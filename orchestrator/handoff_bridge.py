@@ -8,7 +8,7 @@ import httpx
 from fastapi import HTTPException
 
 from orchestrator.brief_v2_adapter import shared_brief_to_v2
-from orchestrator.execution_brief import DEFAULT_AUTOPILOT_API_BASE, SendExecutionBriefRequest
+from orchestrator.handoff_models import DEFAULT_AUTOPILOT_API_BASE, SendExecutionBriefRequest
 from orchestrator.shared_contracts import ExecutionBrief as SharedExecutionBrief
 from orchestrator.shared_contracts import from_jsonable, to_jsonable
 

@@ -60,6 +60,12 @@ from orchestrator.guardrails import (
 from orchestrator.guardrails.policies import GuardrailScanReport
 from orchestrator.handoff import DiscoveryHandoffExportRequest, get_handoff_service
 from orchestrator.handoff_bridge import _send_brief_to_autopilot
+from orchestrator.handoff_models import (
+    AutopilotLaunchPreset,
+    DEFAULT_AUTOPILOT_API_BASE,
+    ExecutionBriefExportRequest,
+    SendExecutionBriefRequest,
+)
 from orchestrator.improvement import (
     ImprovementEvolutionRequest,
     ImprovementSelfPlayRequest,
@@ -114,17 +120,7 @@ from orchestrator.engine import (
     AVAILABLE_MODES,
     DEFAULT_AGENTS,
 )
-from orchestrator.execution_brief import (
-    AutopilotLaunchPreset,
-    DEFAULT_AUTOPILOT_API_BASE,
-    ExecutionBrief,
-    ExecutionBriefExportRequest,
-    SendExecutionBriefRequest,
-    TournamentPreparation,
-    TournamentPreparationRequest,
-    generate_session_execution_brief,
-    generate_session_tournament_preparation,
-)
+from orchestrator.brief_v2_adapter import shared_brief_to_v2
 from orchestrator.execution_feedback import get_execution_feedback_service
 from orchestrator.scenarios import get_scenario, list_scenarios
 from orchestrator.shared_contracts import (
@@ -157,6 +153,10 @@ CONTINUABLE_STATUSES = {"completed", "failed", "cancelled"}
 DELETABLE_STATUSES = {"completed", "failed", "cancelled"}
 LEGACY_CUSTOM_TOOL_TYPES = {"http_api", "ssh", "shell_command"}
 PARALLEL_EXECUTION_MODES = {"sequential", "parallel"}
+
+
+class TournamentPreparationRequest(BaseModel):
+    provider: str | None = None
 
 
 async def _run_sync(func, /, *args, **kwargs):
@@ -253,6 +253,108 @@ def _debate_replay_service():
 
 def _dossier_explainability_service():
     return DossierExplainabilityService(_discovery_store(), store, _observability_eval_service())
+
+
+def _load_execution_brief_model():
+    from orchestrator.execution_brief import ExecutionBrief
+
+    return ExecutionBrief
+
+
+def _generate_session_execution_brief(session: dict, provider: str | None = None):
+    from orchestrator.execution_brief import generate_session_execution_brief
+
+    return generate_session_execution_brief(session, provider)
+
+
+def _generate_session_tournament_preparation(session: dict, provider: str | None = None):
+    from orchestrator.execution_brief import generate_session_tournament_preparation
+
+    return generate_session_tournament_preparation(session, provider)
+
+
+async def _sync_existing_autopilot_brief_if_present(idea_id: str) -> dict[str, object] | None:
+    dossier = _discovery_store().get_dossier(idea_id)
+    if dossier is None or dossier.execution_brief_candidate is None:
+        return None
+
+    provenance = dict(dossier.idea.provenance or {})
+    autopilot_meta = dict(provenance.get("autopilot") or {})
+    brief_id = str(
+        autopilot_meta.get("brief_id") or dossier.execution_brief_candidate.brief_id or ""
+    ).strip()
+    project_id = str(autopilot_meta.get("project_id") or "").strip()
+    if not brief_id or not project_id:
+        return None
+
+    handoff = _handoff_service().build_packet(idea_id, persist_candidate=False)
+    shared_brief = from_jsonable(SharedExecutionBrief, handoff.brief)
+    candidate = dossier.execution_brief_candidate
+    v2 = shared_brief_to_v2(
+        shared_brief,
+        initiative_id=shared_brief.idea_id,
+        revision_id=candidate.revision_id,
+        option_id=None,
+        decision_id=None,
+        founder_approval_required=candidate.founder_approval_required,
+        brief_approval_status=candidate.brief_approval_status,
+        approved_at=candidate.approved_at,
+        approved_by=candidate.approved_by,
+    )
+
+    base = str(autopilot_meta.get("autopilot_api_base") or DEFAULT_AUTOPILOT_API_BASE).rstrip("/")
+    url = f"{base}/projects/briefs/{v2.brief_id}/sync-v2"
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(url, json={"brief": v2.model_dump(mode="json")})
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"Failed to reach Autopilot sync bridge: {exc}") from exc
+
+    try:
+        data = response.json()
+    except ValueError:
+        data = {"detail": response.text}
+
+    if response.status_code >= 400:
+        detail = data.get("detail") if isinstance(data, dict) else data
+        if response.status_code in {400, 404, 409, 422, 503}:
+            raise HTTPException(response.status_code, detail)
+        raise HTTPException(502, f"Autopilot sync rejected execution brief: {detail}")
+
+    return data if isinstance(data, dict) else {"detail": data}
+
+
+async def _update_execution_brief_candidate_approval(
+    idea_id: str,
+    body: ExecutionBriefApprovalUpdateRequest,
+    *,
+    decision_type: str | None = None,
+    rationale: str | None = None,
+):
+    try:
+        _handoff_service().build_packet(idea_id, persist_candidate=True)
+        brief = _discovery_store().update_execution_brief_candidate_approval(idea_id, body)
+    except KeyError:
+        raise HTTPException(404, f"Execution brief candidate not found for idea: {idea_id}") from None
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+    _discovery_store().add_decision(
+        idea_id,
+        IdeaDecisionCreateRequest(
+            decision_type=decision_type or f"execution_brief_{body.status}",
+            rationale=rationale or body.note or f"{body.actor} set the execution brief to {body.status}.",
+            actor=body.actor,
+            metadata={
+                "brief_id": brief.brief_id,
+                "revision_id": brief.revision_id,
+                "status": body.status,
+            },
+        ),
+    )
+    await _sync_existing_autopilot_brief_if_present(idea_id)
+    return brief
 
 
 def _tool_transport(tool: ToolConfig) -> str:
@@ -1062,7 +1164,7 @@ async def ep_delete_session(session_id: str):
 
 @router.get("/execution-brief/schema")
 async def ep_execution_brief_schema():
-    return ExecutionBrief.model_json_schema()
+    return _load_execution_brief_model().model_json_schema()
 
 
 @router.get("/discovery/handoff/schema")
@@ -1104,7 +1206,7 @@ async def ep_execution_brief(session_id: str, req: ExecutionBriefExportRequest |
         raise HTTPException(404, f"Session not found: {session_id}")
     try:
         brief = await asyncio.to_thread(
-            generate_session_execution_brief,
+            _generate_session_execution_brief,
             session,
             req.provider if req else None,
         )
@@ -1120,7 +1222,7 @@ async def ep_tournament_preparation(session_id: str, req: TournamentPreparationR
         raise HTTPException(404, f"Session not found: {session_id}")
     try:
         preparation = await asyncio.to_thread(
-            generate_session_tournament_preparation,
+            _generate_session_tournament_preparation,
             session,
             req.provider if req else None,
         )
@@ -1135,7 +1237,7 @@ async def ep_send_to_autopilot(session_id: str, req: SendExecutionBriefRequest):
     if not session:
         raise HTTPException(404, f"Session not found: {session_id}")
     try:
-        brief = await asyncio.to_thread(generate_session_execution_brief, session, req.provider)
+        brief = await asyncio.to_thread(_generate_session_execution_brief, session, req.provider)
     except ValueError as exc:
         raise HTTPException(502, str(exc)) from exc
     autopilot = await _send_brief_to_autopilot(brief, req, discovery_store=_discovery_store())
@@ -1168,10 +1270,14 @@ async def ep_send_discovery_handoff_to_autopilot(idea_id: str, req: SendExecutio
         effective_request,
         discovery_store=_discovery_store(),
     )
+    autopilot_payload = dict(autopilot if isinstance(autopilot, dict) else {"detail": autopilot})
+    autopilot_payload["autopilot_api_base"] = str(
+        effective_request.autopilot_url or DEFAULT_AUTOPILOT_API_BASE
+    ).rstrip("/")
     _handoff_service().mark_sent_to_autopilot(
         idea_id,
         project_name=effective_request.project_name,
-        autopilot_payload=autopilot if isinstance(autopilot, dict) else {"detail": autopilot},
+        autopilot_payload=autopilot_payload,
     )
     return {"status": "ok", "handoff": handoff.model_dump(mode="json"), "autopilot": autopilot}
 
@@ -1357,27 +1463,7 @@ async def ep_update_discovery_execution_brief_approval(
     idea_id: str,
     body: ExecutionBriefApprovalUpdateRequest,
 ):
-    try:
-        _handoff_service().build_packet(idea_id, persist_candidate=True)
-        brief = _discovery_store().update_execution_brief_candidate_approval(idea_id, body)
-    except KeyError:
-        raise HTTPException(404, f"Execution brief candidate not found for idea: {idea_id}") from None
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
-
-    _discovery_store().add_decision(
-        idea_id,
-        IdeaDecisionCreateRequest(
-            decision_type=f"execution_brief_{body.status}",
-            rationale=body.note or f"{body.actor} set the execution brief to {body.status}.",
-            actor=body.actor,
-            metadata={
-                "brief_id": brief.brief_id,
-                "revision_id": brief.revision_id,
-                "status": body.status,
-            },
-        ),
-    )
+    brief = await _update_execution_brief_candidate_approval(idea_id, body)
     return brief
 
 
@@ -2518,67 +2604,53 @@ async def ep_list_pending_approvals():
     return {"items": pending}
 
 
+class _ApproveBriefRequest(BaseModel):
+    actor: str = "founder"
+    note: str = ""
+    expected_brief_id: str | None = None
+    expected_revision_id: str | None = None
+
+
 @router.post("/founder/approval/{idea_id}/approve")
-async def ep_approve_brief(idea_id: str):
-    """Approve a pending execution brief for launch.
-
-    Delegates to the canonical discovery_store approval with full audit trail.
-    """
-    from orchestrator.discovery_models import ExecutionBriefApprovalUpdateRequest
-
-    try:
-        brief = _discovery_store().update_execution_brief_candidate_approval(
-            idea_id,
-            ExecutionBriefApprovalUpdateRequest(status="approved", actor="founder"),
-        )
-    except KeyError:
-        raise HTTPException(404, f"No execution brief candidate for idea: {idea_id}") from None
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
-
-    _discovery_store().add_decision(
+async def ep_approve_brief(idea_id: str, body: _ApproveBriefRequest | None = None):
+    """Approve a pending execution brief for launch."""
+    payload = body or _ApproveBriefRequest()
+    brief = await _update_execution_brief_candidate_approval(
         idea_id,
-        IdeaDecisionCreateRequest(
-            decision_type="execution_brief_approved",
-            rationale="Founder approved the execution brief.",
-            actor="founder",
-            metadata={"brief_id": brief.brief_id, "revision_id": brief.revision_id},
+        ExecutionBriefApprovalUpdateRequest(
+            status="approved",
+            actor=payload.actor,
+            note=payload.note,
+            expected_brief_id=payload.expected_brief_id,
+            expected_revision_id=payload.expected_revision_id,
         ),
+        decision_type="execution_brief_approved",
+        rationale="Founder approved the execution brief.",
     )
     return {"status": "ok", "idea_id": idea_id, "brief": brief.model_dump(mode="json")}
 
 
 class _RejectBriefRequest(BaseModel):
+    actor: str = "founder"
     reason: str = ""
+    expected_brief_id: str | None = None
+    expected_revision_id: str | None = None
 
 
 @router.post("/founder/approval/{idea_id}/reject")
 async def ep_reject_brief(idea_id: str, body: _RejectBriefRequest | None = None):
     """Reject a pending execution brief."""
-    from orchestrator.discovery_models import ExecutionBriefApprovalUpdateRequest
-
-    reason = body.reason if body else ""
-    try:
-        brief = _discovery_store().update_execution_brief_candidate_approval(
-            idea_id,
-            ExecutionBriefApprovalUpdateRequest(
-                status="rejected",
-                actor="founder",
-                note=reason,
-            ),
-        )
-    except KeyError:
-        raise HTTPException(404, f"No execution brief candidate for idea: {idea_id}") from None
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
-
-    _discovery_store().add_decision(
+    payload = body or _RejectBriefRequest()
+    brief = await _update_execution_brief_candidate_approval(
         idea_id,
-        IdeaDecisionCreateRequest(
-            decision_type="execution_brief_rejected",
-            rationale=reason or "Founder rejected the execution brief.",
-            actor="founder",
-            metadata={"brief_id": brief.brief_id, "revision_id": brief.revision_id},
+        ExecutionBriefApprovalUpdateRequest(
+            status="rejected",
+            actor=payload.actor,
+            note=payload.reason,
+            expected_brief_id=payload.expected_brief_id,
+            expected_revision_id=payload.expected_revision_id,
         ),
+        decision_type="execution_brief_rejected",
+        rationale=payload.reason or "Founder rejected the execution brief.",
     )
     return {"status": "ok", "idea_id": idea_id, "brief": brief.model_dump(mode="json")}

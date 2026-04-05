@@ -233,6 +233,36 @@ def test_execution_brief_approval_route_updates_candidate_and_rejects_stale_revi
     assert "changed before approval" in stale.json()["detail"].lower()
 
 
+def test_founder_approval_alias_rejects_stale_brief_and_revision():
+    seeded = _seed_discovery_idea(with_simulation=False)
+    idea_id = seeded["idea_id"]
+
+    export = client.post(
+        f"/orchestrate/discovery/ideas/{idea_id}/handoff/export",
+        json={"persist_candidate": True},
+    )
+    assert export.status_code == 200
+    dossier = client.get(f"/orchestrate/discovery/ideas/{idea_id}/dossier").json()
+    candidate = dossier["execution_brief_candidate"]
+
+    stale_brief = client.post(
+        f"/orchestrate/founder/approval/{idea_id}/approve",
+        json={"expected_brief_id": "wrong-brief-id"},
+    )
+    assert stale_brief.status_code == 409
+    assert "brief changed" in stale_brief.json()["detail"].lower()
+
+    stale_revision = client.post(
+        f"/orchestrate/founder/approval/{idea_id}/reject",
+        json={
+            "expected_brief_id": candidate["brief_id"],
+            "expected_revision_id": "wrong-revision-id",
+        },
+    )
+    assert stale_revision.status_code == 409
+    assert "changed before approval" in stale_revision.json()["detail"].lower()
+
+
 def test_discovery_handoff_launch_blocks_when_candidate_is_pending():
     seeded = _seed_discovery_idea(with_simulation=False)
     idea_id = seeded["idea_id"]
@@ -307,3 +337,62 @@ def test_discovery_handoff_launch_sends_approved_candidate_as_v2():
     assert payload["brief"]["approved_by"] == "founder"
     assert payload["brief"]["revision_id"] == approved["revision_id"]
     assert response.json()["autopilot"]["project_id"] == "proj-approved"
+
+
+def test_founder_approval_alias_syncs_existing_autopilot_project():
+    seeded = _seed_discovery_idea(with_simulation=False)
+    idea_id = seeded["idea_id"]
+
+    with patch(
+        "orchestrator.api._send_brief_to_autopilot",
+        new=AsyncMock(return_value={"project_id": "proj_123", "status": "ok", "launched": False}),
+    ):
+        send = client.post(
+            f"/orchestrate/discovery/ideas/{idea_id}/handoff/send-to-autopilot",
+            json={
+                "autopilot_url": "http://autopilot:8001/api",
+                "project_path": "/tmp/repo-signal-monitor",
+                "priority": "high",
+                "launch": False,
+            },
+        )
+    assert send.status_code == 200, send.text
+
+    dossier = client.get(f"/orchestrate/discovery/ideas/{idea_id}/dossier").json()
+    candidate = dossier["execution_brief_candidate"]
+    assert dossier["idea"]["provenance"]["autopilot"]["autopilot_api_base"] == "http://autopilot:8001/api"
+
+    captured: dict[str, object] = {}
+    mock_response = SimpleNamespace(
+        status_code=200,
+        json=lambda: {"status": "ok"},
+        text="",
+    )
+
+    async def fake_post(url: str, **kwargs):
+        captured["url"] = url
+        captured["payload"] = kwargs.get("json")
+        return mock_response
+
+    mock_client = AsyncMock()
+    mock_client.post = fake_post
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("orchestrator.api.httpx.AsyncClient", return_value=mock_client):
+        approve = client.post(
+            f"/orchestrate/founder/approval/{idea_id}/approve",
+            json={
+                "actor": "founder",
+                "expected_brief_id": candidate["brief_id"],
+                "expected_revision_id": candidate["revision_id"],
+            },
+        )
+
+    assert approve.status_code == 200, approve.text
+    assert approve.json()["brief"]["brief_approval_status"] == "approved"
+    assert captured["url"] == f"http://autopilot:8001/api/projects/briefs/{candidate['brief_id']}/sync-v2"
+    payload = captured["payload"]
+    assert payload["brief"]["brief_approval_status"] == "approved"
+    assert payload["brief"]["approved_by"] == "founder"
+    assert payload["brief"]["revision_id"] == candidate["revision_id"]

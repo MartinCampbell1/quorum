@@ -2,8 +2,10 @@ __pycache__/
 *.pyc
 .venv/
 .uv-cache/
+.pytest_cache/
 .superpowers/
 .DS_Store
+._*
 .codex_tmp/
 .omc/state/
 frontend/.omc/state/
