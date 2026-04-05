@@ -1,8 +1,10 @@
 "use client";
 
+import { useState } from "react";
 import { Plus, Search } from "lucide-react";
 
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { deleteSession } from "@/lib/api";
 import { useLocale } from "@/lib/locale";
 import { useSessions } from "@/hooks/use-sessions";
 import { cn } from "@/lib/utils";
@@ -13,6 +15,7 @@ interface SessionListProps {
   activeSessionId: string | null;
   onSelectSession: (id: string) => void;
   onNewSession: () => void;
+  onDeleteSession?: (id: string) => void;
   collapsed?: boolean;
 }
 
@@ -20,11 +23,30 @@ export function SessionList({
   activeSessionId,
   onSelectSession,
   onNewSession,
+  onDeleteSession,
   collapsed = false,
 }: SessionListProps) {
   const { copy } = useLocale();
-  const { sessions, isLoading } = useSessions();
+  const { sessions, isLoading, refresh } = useSessions();
+  const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const isEmpty = !isLoading && sessions.length === 0;
+
+  async function handleDeleteSession(id: string) {
+    if (deletingSessionId) return;
+    if (!window.confirm(copy.shell.deleteSessionConfirm)) return;
+    setDeleteError(null);
+    setDeletingSessionId(id);
+    try {
+      await deleteSession(id);
+      onDeleteSession?.(id);
+      await refresh();
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : copy.shell.deleteSession);
+    } finally {
+      setDeletingSessionId(null);
+    }
+  }
 
   return (
     <aside
@@ -63,12 +85,21 @@ export function SessionList({
           <div className="px-4 py-8 text-[13px] text-[#09090b]/42 dark:text-slate-500">{copy.shell.loading}</div>
         ) : null}
 
+        {deleteError ? (
+          <div className="mb-3 rounded-[14px] border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] leading-5 text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/30 dark:text-rose-300">
+            {deleteError}
+          </div>
+        ) : null}
+
         {sessions.map((session) => (
           <SessionItem
             key={session.id}
             session={session}
             isActive={session.id === activeSessionId}
             onClick={() => onSelectSession(session.id)}
+            canDelete={["completed", "failed", "cancelled"].includes(session.status)}
+            isDeleting={deletingSessionId === session.id}
+            onDelete={() => handleDeleteSession(session.id)}
           />
         ))}
 

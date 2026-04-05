@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   AlertTriangle,
   ArrowRight,
@@ -18,6 +19,7 @@ import { useLocale } from "@/lib/locale";
 import type { AttachedToolDetail, Message, Session, SessionEvent } from "@/lib/types";
 
 import { useTopologyFlowGraph } from "./topology-layout";
+import { extractReadableAgentText } from "./rich-text";
 import {
   latestRoundLabel,
   tournamentRoundLabel,
@@ -32,7 +34,7 @@ interface TopologyPanelProps {
 const RUNTIME_WARNING_PREFIX_RE = /^(?:MCP issues detected\. Run \/mcp list for status\.\s*)+/i;
 
 function sanitizeMessageContent(text?: string | null) {
-  return String(text ?? "").replace(RUNTIME_WARNING_PREFIX_RE, "").trim();
+  return extractReadableAgentText(String(text ?? "").replace(RUNTIME_WARNING_PREFIX_RE, "").trim());
 }
 
 function humanizeTool(tool: string) {
@@ -95,7 +97,7 @@ function latestStatusEvent(session: Session) {
 }
 
 function sanitizeSummaryText(text?: string | null, limit: number = 320) {
-  const normalized = (text ?? "").replace(/\r\n/g, "\n").trim();
+  const normalized = extractReadableAgentText(text, { preferStructuredAnswer: true }).replace(/\r\n/g, "\n").trim();
   if (!normalized) {
     return "";
   }
@@ -138,12 +140,18 @@ function summarizedResult(session: Session, fallback: string) {
 
 function resolveSessionStateSnapshot(session: Session, copy: ReturnType<typeof useLocale>["copy"]) {
   const latestStatus = latestStatusEvent(session);
+  const latestDetail = sanitizeSummaryText(latestStatus?.detail, 560);
+  const runningParallelMatches =
+    session.mode === "tournament" &&
+    session.status === "running" &&
+    ((session.parallel_progress?.running ?? 0) > 0 ||
+      (session.parallel_children ?? []).some((child) => child.status === "running"));
 
   if (session.status === "completed") {
     return {
       tone: "completed" as const,
       title: copy.monitor.stateTitles.completed,
-      detail: latestStatus?.detail || copy.monitor.stateDetails.completed,
+      detail: latestDetail || copy.monitor.stateDetails.completed,
     };
   }
 
@@ -151,7 +159,7 @@ function resolveSessionStateSnapshot(session: Session, copy: ReturnType<typeof u
     return {
       tone: "failed" as const,
       title: latestStatus?.title || copy.monitor.stateTitles.failed,
-      detail: latestStatus?.detail || copy.monitor.stateDetails.failed,
+      detail: latestDetail || copy.monitor.stateDetails.failed,
     };
   }
 
@@ -160,7 +168,7 @@ function resolveSessionStateSnapshot(session: Session, copy: ReturnType<typeof u
       tone: "paused" as const,
       title: copy.monitor.stateTitles.paused,
       detail:
-        latestStatus?.detail ||
+        latestDetail ||
         (session.current_checkpoint_id
           ? `${copy.monitor.stateDetails.paused} ${copy.monitor.signalLabels.checkpoint}: ${session.current_checkpoint_id}.`
           : copy.monitor.stateDetails.paused),
@@ -171,7 +179,15 @@ function resolveSessionStateSnapshot(session: Session, copy: ReturnType<typeof u
     return {
       tone: "cancelled" as const,
       title: copy.monitor.stateTitles.cancelled,
-      detail: latestStatus?.detail || copy.monitor.stateDetails.cancelled,
+      detail: latestDetail || copy.monitor.stateDetails.cancelled,
+    };
+  }
+
+  if (runningParallelMatches && session.messages.length === 0 && (session.events?.length ?? 0) <= 1) {
+    return {
+      tone: "running" as const,
+      title: copy.monitor.stateTitles.parallelRunning,
+      detail: latestDetail || copy.monitor.stateDetails.parallelRunning,
     };
   }
 
@@ -179,7 +195,7 @@ function resolveSessionStateSnapshot(session: Session, copy: ReturnType<typeof u
     return {
       tone: "waiting" as const,
       title: copy.monitor.stateTitles.waiting,
-      detail: latestStatus?.detail || copy.monitor.stateDetails.waiting,
+      detail: latestDetail || copy.monitor.stateDetails.waiting,
     };
   }
 
@@ -293,12 +309,21 @@ function signalCards(session: Session, copy: ReturnType<typeof useLocale>["copy"
     latestEvent(session.events ?? [], "tool_call_finished") ??
     latestEvent(session.events ?? [], "tool_call_started");
   const terminal = ["completed", "failed", "cancelled"].includes(session.status);
+  const runningParallelMatches =
+    session.mode === "tournament" &&
+    session.status === "running" &&
+    ((session.parallel_progress?.running ?? 0) > 0 ||
+      (session.parallel_children ?? []).some((child) => child.status === "running"));
   const activeNodeValue = terminal
     ? copy.monitor.terminalNode
-    : session.active_node || copy.monitor.idle;
+    : session.active_node || (runningParallelMatches ? copy.monitor.parallelActiveNode : copy.monitor.idle);
+  const checkpointValue =
+    session.current_checkpoint_id || (runningParallelMatches ? copy.monitor.parallelCheckpointState : copy.monitor.pending);
   const liveToolValue = terminal
     ? copy.monitor.executionFinished
-    : latestToolEvent?.tool_name || latestToolEvent?.detail || copy.monitor.noToolActivity;
+    : latestToolEvent?.tool_name ||
+      latestToolEvent?.detail ||
+      (runningParallelMatches ? copy.monitor.parallelLiveToolState : copy.monitor.noToolActivity);
 
   return [
     {
@@ -307,7 +332,7 @@ function signalCards(session: Session, copy: ReturnType<typeof useLocale>["copy"
     },
     {
       label: copy.monitor.signalLabels.checkpoint,
-      value: session.current_checkpoint_id || copy.monitor.pending,
+      value: checkpointValue,
     },
     {
       label: copy.monitor.signalLabels.liveTool,
@@ -542,6 +567,7 @@ function buildLiveExchange(session: Session, copy: ReturnType<typeof useLocale>[
     .filter((event) => ["tool_call_started", "tool_call_finished", "vote_recorded", "round_completed", "chunk_completed"].includes(event.type))
     .map((event) => {
       const raw = formatExchangePayload(event.detail || event.tool_name || event.title);
+      const readable = extractReadableAgentText(raw, { preferStructuredAnswer: true });
       return {
         id: `event-${event.id}`,
         timestamp: event.timestamp,
@@ -554,7 +580,7 @@ function buildLiveExchange(session: Session, copy: ReturnType<typeof useLocale>[
         title: event.tool_name ?? event.title,
         from: displayActor(session, event.agent_id) || copy.monitor.sharedContexts.default,
         to: event.tool_name ?? copy.monitor.sharedContexts.default,
-        preview: compactExchangeText(raw || event.title),
+        preview: compactExchangeText(readable || raw || event.title),
         raw,
         meta: [
           event.phase,
@@ -568,6 +594,62 @@ function buildLiveExchange(session: Session, copy: ReturnType<typeof useLocale>[
     .slice(0, 3);
 }
 
+function LiveExchangeCard({
+  exchange,
+  copy,
+}: {
+  exchange: LiveExchangeItem;
+  copy: ReturnType<typeof useLocale>["copy"];
+}) {
+  const [showRaw, setShowRaw] = useState(false);
+
+  return (
+    <div className="rounded-[14px] border border-[#d6dbe6] bg-white px-3 py-3 dark:border-slate-800 dark:bg-slate-950/70">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <span className="rounded-full border border-[#d6dbe6] bg-[#fafbff] px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-[#6b7280] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
+            {exchange.channel}
+          </span>
+          <span className="text-[12px] font-medium tracking-[-0.02em] text-[#111111] dark:text-slate-100">{exchange.title}</span>
+        </div>
+        <div className="text-[10px] text-[#9aa3b2] dark:text-slate-500">
+          {new Date(exchange.timestamp * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+        </div>
+      </div>
+      <div className="mt-2 text-[13px] font-medium tracking-[-0.02em] text-[#111111] dark:text-slate-100">
+        {exchange.from} <span className="text-[#9aa3b2]">→</span> {exchange.to}
+      </div>
+      {exchange.meta.length > 0 ? (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {exchange.meta.map((meta) => (
+            <span
+              key={`${exchange.id}-${meta}`}
+              className="rounded-full border border-[#e5e7eb] bg-[#fbfcff] px-2.5 py-1 text-[10px] uppercase tracking-[0.12em] text-[#7b8190] dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400"
+            >
+              {meta}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <div className="mt-2 text-[12px] leading-5 text-[#475569] dark:text-slate-400">{exchange.preview}</div>
+      <div className="mt-3">
+        <button
+          type="button"
+          onClick={() => setShowRaw((value) => !value)}
+          className="rounded-full border border-[#d6dbe6] bg-white px-3 py-1 text-[11px] uppercase tracking-[0.14em] text-[#6b7280] dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400"
+        >
+          {showRaw ? copy.monitor.hideRawDetails : copy.monitor.showRawDetails}
+        </button>
+      </div>
+      {showRaw ? (
+        <pre className="mt-2 max-h-[132px] overflow-auto whitespace-pre-wrap break-words rounded-[12px] border border-[#e5e7eb] bg-[#fbfcff] px-3 py-2 font-mono text-[11px] leading-5 text-[#344054] dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300">
+          {exchange.raw || exchange.preview}
+        </pre>
+      ) : null}
+    </div>
+  );
+}
+
 function SessionStateBanner({ session }: { session: Session }) {
   const { copy } = useLocale();
   const snapshot = resolveSessionStateSnapshot(session, copy);
@@ -577,7 +659,7 @@ function SessionStateBanner({ session }: { session: Session }) {
   }
 
   const Icon =
-    snapshot.tone === "waiting"
+    snapshot.tone === "waiting" || snapshot.tone === "running"
       ? LoaderCircle
       : snapshot.tone === "paused"
         ? PauseCircle
@@ -589,6 +671,8 @@ function SessionStateBanner({ session }: { session: Session }) {
       ? "border-emerald-200 bg-emerald-50/90 text-emerald-900 dark:border-emerald-900/70 dark:bg-emerald-950/30 dark:text-emerald-100"
       : snapshot.tone === "failed"
       ? "border-amber-200 bg-amber-50/90 text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100"
+      : snapshot.tone === "running"
+        ? "border-sky-200 bg-sky-50/90 text-sky-900 dark:border-sky-900/70 dark:bg-sky-950/30 dark:text-sky-100"
       : snapshot.tone === "paused"
         ? "border-sky-200 bg-sky-50/90 text-sky-900 dark:border-sky-900/70 dark:bg-sky-950/30 dark:text-sky-100"
         : snapshot.tone === "cancelled"
@@ -599,7 +683,7 @@ function SessionStateBanner({ session }: { session: Session }) {
     <div className={`rounded-[16px] border px-4 py-3 ${toneClasses}`}>
       <div className="flex items-start gap-3">
         <div className="mt-0.5 rounded-full border border-current/15 bg-white/60 p-2 text-current dark:bg-slate-950/20">
-          <Icon className={`h-4 w-4 ${snapshot.tone === "waiting" ? "animate-spin" : ""}`} />
+          <Icon className={`h-4 w-4 ${snapshot.tone === "waiting" || snapshot.tone === "running" ? "animate-spin" : ""}`} />
         </div>
         <div className="min-w-0">
           <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-current/80">
@@ -628,6 +712,12 @@ function ConnectionCanvas({ session }: { session: Session }) {
   const activeAgentId = activeSignal?.agent_id;
   const cards = signalCards(session, copy);
   const exchanges = buildLiveExchange(session, copy);
+  const showParallelExchangeHint =
+    session.mode === "tournament" &&
+    session.status === "running" &&
+    exchanges.length === 0 &&
+    ((session.parallel_progress?.running ?? 0) > 0 ||
+      (session.parallel_children ?? []).some((child) => child.status === "running"));
 
   return (
     <div className="overflow-hidden rounded-[20px] border border-[#d6dbe6] bg-white dark:border-slate-800 dark:bg-slate-950/70">
@@ -645,43 +735,12 @@ function ConnectionCanvas({ session }: { session: Session }) {
           {exchanges.length > 0 ? (
             <div className="mt-3 space-y-3">
               {exchanges.map((exchange) => (
-                <div key={exchange.id} className="rounded-[14px] border border-[#d6dbe6] bg-white px-3 py-3 dark:border-slate-800 dark:bg-slate-950/70">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex min-w-0 flex-wrap items-center gap-2">
-                      <span className="rounded-full border border-[#d6dbe6] bg-[#fafbff] px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-[#6b7280] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
-                        {exchange.channel}
-                      </span>
-                      <span className="text-[12px] font-medium tracking-[-0.02em] text-[#111111] dark:text-slate-100">{exchange.title}</span>
-                    </div>
-                    <div className="text-[10px] text-[#9aa3b2] dark:text-slate-500">
-                      {new Date(exchange.timestamp * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
-                    </div>
-                  </div>
-                  <div className="mt-2 text-[13px] font-medium tracking-[-0.02em] text-[#111111] dark:text-slate-100">
-                    {exchange.from} <span className="text-[#9aa3b2]">→</span> {exchange.to}
-                  </div>
-                  {exchange.meta.length > 0 ? (
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {exchange.meta.map((meta) => (
-                        <span
-                          key={`${exchange.id}-${meta}`}
-                          className="rounded-full border border-[#e5e7eb] bg-[#fbfcff] px-2.5 py-1 text-[10px] uppercase tracking-[0.12em] text-[#7b8190] dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400"
-                        >
-                          {meta}
-                        </span>
-                      ))}
-                    </div>
-                  ) : null}
-                  <div className="mt-2 text-[12px] leading-5 text-[#475569] dark:text-slate-400">{exchange.preview}</div>
-                  <pre className="mt-2 max-h-[132px] overflow-auto whitespace-pre-wrap break-words rounded-[12px] border border-[#e5e7eb] bg-[#fbfcff] px-3 py-2 font-mono text-[11px] leading-5 text-[#344054] dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300">
-                    {exchange.raw || exchange.preview}
-                  </pre>
-                </div>
+                <LiveExchangeCard key={exchange.id} exchange={exchange} copy={copy} />
               ))}
             </div>
           ) : (
             <div className="mt-3 rounded-[14px] border border-[#d6dbe6] bg-white px-3 py-4 text-[13px] text-[#6b7280] dark:border-slate-800 dark:bg-slate-950/60 dark:text-slate-400">
-              {copy.monitor.noExchangeYet}
+              {showParallelExchangeHint ? copy.monitor.parallelExchangeHint : copy.monitor.noExchangeYet}
             </div>
           )}
         </div>
@@ -1305,6 +1364,172 @@ function TournamentView({
   return <TournamentSequentialView session={session} />;
 }
 
+function MetaTopologyView({ session }: { session: Session }) {
+  const { locale } = useLocale();
+  const topology = session.topology_state;
+  if (!topology) {
+    return null;
+  }
+
+  const text =
+    locale === "ru"
+      ? {
+          title: "Meta-topology",
+          template: "Шаблон",
+          execution: "Исполнение",
+          classKey: "Класс задачи",
+          branchFactor: "Ветвление",
+          parallelism: "Параллелизм",
+          topRoles: "Ключевые роли",
+          suggested: "Suggested roles",
+          branches: "Branch lines",
+          candidates: "Search candidates",
+          noSuggested: "Дополнительные роли не потребовались.",
+        }
+      : {
+          title: "Meta-topology",
+          template: "Template",
+          execution: "Execution",
+          classKey: "Task class",
+          branchFactor: "Branch factor",
+          parallelism: "Parallelism",
+          topRoles: "Key roles",
+          suggested: "Suggested roles",
+          branches: "Branch lines",
+          candidates: "Search candidates",
+          noSuggested: "No extra specialist roles were needed.",
+        };
+
+  const keyRoles = topology.team_plan.role_recommendations
+    .slice()
+    .sort((left, right) => right.importance_score - left.importance_score)
+    .slice(0, 3);
+
+  return (
+    <div className="rounded-[18px] border border-[#d6dbe6] bg-white p-5 dark:border-slate-800 dark:bg-slate-950/70">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="text-[15px] font-medium tracking-[-0.03em] text-[#111111] dark:text-slate-100">
+            {text.title}
+          </div>
+          <div className="mt-1 text-[13px] leading-6 text-[#6b7280] dark:text-slate-400">
+            {topology.chosen_reason}
+          </div>
+        </div>
+        <span className="rounded-full border border-[#d6dbe6] bg-[#fafbff] px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-[#6b7280] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400">
+          {topology.selected_template}
+        </span>
+      </div>
+
+      <div className="mt-4 grid gap-3 lg:grid-cols-4">
+        <div className="rounded-[14px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-3 dark:border-slate-800 dark:bg-slate-900/80">
+          <div className="text-[10px] uppercase tracking-[0.14em] text-[#7b8190] dark:text-slate-500">{text.template}</div>
+          <div className="mt-1 text-[15px] font-medium text-[#111111] dark:text-slate-100">{topology.selected_template}</div>
+        </div>
+        <div className="rounded-[14px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-3 dark:border-slate-800 dark:bg-slate-900/80">
+          <div className="text-[10px] uppercase tracking-[0.14em] text-[#7b8190] dark:text-slate-500">{text.execution}</div>
+          <div className="mt-1 text-[15px] font-medium text-[#111111] dark:text-slate-100">{topology.selected_execution_mode}</div>
+        </div>
+        <div className="rounded-[14px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-3 dark:border-slate-800 dark:bg-slate-900/80">
+          <div className="text-[10px] uppercase tracking-[0.14em] text-[#7b8190] dark:text-slate-500">{text.branchFactor}</div>
+          <div className="mt-1 text-[15px] font-medium text-[#111111] dark:text-slate-100">{topology.graph_optimization.branch_factor}</div>
+        </div>
+        <div className="rounded-[14px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-3 dark:border-slate-800 dark:bg-slate-900/80">
+          <div className="text-[10px] uppercase tracking-[0.14em] text-[#7b8190] dark:text-slate-500">{text.parallelism}</div>
+          <div className="mt-1 text-[15px] font-medium text-[#111111] dark:text-slate-100">{topology.graph_optimization.estimated_parallelism}</div>
+        </div>
+      </div>
+
+      <div className="mt-4 rounded-[14px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-3 dark:border-slate-800 dark:bg-slate-900/80">
+        <div className="text-[10px] uppercase tracking-[0.14em] text-[#7b8190] dark:text-slate-500">{text.classKey}</div>
+        <div className="mt-1 text-[13px] leading-6 text-[#111111] dark:text-slate-100">{topology.class_key}</div>
+      </div>
+
+      <div className="mt-4 grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+        <div className="space-y-3">
+          <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{text.topRoles}</div>
+          {keyRoles.map((role) => (
+            <div
+              key={role.role}
+              className="rounded-[14px] border border-[#d6dbe6] bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-950/70"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-[13px] font-medium text-[#111111] dark:text-slate-100">{role.role}</div>
+                  <div className="mt-1 text-[11px] text-[#6b7280] dark:text-slate-400">{role.provider}</div>
+                </div>
+                <div className="text-right text-[11px] text-[#475569] dark:text-slate-300">
+                  <div>importance {Math.round(role.importance_score * 100)}%</div>
+                  <div>belief {Math.round(role.believability_score * 100)}%</div>
+                </div>
+              </div>
+              <div className="mt-2 text-[12px] leading-6 text-[#475569] dark:text-slate-400">
+                {role.expertise_tags.join(" · ") || role.rationale}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="space-y-3">
+          <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{text.suggested}</div>
+          {topology.team_plan.suggested_roles.length > 0 ? (
+            topology.team_plan.suggested_roles.slice(0, 3).map((role) => (
+              <div
+                key={role.role}
+                className="rounded-[14px] border border-[#d6dbe6] bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-950/70"
+              >
+                <div className="text-[13px] font-medium text-[#111111] dark:text-slate-100">{role.role}</div>
+                <div className="mt-1 text-[12px] leading-6 text-[#475569] dark:text-slate-400">{role.rationale}</div>
+              </div>
+            ))
+          ) : (
+            <div className="rounded-[14px] border border-[#d6dbe6] bg-white px-4 py-3 text-[13px] text-[#6b7280] dark:border-slate-800 dark:bg-slate-950/70 dark:text-slate-400">
+              {text.noSuggested}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {topology.routing_plan.branch_lines.length > 0 ? (
+        <div className="mt-4">
+          <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{text.branches}</div>
+          <div className="mt-3 grid gap-3 lg:grid-cols-2">
+            {topology.routing_plan.branch_lines.slice(0, 2).map((branch) => (
+              <div
+                key={branch.branch_id}
+                className="rounded-[14px] border border-[#d6dbe6] bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-950/70"
+              >
+                <div className="text-[13px] font-medium text-[#111111] dark:text-slate-100">{branch.focus}</div>
+                <div className="mt-1 text-[12px] leading-6 text-[#475569] dark:text-slate-400">
+                  {branch.owner_roles.join(" · ")}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      <div className="mt-4">
+        <div className="text-[11px] uppercase tracking-[0.16em] text-[#7b8190] dark:text-slate-500">{text.candidates}</div>
+        <div className="mt-3 space-y-2">
+          {topology.candidates.slice(0, 3).map((candidate) => (
+            <div
+              key={candidate.candidate_id}
+              className="flex items-center justify-between gap-3 rounded-[14px] border border-[#d6dbe6] bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-950/70"
+            >
+              <div>
+                <div className="text-[13px] font-medium text-[#111111] dark:text-slate-100">{candidate.template}</div>
+                <div className="mt-1 text-[11px] text-[#6b7280] dark:text-slate-400">{candidate.strengths[0] ?? "heuristic candidate"}</div>
+              </div>
+              <div className="text-[13px] font-medium text-[#111111] dark:text-slate-100">{Math.round(candidate.score * 100)}%</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function TopologyPanel({ session, onOpenSession }: TopologyPanelProps) {
   const { copy } = useLocale();
   let content = <GenericView session={session} />;
@@ -1325,6 +1550,7 @@ export function TopologyPanel({ session, onOpenSession }: TopologyPanelProps) {
       <div className="mt-5 space-y-4">
         <SessionStateBanner session={session} />
         <ConnectionCanvas session={session} />
+        <MetaTopologyView session={session} />
         {content}
       </div>
     </section>

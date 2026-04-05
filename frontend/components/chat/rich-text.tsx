@@ -4,9 +4,69 @@ import { Fragment, type ReactNode } from "react";
 
 const RUNTIME_WARNING_PREFIX_RE = /^(?:MCP issues detected\. Run \/mcp list for status\.\s*)+/i;
 const INLINE_TOKEN_RE = /(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\))/g;
+const TOOL_TAG_RE = /<\/?(?:tool_calls?|tool_results?|tool_call|tool_result|param|status|output)(?:\s+[^>]*)?>/i;
+const TOOL_TAG_LINE_RE = /^\s*<\/?(?:tool_calls?|tool_results?|tool_call|tool_result|param|status|output)(?:\s+[^>]*)?>\s*$/gim;
+const TOOL_RESULTS_BLOCK_RE = /<tool_results>[\s\S]*?(?:<\/tool_results>|<\/tool_calls>|$)/gi;
+const TOOL_CALLS_BLOCK_RE = /<tool_calls>[\s\S]*?(?:<\/tool_calls>|$)/gi;
+const TOOL_RESULT_BLOCK_RE = /<tool_result>[\s\S]*?(?:<\/tool_result>|<\/tool_results>|<\/tool_calls>|$)/gi;
+const TOOL_CALL_BLOCK_RE = /<tool_call>[\s\S]*?(?:<\/tool_call>|<\/tool_calls>|$)/gi;
 
 export function sanitizeAgentText(text?: string | null): string {
   return String(text ?? "").replace(RUNTIME_WARNING_PREFIX_RE, "").trim();
+}
+
+export function hasToolMarkup(text?: string | null): boolean {
+  return TOOL_TAG_RE.test(sanitizeAgentText(text));
+}
+
+function trimToStructuredAnswer(text: string): string {
+  const dividerIndex = text.search(/\n---+\n+(?=#{1,6}\s)/m);
+  if (dividerIndex !== -1) {
+    const candidate = text
+      .slice(dividerIndex)
+      .replace(/^\s*---+\s*/, "")
+      .trim();
+    if (candidate.length >= 120) {
+      return candidate;
+    }
+  }
+
+  const headingIndex = text.search(/(^|\n)#{1,6}\s+/m);
+  if (headingIndex === -1) {
+    return text;
+  }
+
+  const start = text.indexOf("#", headingIndex);
+  const candidate = text.slice(start).trim();
+  const preamble = text.slice(0, start).trim();
+  if (candidate.length >= 160 && preamble.length <= 220) {
+    return candidate;
+  }
+
+  return text;
+}
+
+export function extractReadableAgentText(
+  text?: string | null,
+  options?: { preferStructuredAnswer?: boolean }
+): string {
+  const normalized = sanitizeAgentText(text).replace(/\r\n/g, "\n");
+  const hadToolMarkup = hasToolMarkup(normalized);
+  let cleaned = normalized
+    .replace(TOOL_RESULTS_BLOCK_RE, "\n\n")
+    .replace(TOOL_CALLS_BLOCK_RE, "\n\n")
+    .replace(TOOL_RESULT_BLOCK_RE, "\n\n")
+    .replace(TOOL_CALL_BLOCK_RE, "\n\n")
+    .replace(TOOL_TAG_LINE_RE, "")
+    .replace(/^#\s+##\s+/gm, "## ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  if (options?.preferStructuredAnswer && hadToolMarkup) {
+    cleaned = trimToStructuredAnswer(cleaned);
+  }
+
+  return cleaned;
 }
 
 function renderInline(text: string): ReactNode[] {

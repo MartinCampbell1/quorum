@@ -25,6 +25,8 @@ interface StepTaskProps {
   defaultConfig?: Record<string, number>;
   initialTask?: string;
   initialConfig?: Record<string, unknown>;
+  launchError?: string | null;
+  onClearLaunchError?: () => void;
   onDraftChange?: (task: string, config: Record<string, unknown>) => void;
 }
 
@@ -44,6 +46,8 @@ export function StepTask({
   defaultConfig,
   initialTask,
   initialConfig,
+  launchError,
+  onClearLaunchError,
   onDraftChange,
 }: StepTaskProps) {
   const initialRoundBudget = Number(
@@ -64,6 +68,7 @@ export function StepTask({
 
   const isPortfolioPivotLab = scenarioId === "portfolio_pivot_lab";
   const isProjectStrengtheningLab = scenarioId === "project_strengthening_lab";
+  const isProjectMonetizationLab = scenarioId === "project_monetization_lab";
   const needsRounds = ["debate", "democracy", "board", "tournament"].includes(mode);
   const needsIterations = ["dictator", "creator_critic"].includes(mode);
   const isJudgeVerdictMode = mode === "debate" || mode === "tournament";
@@ -91,6 +96,7 @@ export function StepTask({
   }, [task, maxRounds, unlimited, executionMode, needsRounds, needsIterations, mode]);
 
   function togglePreset(id: string) {
+    onClearLaunchError?.();
     if (workspacePresetIds.includes(id)) {
       onWorkspacePresetIdsChange(workspacePresetIds.filter((item) => item !== id));
       return;
@@ -101,6 +107,7 @@ export function StepTask({
   function addWorkspacePath() {
     const value = extraPathDraft.trim();
     if (!value) return;
+    onClearLaunchError?.();
     if (!workspacePaths.includes(value)) {
       onWorkspacePathsChange([...workspacePaths, value]);
     }
@@ -108,6 +115,7 @@ export function StepTask({
   }
 
   function removeWorkspacePath(path: string) {
+    onClearLaunchError?.();
     onWorkspacePathsChange(workspacePaths.filter((item) => item !== path));
   }
 
@@ -130,7 +138,10 @@ export function StepTask({
 
           <textarea
             value={task}
-            onChange={(e) => setTask(e.target.value)}
+            onChange={(e) => {
+              onClearLaunchError?.();
+              setTask(e.target.value);
+            }}
             placeholder={taskPlaceholder ?? "Введите задачу или вопрос..."}
             rows={5}
             className="w-full rounded-xl border border-border bg-white px-4 py-3.5 text-sm text-foreground placeholder:text-muted-foreground/50 resize-none focus:outline-none focus:ring-2 focus:ring-ring/30 focus:border-ring transition-colors leading-relaxed dark:border-slate-800 dark:bg-slate-950/70"
@@ -188,6 +199,23 @@ export function StepTask({
             </div>
           )}
 
+          {isProjectMonetizationLab && (
+            <div className="mt-4 rounded-xl border border-border/60 bg-white p-4 text-[12px] leading-6 text-muted-foreground/80 dark:border-slate-800 dark:bg-slate-950/70">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-foreground/70">
+                Подсказка для Monetization Lab
+              </div>
+              <div className="mt-2">
+                Это режим для одного уже выбранного проекта, когда нужен не общий обзор, а жёсткий спор о том, как именно превратить его в деньги: упаковка, ICP, канал, первый оффер, distribution wedge и допустимый лёгкий pivot в подаче.
+              </div>
+              <div className="mt-2">
+                Самый полезный формат задачи здесь: дай агентам свободу спорить о монетизации, но попроси в финале один главный путь, один backup-вариант и конкретный 14-дневный план запуска.
+              </div>
+              <div className="mt-3 rounded-lg border border-border/60 bg-[#fbfcff] px-3 py-3 font-mono text-[11px] leading-5 text-[#273142] dark:border-slate-800 dark:bg-slate-900/80 dark:text-slate-300">
+                Возьми мой выбранный проект из attached workspace. Подумай свободно, как из него быстрее всего сделать деньги, допускай лёгкий pivot в упаковке, канале или ICP, если он усиливает путь к деньгам. Спорьте по делу о лучших вариантах монетизации и в финале дайте один главный путь, один backup-вариант и конкретный план запуска на ближайшие 14 дней.
+              </div>
+            </div>
+          )}
+
           {mode === "tournament" && (
             <div className="mt-6 rounded-xl border border-border/60 bg-white p-4 dark:border-slate-800 dark:bg-slate-950/70">
               <div className="flex items-start justify-between gap-4">
@@ -207,7 +235,10 @@ export function StepTask({
                     <button
                       key={option.value}
                       type="button"
-                      onClick={() => setExecutionMode(option.value)}
+                      onClick={() => {
+                        onClearLaunchError?.();
+                        setExecutionMode(option.value);
+                      }}
                       className={`rounded-full px-3 py-1.5 text-[11px] font-medium transition-colors ${
                         executionMode === option.value
                           ? "bg-black text-white dark:bg-slate-100 dark:text-slate-950"
@@ -233,7 +264,10 @@ export function StepTask({
                       : "Лимит итераций"}
                 </label>
                 <button
-                  onClick={() => setUnlimited(!unlimited)}
+                  onClick={() => {
+                    onClearLaunchError?.();
+                    setUnlimited(!unlimited);
+                  }}
                   className={`text-[11px] px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
                     unlimited
                       ? "bg-primary text-primary-foreground"
@@ -250,7 +284,10 @@ export function StepTask({
                     min={1}
                     max={10}
                     value={maxRounds}
-                    onChange={(e) => setMaxRounds(Number(e.target.value))}
+                    onChange={(e) => {
+                      onClearLaunchError?.();
+                      setMaxRounds(Number(e.target.value));
+                    }}
                     className="flex-1 accent-primary cursor-pointer"
                   />
                   <span className="font-mono text-sm font-medium text-foreground w-6 text-center">
@@ -289,6 +326,9 @@ export function StepTask({
             <p className="mb-3 text-[11px] leading-relaxed text-muted-foreground/70">
               Подключи сохранённые workspace presets и добавь одноразовые директории для текущего запуска.
             </p>
+            <p className="mb-3 text-[11px] leading-relaxed text-muted-foreground/60">
+              Если путь не существует, backend заблокирует запуск. Нажми на добавленный path ниже, чтобы удалить его.
+            </p>
 
             {workspacePresets.length > 0 ? (
               <div className="mb-4 flex flex-wrap gap-2">
@@ -319,8 +359,11 @@ export function StepTask({
             <div className="flex gap-2">
               <input
                 value={extraPathDraft}
-                onChange={(e) => setExtraPathDraft(e.target.value)}
-                placeholder="/Users/martin/projects/trading-data"
+                onChange={(e) => {
+                  onClearLaunchError?.();
+                  setExtraPathDraft(e.target.value);
+                }}
+                placeholder="/absolute/path/to/project"
                 className="flex-1 rounded-lg border border-border bg-white px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring/25 dark:border-slate-800 dark:bg-slate-950/70"
               />
               <Button type="button" variant="outline" size="sm" onClick={addWorkspacePath}>
@@ -413,7 +456,14 @@ export function StepTask({
 
       {/* Footer */}
       <div className="border-t bg-background">
-        <div className="max-w-xl mx-auto px-10 py-4 flex justify-between">
+        <div className="max-w-xl mx-auto px-10 py-4">
+          {launchError ? (
+            <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-[12px] leading-6 text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/30 dark:text-rose-300">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.14em]">Запуск не удался</div>
+              <div className="mt-1">{launchError}</div>
+            </div>
+          ) : null}
+          <div className="flex justify-between">
           <Button variant="ghost" onClick={onBack} className="text-muted-foreground">
             Назад
           </Button>
@@ -438,6 +488,7 @@ export function StepTask({
               </span>
             )}
           </Button>
+          </div>
         </div>
       </div>
     </div>

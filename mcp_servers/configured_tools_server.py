@@ -9,7 +9,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import quote_plus, urljoin
 
 import httpx
 from neo4j import GraphDatabase
@@ -24,9 +24,21 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from mcp_servers.logging_utils import sanitize_log_arguments, sanitize_result_preview
+from orchestrator.guardrails.audit import record_guardrail_event
+from orchestrator.guardrails.tool_safety import (
+    scan_remote_tool_metadata,
+    scan_tool_arguments,
+    scan_tool_result,
+)
+from orchestrator.guardrails.wrappers import (
+    build_block_message,
+    build_guarded_tool_description,
+    sanitize_tool_result,
+)
 from orchestrator.tools.builtin.code_exec import CodeExecTool
 from orchestrator.tools.builtin.http_request import HttpRequestTool, _validate_url
 from orchestrator.tools.builtin.shell_exec import ShellExecTool
+from orchestrator.tools.security import tool_requires_guarded_wrapper, tool_runtime_allowed
 
 LOG_DIR = Path(__file__).parent.parent / ".tool_logs"
 LOG_DIR.mkdir(exist_ok=True)
@@ -86,6 +98,41 @@ def emit_runtime_event(event_type: str, title: str, detail: str = "", **extra: A
         handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
+def _record_runtime_guardrail(
+    action: str,
+    phase: str,
+    detail: str,
+    *,
+    tool_cfg: dict[str, Any],
+    report: dict | Any = None,
+    remote_name: str | None = None,
+) -> None:
+    tool_name = str(tool_cfg.get("name", tool_cfg.get("id", "")))
+    if remote_name:
+        tool_name = f"{tool_name}::{remote_name}"
+    record_guardrail_event(
+        source="configured_tools_server",
+        action=action,
+        phase=phase,
+        tool_id=str(tool_cfg.get("id", "")),
+        tool_name=tool_name,
+        detail=detail,
+        report=report,
+        metadata={"remote_name": remote_name or ""},
+    )
+
+
+def _emit_guardrail_runtime_event(action: str, detail: str, *, tool_name: str, remote_name: str | None = None) -> None:
+    emit_runtime_event(
+        "tool_call_guardrailed",
+        "Tool call guardrailed",
+        detail,
+        tool_name=tool_name,
+        guardrail_action=action,
+        remote_name=remote_name or "",
+    )
+
+
 def _runtime_argument_preview(arguments: dict[str, Any]) -> str:
     if not arguments:
         return ""
@@ -129,6 +176,15 @@ def _schema_for(tool_cfg: dict[str, Any]) -> dict[str, Any]:
                 "query": {"type": "string", "description": "Question or search query"},
             },
             "required": ["query"],
+        }
+    if tool_type == "bright_data_serp":
+        return {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Plain search query. The tool converts it into a Google search URL via Bright Data."},
+                "url": {"type": "string", "description": "Optional full target URL instead of a query."},
+                "format": {"type": "string", "description": "Optional response format override, usually raw or json."},
+            },
         }
     if tool_type in {"http_api", "custom_api"}:
         return {
@@ -200,6 +256,9 @@ def _description_for(tool_cfg: dict[str, Any]) -> str:
         return f"{name}: web search via Brave Search for current information."
     if tool_type == "perplexity":
         return f"{name}: Perplexity Sonar search with citations."
+    if tool_type == "bright_data_serp":
+        extra = cfg.get("description") or "Fetch current Google SERP pages or arbitrary URLs through Bright Data."
+        return f"{name}: {extra} Use query for a search term or url for a full target URL."
     if tool_type in {"http_api", "custom_api"}:
         extra = cfg.get("description") or "Use the configured API safely through its base URL."
         return f"{name}: {extra} Base URL: {cfg.get('base_url', '')}"
@@ -335,7 +394,7 @@ async def _ensure_external_tool_cache() -> None:
     external_tools: dict[str, Tool] = {}
     external_lookup: dict[str, dict[str, Any]] = {}
     for tool_cfg in TOOLS.values():
-        if tool_cfg.get("tool_type") != "mcp_server":
+        if tool_cfg.get("tool_type") != "mcp_server" or not tool_runtime_allowed(tool_cfg):
             continue
         try:
             remote_tools = await _list_remote_tools(tool_cfg)
@@ -356,15 +415,53 @@ async def _ensure_external_tool_cache() -> None:
         for remote_tool in remote_tools:
             wrapped_name = _proxy_tool_name(tool_cfg["id"], remote_tool.name)
             description = (remote_tool.description or remote_tool.name or "").strip()
+            metadata_report = scan_remote_tool_metadata(tool_cfg, remote_tool.name, description)
+            if metadata_report.recommended_action == "block":
+                blocked_description = build_guarded_tool_description(tool_cfg["name"], metadata_report)
+                external_tools[wrapped_name] = Tool(
+                    name=wrapped_name,
+                    description=blocked_description,
+                    inputSchema={"type": "object", "properties": {}},
+                )
+                external_lookup[wrapped_name] = {
+                    "tool_cfg": tool_cfg,
+                    "remote_name": remote_tool.name,
+                    "blocked_report": metadata_report.model_dump(),
+                }
+                _record_runtime_guardrail(
+                    "block",
+                    "metadata",
+                    metadata_report.summary,
+                    tool_cfg=tool_cfg,
+                    report=metadata_report,
+                    remote_name=remote_tool.name,
+                )
+                continue
+            rendered_description = f"{tool_cfg['name']} · {description}"
+            if metadata_report.recommended_action in {"warn", "log"} or tool_requires_guarded_wrapper(tool_cfg):
+                rendered_description = (
+                    build_guarded_tool_description(rendered_description, metadata_report)
+                    if metadata_report.recommended_action in {"warn", "log"}
+                    else f"{rendered_description} (guarded wrapper)"
+                )
+                _record_runtime_guardrail(
+                    "warn",
+                    "metadata",
+                    metadata_report.summary if metadata_report.recommended_action in {"warn", "log"} else "Remote MCP tool is exposed through a guarded wrapper.",
+                    tool_cfg=tool_cfg,
+                    report=metadata_report,
+                    remote_name=remote_tool.name,
+                )
             external_tools[wrapped_name] = Tool(
                 name=wrapped_name,
-                description=f"{tool_cfg['name']} · {description}",
+                description=rendered_description,
                 inputSchema=remote_tool.inputSchema or {"type": "object", "properties": {}},
                 annotations=getattr(remote_tool, "annotations", None),
             )
             external_lookup[wrapped_name] = {
                 "tool_cfg": tool_cfg,
                 "remote_name": remote_tool.name,
+                "guardrail_report": metadata_report.model_dump() if metadata_report.recommended_action in {"warn", "log"} else {},
             }
 
     EXTERNAL_MCP_TOOLS.clear()
@@ -460,6 +557,47 @@ async def _call_perplexity(tool_cfg: dict[str, Any], arguments: dict[str, Any]) 
     if citations:
         result += "\n\nSources:\n" + "\n".join(f"- {citation}" for citation in citations[:5])
     return result
+
+
+async def _call_bright_data_serp(tool_cfg: dict[str, Any], arguments: dict[str, Any]) -> str:
+    cfg = tool_cfg.get("config", {})
+    api_key = str(cfg.get("api_key", "")).strip()
+    zone = str(cfg.get("zone", "")).strip()
+    response_format = str(arguments.get("format") or cfg.get("format") or "raw").strip() or "raw"
+    query = str(arguments.get("query", "")).strip()
+    target_url = str(arguments.get("url", "")).strip()
+
+    if not api_key:
+        return f"[{tool_cfg['id']}] Error: API key is not configured"
+    if not zone:
+        return f"[{tool_cfg['id']}] Error: zone is not configured"
+    if not target_url and not query:
+        return f"[{tool_cfg['id']}] Error: provide either 'query' or 'url'"
+
+    if not target_url:
+        target_url = f"https://www.google.com/search?q={quote_plus(query)}"
+
+    safety_error = _validate_url(target_url)
+    if safety_error:
+        return f"[{tool_cfg['id']}] Error: {safety_error}"
+
+    payload = {
+        "zone": zone,
+        "url": target_url,
+        "format": response_format,
+    }
+
+    async with httpx.AsyncClient(timeout=45) as client:
+        response = await client.post(
+            "https://api.brightdata.com/request",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+
+    return f"[{tool_cfg['id']}] Bright Data SERP {response.status_code} for {query or target_url}\n{response.text[:5000]}"
 
 
 async def _call_http_api(tool_cfg: dict[str, Any], arguments: dict[str, Any]) -> str:
@@ -655,6 +793,8 @@ async def _dispatch(tool_cfg: dict[str, Any], arguments: dict[str, Any]) -> str:
         return await _call_brave(tool_cfg, arguments)
     if tool_type == "perplexity":
         return await _call_perplexity(tool_cfg, arguments)
+    if tool_type == "bright_data_serp":
+        return await _call_bright_data_serp(tool_cfg, arguments)
     if tool_type in {"http_api", "custom_api"}:
         return await _call_http_api(tool_cfg, arguments)
     if tool_type == "http_request":
@@ -680,7 +820,7 @@ async def list_tools() -> list[Tool]:
             inputSchema=_schema_for(tool_cfg),
         )
         for tool_cfg in TOOLS.values()
-        if tool_cfg.get("tool_type") != "mcp_server"
+        if tool_cfg.get("tool_type") != "mcp_server" and tool_runtime_allowed(tool_cfg)
     ]
     return [*base_tools, *EXTERNAL_MCP_TOOLS.values()]
 
@@ -699,25 +839,76 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     tool_cfg = TOOLS.get(name)
     success = False
     if tool_cfg:
-        try:
-            result = await _dispatch(tool_cfg, arguments)
-            success = not result.lstrip().startswith(f"[{name}] Error:")
-        except Exception as exc:
-            result = f"[{name}] Error: {exc}"
+        if not tool_runtime_allowed(tool_cfg):
+            report = tool_cfg.get("last_guardrail_report") or {}
+            summary = str(report.get("summary") or "tool is blocked")
+            result = f"[{name}] Blocked by guardrails: {summary}"
+            _record_runtime_guardrail("block", "config", summary, tool_cfg=tool_cfg, report=report)
+            _emit_guardrail_runtime_event("block", summary, tool_name=name)
+        else:
+            argument_report = scan_tool_arguments(tool_cfg, arguments)
+            if argument_report.recommended_action == "block":
+                result = build_block_message(name, argument_report)
+                _record_runtime_guardrail("block", "arguments", argument_report.summary, tool_cfg=tool_cfg, report=argument_report)
+                _emit_guardrail_runtime_event("block", argument_report.summary, tool_name=name)
+            else:
+                if argument_report.recommended_action in {"warn", "log"}:
+                    _record_runtime_guardrail("warn", "arguments", argument_report.summary, tool_cfg=tool_cfg, report=argument_report)
+                    _emit_guardrail_runtime_event("warn", argument_report.summary, tool_name=name)
+                try:
+                    result = await _dispatch(tool_cfg, arguments)
+                    success = not result.lstrip().startswith(f"[{name}] Error:")
+                except Exception as exc:
+                    result = f"[{name}] Error: {exc}"
+                result_report = scan_tool_result(tool_cfg, result)
+                if result_report.recommended_action == "block":
+                    result = build_block_message(name, result_report)
+                    success = False
+                    _record_runtime_guardrail("block", "result", result_report.summary, tool_cfg=tool_cfg, report=result_report)
+                    _emit_guardrail_runtime_event("block", result_report.summary, tool_name=name)
+                elif result_report.recommended_action in {"warn", "log"}:
+                    result = sanitize_tool_result(result, result_report)
+                    _record_runtime_guardrail("warn", "result", result_report.summary, tool_cfg=tool_cfg, report=result_report)
+                    _emit_guardrail_runtime_event("warn", result_report.summary, tool_name=name)
     elif name in EXTERNAL_MCP_LOOKUP:
         remote = EXTERNAL_MCP_LOOKUP[name]
-        if remote.get("remote_name") == "__connection_error__":
+        blocked_report = remote.get("blocked_report") or {}
+        if blocked_report:
+            summary = str(blocked_report.get("summary") or "remote tool metadata is blocked")
+            result = f"[{name}] Blocked by guardrails: {summary}"
+            _record_runtime_guardrail("block", "metadata", summary, tool_cfg=remote["tool_cfg"], report=blocked_report, remote_name=remote.get("remote_name"))
+            _emit_guardrail_runtime_event("block", summary, tool_name=name, remote_name=remote.get("remote_name"))
+        elif remote.get("remote_name") == "__connection_error__":
             result = f"[{name}] Error: {remote.get('error', 'MCP connection failed')}"
         else:
-            try:
-                result = await _call_remote_tool(remote["tool_cfg"], remote["remote_name"], arguments)
-                if result:
-                    result = f"[{name}] {result}"
-                else:
-                    result = f"[{name}] Tool executed successfully."
-                success = True
-            except Exception as exc:
-                result = f"[{name}] Error: {exc}"
+            argument_report = scan_tool_arguments(remote["tool_cfg"], arguments, remote_name=remote["remote_name"])
+            if argument_report.recommended_action == "block":
+                result = build_block_message(name, argument_report)
+                _record_runtime_guardrail("block", "arguments", argument_report.summary, tool_cfg=remote["tool_cfg"], report=argument_report, remote_name=remote["remote_name"])
+                _emit_guardrail_runtime_event("block", argument_report.summary, tool_name=name, remote_name=remote["remote_name"])
+            else:
+                if argument_report.recommended_action in {"warn", "log"}:
+                    _record_runtime_guardrail("warn", "arguments", argument_report.summary, tool_cfg=remote["tool_cfg"], report=argument_report, remote_name=remote["remote_name"])
+                    _emit_guardrail_runtime_event("warn", argument_report.summary, tool_name=name, remote_name=remote["remote_name"])
+                try:
+                    result = await _call_remote_tool(remote["tool_cfg"], remote["remote_name"], arguments)
+                    if result:
+                        result = f"[{name}] {result}"
+                    else:
+                        result = f"[{name}] Tool executed successfully."
+                    success = True
+                except Exception as exc:
+                    result = f"[{name}] Error: {exc}"
+                result_report = scan_tool_result(remote["tool_cfg"], result, remote_name=remote["remote_name"])
+                if result_report.recommended_action == "block":
+                    result = build_block_message(name, result_report)
+                    success = False
+                    _record_runtime_guardrail("block", "result", result_report.summary, tool_cfg=remote["tool_cfg"], report=result_report, remote_name=remote["remote_name"])
+                    _emit_guardrail_runtime_event("block", result_report.summary, tool_name=name, remote_name=remote["remote_name"])
+                elif result_report.recommended_action in {"warn", "log"}:
+                    result = sanitize_tool_result(result, result_report)
+                    _record_runtime_guardrail("warn", "result", result_report.summary, tool_cfg=remote["tool_cfg"], report=result_report, remote_name=remote["remote_name"])
+                    _emit_guardrail_runtime_event("warn", result_report.summary, tool_name=name, remote_name=remote["remote_name"])
     else:
         result = f"Unknown configured tool: {name}"
     log_tool_call(name, arguments, result, round(time.time() - t0, 2))

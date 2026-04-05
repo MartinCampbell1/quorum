@@ -12,6 +12,14 @@ from typing import Annotated
 from langgraph.graph import END, START, StateGraph
 from typing_extensions import TypedDict
 
+from orchestrator.debate.factcheck import ValidatedTurn, validate_with_retry
+from orchestrator.debate.judges import aggregate_panel_decisions, parse_judge_response
+from orchestrator.debate.moderators import (
+    build_argument_prompt,
+    build_improvement_prompt_context,
+    build_judge_prompt,
+)
+from orchestrator.debate.protocols import build_protocol_telemetry, resolve_protocol_for_mode
 from orchestrator.models import AgentConfig, store
 from orchestrator.modes.base import (
     apply_user_instructions,
@@ -20,6 +28,7 @@ from orchestrator.modes.base import (
     make_message,
     require_agent_response,
 )
+from orchestrator.ranking import order_tournament_pairings
 
 
 ADVANCE_MATCH_MARKER = "ADVANCE_MATCH"
@@ -81,6 +90,10 @@ class TournamentState(TypedDict):
     result: str
     parallel_stage_children: list[dict]
     parallel_stage_group_id: str
+    protocol_name: str
+    protocol_telemetry: dict
+    fact_check_failures: dict
+    disqualified_role: str
 
 
 def _entry_label(entry: dict) -> str:
@@ -90,6 +103,10 @@ def _entry_label(entry: dict) -> str:
         if primary:
             return primary
     return str(entry.get("project_label") or entry.get("role") or entry.get("agent_id") or "contestant")
+
+
+def _match_protocol(state: TournamentState):
+    return resolve_protocol_for_mode("tournament", state.get("config") or {})
 
 
 def _entrant(agent: dict) -> dict:
@@ -107,9 +124,106 @@ def _pair_entries(entries: list[dict]) -> tuple[list[dict], list[dict]]:
     return matchups, remaining
 
 
+def _pairing_strategy(state: TournamentState) -> str:
+    rendered = str((state.get("config") or {}).get("pairing_strategy", "sequential") or "sequential").strip().lower()
+    return rendered if rendered in {"sequential", "adaptive"} else "sequential"
+
+
+def _pairing_priors(state: TournamentState) -> dict[str, float]:
+    raw = (state.get("config") or {}).get("pairing_priors")
+    if not isinstance(raw, dict):
+        return {}
+    priors: dict[str, float] = {}
+    for key, value in raw.items():
+        try:
+            priors[str(key)] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return priors
+
+
+def _pairing_archive_cells(state: TournamentState) -> dict[str, str]:
+    raw = (state.get("config") or {}).get("pairing_archive_cells")
+    if not isinstance(raw, dict):
+        return {}
+    cells: dict[str, str] = {}
+    for key, value in raw.items():
+        label = str(key).strip()
+        cell = str(value).strip()
+        if label and cell:
+            cells[label] = cell
+    return cells
+
+
 def _execution_mode(state: TournamentState) -> str:
     rendered = str((state.get("config") or {}).get("execution_mode", "sequential") or "sequential").strip().lower()
     return rendered if rendered in {"sequential", "parallel"} else "sequential"
+
+
+def _configured_parallelism_limit(state: TournamentState) -> int | None:
+    raw_value = (state.get("config") or {}).get("parallelism_limit")
+    if raw_value in {None, ""}:
+        return None
+    try:
+        return max(int(raw_value), 1)
+    except (TypeError, ValueError):
+        return None
+
+
+def _provider_capacity(provider: str) -> int:
+    normalized = str(provider or "").strip().lower()
+    if not normalized:
+        return 1
+    try:
+        from gateway import _provider_pool, discover_profiles
+
+        discover_profiles()
+        pool = _provider_pool(normalized)
+        healthy_profiles = [
+            profile
+            for profile in pool.profiles
+            if getattr(profile, "auth_state", "unknown") != "error"
+        ]
+        if healthy_profiles:
+            return sum(max(int(getattr(profile, "max_parallel_leases", 1) or 1), 1) for profile in healthy_profiles)
+        if pool.profiles:
+            return 1
+    except Exception:
+        return 1
+    return 1
+
+
+def _auto_parallelism_limit(matchups: list[dict], judge: dict) -> int:
+    capacities: dict[str, int] = {}
+    usage: dict[str, int] = {}
+    allowed = 0
+
+    for match in matchups:
+        providers = {
+            str(match.get("a", {}).get("provider", "")).strip().lower(),
+            str(match.get("b", {}).get("provider", "")).strip().lower(),
+            str(judge.get("provider", "")).strip().lower(),
+        }
+        providers.discard("")
+        if not providers:
+            providers = {"default"}
+
+        if any(usage.get(provider, 0) + 1 > capacities.setdefault(provider, _provider_capacity(provider)) for provider in providers):
+            break
+
+        for provider in providers:
+            usage[provider] = usage.get(provider, 0) + 1
+        allowed += 1
+
+    return max(allowed, 1)
+
+
+def _parallelism_limit_for_stage(state: TournamentState, matchups: list[dict], judge: dict) -> int:
+    total = max(len(matchups), 1)
+    configured = _configured_parallelism_limit(state)
+    if configured is not None:
+        return min(configured, total)
+    return min(_auto_parallelism_limit(matchups, judge), total)
 
 
 def _next_power_of_two_at_least(value: int) -> int:
@@ -180,34 +294,29 @@ def _match_history_text(state: TournamentState) -> str:
 def _contestant_prompt(state: TournamentState, agent: dict, opponent: dict, side: str, opponent_current_arg: str = "") -> str:
     match_round = state["current_match_round"] + 1
     history = _match_history_text(state)
-    opponent_arg_section = ""
-    if opponent_current_arg.strip():
-        opponent_arg_section = (
-            f"\n\nOpponent's argument this round ({_entry_label(opponent)}):\n"
-            f"{opponent_current_arg}\n"
-        )
-
-    return (
-        f"{build_workspace_context_prompt(agent)}"
-        f"{OWNER_CONTEXT}\n"
-        f"{PAIRWISE_CRITERIA}\n"
-        "You are in a head-to-head tournament match between two projects.\n"
-        f"You are contestant {side} and you represent exactly one project: {_entry_label(agent)}.\n"
-        f"Your opponent in this match is: {_entry_label(opponent)}.\n"
-        f"Match: {_match_title(state)}.\n"
-        f"Debate round: {match_round} of {state['max_rounds']}.\n\n"
-        f"TASK:\n{state['task']}\n"
-        f"{history}"
-        f"{opponent_arg_section}\n\n"
-        "Your job is not to give a generic pitch. Your job is to defeat the opposing project and advance.\n"
-        "Argue specifically why your project is the stronger answer to the task for this owner.\n"
-        "Use evidence from your project roots, call out implementation leverage, defend against risks, and rebut the opponent's claims directly.\n"
-        "Do not optimize for hype, storytelling, or presentation polish. Optimize for the strongest evidence-backed case.\n"
-        "Prefer direct comparison over isolated self-praise.\n"
-        "Be concrete and comparative.\n\n"
-        "Round guidance:\n"
-        "- Round 1: state what the project is, current state, fastest credible path to money, why it beats this opponent, and your biggest admitted risk.\n"
-        "- Round 2+: rebut the opponent point by point, show where their case is weaker, and include one honest concession if they are right about something."
+    protocol = _match_protocol(state)
+    return build_argument_prompt(
+        protocol=protocol,
+        workspace_context=build_workspace_context_prompt(agent),
+        task=state["task"],
+        participant_label=_entry_label(agent),
+        opponent_label=_entry_label(opponent),
+        role_kind=f"contestant {side}",
+        round_number=match_round,
+        max_rounds=state["max_rounds"],
+        history_text=history,
+        opponent_current_arg=opponent_current_arg,
+        extra_context=(
+            f"{build_improvement_prompt_context(state.get('config'), 'generator')}"
+            f"{OWNER_CONTEXT}\n"
+            f"{PAIRWISE_CRITERIA}\n"
+            "You are in a head-to-head tournament match between two projects.\n"
+            f"Match: {_match_title(state)}.\n"
+            "Your job is to defeat the opposing project and advance, not to deliver a generic pitch.\n"
+            "Round guidance:\n"
+            "- Round 1: explain current project state, fastest credible path to money, why it beats this opponent, and your biggest admitted risk.\n"
+            "- Round 2+: rebut the opponent point by point and include one honest concession if they are right about something.\n\n"
+        ),
     )
 
 
@@ -228,6 +337,7 @@ def _judge_agent_for_match(judge: dict, match: dict) -> dict:
 
 
 def _judge_prompt(state: TournamentState, judge: dict, match: dict) -> str:
+    protocol = _match_protocol(state)
     match_round = int(state["current_match_round"] or 0)
     final_round = match_round >= max(int(state["max_rounds"] or 1), 1)
     rounds_text = "\n\n".join(
@@ -239,38 +349,70 @@ def _judge_prompt(state: TournamentState, judge: dict, match: dict) -> str:
         )
         for round_data in list(match.get("rounds") or [])
     )
-    decision_instruction = (
-        f"This is the final allowed debate round ({match_round} of {state['max_rounds']}).\n"
-        f"Your first line must be exactly `{ADVANCE_MATCH_MARKER}: A` or `{ADVANCE_MATCH_MARKER}: B`.\n"
-        "Then provide:\n"
-        "1. Which project wins and why\n"
-        "2. The strongest argument from each side\n"
-        "3. The decisive weakness that kept the loser from advancing"
-        if final_round
-        else (
-            f"This is match round {match_round} of {state['max_rounds']}.\n"
-            f"If one side has already clearly won, your first line must be exactly `{ADVANCE_MATCH_MARKER}: A` or `{ADVANCE_MATCH_MARKER}: B`.\n"
-            f"Otherwise your first line must be exactly `{NEED_MORE_ROUNDS_MARKER}`.\n"
-            "After the first line, give an interim assessment and one concrete challenge for each side to address next round."
+    return build_judge_prompt(
+        protocol=protocol,
+        workspace_context=build_workspace_context_prompt(judge),
+        task=state["task"],
+        transcript=(
+            f"Match: {_match_title(state)}\n"
+            f"CONTESTANT A: {_entry_label(match['a'])}\n"
+            f"CONTESTANT B: {_entry_label(match['b'])}\n\n"
+            f"{rounds_text}"
+        ),
+        current_round=match_round,
+        max_rounds=state["max_rounds"],
+        final_marker=ADVANCE_MATCH_MARKER,
+        continue_marker=NEED_MORE_ROUNDS_MARKER,
+        winner_tokens=("A", "B"),
+        extra_context=(
+            f"{build_improvement_prompt_context(state.get('config'), 'judge')}"
+            f"{OWNER_CONTEXT}\n"
+            f"{PAIRWISE_CRITERIA}\n"
+            "You are the tournament judge for a head-to-head project debate.\n"
+            "This is a pairwise elimination decision, not a scorecard exercise.\n"
+            "Do not produce numeric tables unless explicitly asked.\n"
+            "Prefer verified facts, realistic monetization, and execution fit over ambition theater.\n\n"
+        ),
+        final_round=final_round,
+    )
+
+
+def _validate_match_turn(
+    state: TournamentState,
+    agent: dict,
+    prompt: str,
+    response: str,
+    context: str,
+) -> tuple[str, ValidatedTurn, dict]:
+    protocol = _match_protocol(state)
+    if not protocol.supports_factcheck:
+        report = ValidatedTurn(
+            response=response,
+            report={
+                "ok": True,
+                "issues": [],
+                "evidence_density": 0.0,
+            },
         )
+        return response, report, {}
+
+    validated = validate_with_retry(
+        response=response,
+        responder=lambda retry_note: require_agent_response(
+            agent,
+            call_agent_cfg(agent, apply_user_instructions(state, f"{prompt}\n\n{retry_note}")),
+            context,
+        ),
     )
-    return (
-        f"{build_workspace_context_prompt(judge)}"
-        f"{OWNER_CONTEXT}\n"
-        f"{PAIRWISE_CRITERIA}\n"
-        "You are the tournament judge for a head-to-head project debate.\n"
-        "This is a pairwise elimination decision, not a scorecard exercise.\n"
-        "Do not produce numeric scores, weighted tables, or synthetic point systems unless the user explicitly asks for them.\n"
-        "Your job is to decide which project made the stronger, more credible case for being prioritized first by this owner.\n"
-        "Prefer verified facts, realistic monetization, and execution fit over ambitious narratives.\n"
-        "Punish invented claims. Reward honesty and concrete evidence.\n"
-        f"Match: {_match_title(state)}.\n"
-        f"TASK:\n{state['task']}\n\n"
-        f"CONTESTANT A: {_entry_label(match['a'])}\n"
-        f"CONTESTANT B: {_entry_label(match['b'])}\n\n"
-        f"MATCH TRANSCRIPT:\n{rounds_text}\n\n"
-        f"{decision_instruction}"
-    )
+    updates: dict = {}
+    if validated.disqualified:
+        failures = dict(state.get("fact_check_failures") or {})
+        failures[str(agent.get("role", "agent"))] = failures.get(str(agent.get("role", "agent")), 0) + 1
+        updates = {
+            "fact_check_failures": failures,
+            "disqualified_role": str(agent.get("role", "agent")),
+        }
+    return validated.response, validated, updates
 
 
 def _clean_judge_response(text: str) -> str:
@@ -322,7 +464,22 @@ def seed_contestants(state: TournamentState) -> dict:
 
 def start_round(state: TournamentState) -> dict:
     entrants = list(state["submissions"] if state["current_round"] == 0 else state["winners"])
-    matchups, byes = _pair_entries(entrants)
+    if _pairing_strategy(state) == "adaptive" and _pairing_priors(state):
+        previous_pairs = {
+            tuple(sorted((_entry_label(match["a"]), _entry_label(match["b"]))))
+            for match in list(state.get("match_history") or [])
+            if isinstance(match, dict) and match.get("a") and match.get("b")
+        }
+        matchups, byes = order_tournament_pairings(
+            entrants,
+            prior_scores=_pairing_priors(state),
+            previous_pairs=previous_pairs,
+            cell_signatures=_pairing_archive_cells(state),
+        )
+        if not matchups and len(entrants) >= 2:
+            matchups, byes = _pair_entries(entrants)
+    else:
+        matchups, byes = _pair_entries(entrants)
     next_round_number = int(state["current_round"] or 0) + 1
     stage_label = _stage_label_for_entries(len(entrants), next_round_number)
     current_match = {
@@ -375,52 +532,25 @@ async def run_parallel_stage(state: TournamentState) -> dict:
     session_config = dict(state.get("config") or {})
     session_workspace_paths = list(state.get("workspace_paths") or [])
     attached_tool_ids = list(state.get("attached_tool_ids") or [])
+    parallelism_limit = _parallelism_limit_for_stage(state, matchups, judge)
 
+    pending_entries = []
     for match_index, match in enumerate(matchups, start=1):
-        slot_key = _parallel_slot_key(stage_label, match_index)
-        label = _parallel_match_label(stage_label, match_index, match)
-        child_agents = [
-            _dict_to_agent_cfg(match["a"]),
-            _dict_to_agent_cfg(match["b"]),
-            _dict_to_agent_cfg(judge),
-        ]
-        child_config = {
-            **session_config,
-            "execution_mode": "sequential",
-            "tournament_round": int(state["current_round"] or 0),
-            "match_index": match_index,
-            "parallel_stage": stage_label,
-            "parallel_slot_key": slot_key,
-            "parallel_label": label,
-        }
-        child_id = await run(
-            mode="tournament_match",
-            task=state["task"],
-            agents=child_agents,
-            config=child_config,
-            workspace_paths=session_workspace_paths,
-            attached_tool_ids=attached_tool_ids,
-            parallel_parent_id=session_id,
-            parallel_group_id=group_id,
-            parallel_slot_key=slot_key,
-            parallel_stage=stage_label,
-            parallel_label=label,
-        )
-        child_entries.append(
+        pending_entries.append(
             {
-                "id": child_id,
-                "slot_key": slot_key,
+                "match_index": match_index,
+                "slot_key": _parallel_slot_key(stage_label, match_index),
                 "stage": stage_label,
-                "label": label,
+                "label": _parallel_match_label(stage_label, match_index, match),
                 "match": match,
             }
         )
 
-    total = len(child_entries)
+    total = len(pending_entries)
     messages = [
         make_message(
             "system",
-            f"{stage_label}: launched {total} parallel match(es).",
+            f"{stage_label}: launching {total} parallel match(es) with batch limit {parallelism_limit}.",
             f"tournament_parallel_{str(stage_label).lower()}_started",
         )
     ]
@@ -430,7 +560,7 @@ async def run_parallel_stage(state: TournamentState) -> dict:
             "execution_mode": "parallel",
             "stage_label": stage_label,
             "total": total,
-            "running": total,
+            "running": 0,
             "completed": 0,
             "failed": 0,
             "group_id": group_id,
@@ -438,12 +568,58 @@ async def run_parallel_stage(state: TournamentState) -> dict:
     )
 
     cancel_cascaded = False
-    child_sessions: list[dict] = []
+    child_sessions_by_id: dict[str, dict] = {}
+    active_entries: list[dict] = []
+    stage_failed = False
     while True:
-        child_sessions = [store.get(item["id"]) or {} for item in child_entries]
-        running = sum(1 for child in child_sessions if child.get("status") in ACTIVE_CHILD_STATUSES)
-        completed = sum(1 for child in child_sessions if child.get("status") == "completed")
-        failed = sum(1 for child in child_sessions if child.get("status") in {"failed", "cancelled"})
+        while not stage_failed and pending_entries and len(active_entries) < parallelism_limit:
+            entry = pending_entries.pop(0)
+            match = entry["match"]
+            child_agents = [
+                _dict_to_agent_cfg(match["a"]),
+                _dict_to_agent_cfg(match["b"]),
+                _dict_to_agent_cfg(judge),
+            ]
+            child_config = {
+                **session_config,
+                "execution_mode": "sequential",
+                "tournament_round": int(state["current_round"] or 0),
+                "match_index": int(entry["match_index"]),
+                "parallel_stage": stage_label,
+                "parallel_slot_key": entry["slot_key"],
+                "parallel_label": entry["label"],
+            }
+            child_id = await run(
+                mode="tournament_match",
+                task=state["task"],
+                agents=child_agents,
+                config=child_config,
+                workspace_paths=session_workspace_paths,
+                attached_tool_ids=attached_tool_ids,
+                parallel_parent_id=session_id,
+                parallel_group_id=group_id,
+                parallel_slot_key=entry["slot_key"],
+                parallel_stage=stage_label,
+                parallel_label=entry["label"],
+            )
+            launched_entry = {**entry, "id": child_id}
+            child_entries.append(launched_entry)
+            active_entries.append(launched_entry)
+
+        active_sessions = [store.get(item["id"]) or {"id": item["id"], "status": "running"} for item in active_entries]
+        for child in active_sessions:
+            if child.get("status") in TERMINAL_CHILD_STATUSES:
+                child_sessions_by_id[str(child.get("id"))] = child
+
+        active_entries = [
+            item
+            for item in active_entries
+            if (child_sessions_by_id.get(item["id"]) or {}).get("status") not in TERMINAL_CHILD_STATUSES
+        ]
+
+        completed = sum(1 for child in child_sessions_by_id.values() if child.get("status") == "completed")
+        failed = sum(1 for child in child_sessions_by_id.values() if child.get("status") in {"failed", "cancelled"})
+        running = len(active_entries)
         store.update(
             session_id,
             parallel_progress={
@@ -459,15 +635,23 @@ async def run_parallel_stage(state: TournamentState) -> dict:
 
         parent_session = store.get(session_id) or {}
         if parent_session.get("status") == "cancel_requested" and not cancel_cascaded:
-            for child in child_sessions:
+            for child in active_sessions:
                 if child.get("status") in ACTIVE_CHILD_STATUSES and child.get("id"):
                     request_cancel(str(child["id"]))
             cancel_cascaded = True
 
-        if running == 0 and all(child.get("status") in TERMINAL_CHILD_STATUSES for child in child_sessions):
+        if failed and not cancel_cascaded:
+            for child in active_sessions:
+                if child.get("status") in ACTIVE_CHILD_STATUSES and child.get("id"):
+                    request_cancel(str(child["id"]))
+            cancel_cascaded = True
+            stage_failed = True
+
+        if running == 0 and (not pending_entries or stage_failed):
             break
         await asyncio.sleep(1.0)
 
+    child_sessions = [child_sessions_by_id.get(item["id"]) or store.get(item["id"]) or {} for item in child_entries]
     failed_children = [
         child
         for child in child_sessions
@@ -535,83 +719,140 @@ async def run_parallel_stage(state: TournamentState) -> dict:
 
 
 def contestant_a_argues(state: TournamentState) -> dict:
+    if state.get("disqualified_role"):
+        return {"messages": []}
+
     match = dict(state["current_match"])
     contestant = match["a"]
     opponent = match["b"]
     match_round = int(state["current_match_round"] or 0) + 1
-    response = require_agent_response(
+    protocol = _match_protocol(state)
+    prompt = _contestant_prompt(state, contestant, opponent, "A")
+    raw_response = require_agent_response(
         contestant,
-        call_agent_cfg(contestant, apply_user_instructions(state, _contestant_prompt(state, contestant, opponent, "A"))),
+        call_agent_cfg(contestant, apply_user_instructions(state, prompt)),
         "Tournament contestant A step failed",
     )
+    response, factcheck, extra_updates = _validate_match_turn(state, contestant, prompt, raw_response, "Tournament contestant A retry failed")
     rounds = list(match.get("rounds") or [])
-    rounds.append({"round": match_round, "a_arg": response, "b_arg": "", "judge_note": ""})
+    rounds.append({"round": match_round, "a_arg": response, "b_arg": "", "judge_note": "", "a_factcheck": factcheck.report.model_dump(), "b_factcheck": {}})
     return {
+        "protocol_name": protocol.name,
         "current_match": {**match, "rounds": rounds},
-        "messages": [make_message(contestant["role"], response, _match_phase(state, f"round_{match_round}_a"))],
+        "messages": [make_message(contestant["role"], response, _match_phase(state, f"round_{match_round}_a"), protocol_name=protocol.name, factcheck=factcheck.report.model_dump())],
+        **extra_updates,
     }
 
 
 def contestant_b_argues(state: TournamentState) -> dict:
+    if state.get("disqualified_role") == state["current_match"]["a"]["role"]:
+        return {"current_match_round": int((state["current_match"].get("rounds") or [{}])[-1].get("round") or 0), "messages": []}
+
     match = dict(state["current_match"])
     contestant = match["b"]
     opponent = match["a"]
     rounds = list(match.get("rounds") or [])
     current_round = dict(rounds[-1])
-    response = require_agent_response(
+    protocol = _match_protocol(state)
+    prompt = _contestant_prompt(state, contestant, opponent, "B", opponent_current_arg=current_round.get("a_arg", ""))
+    raw_response = require_agent_response(
         contestant,
-        call_agent_cfg(
-            contestant,
-            apply_user_instructions(
-                state,
-                _contestant_prompt(state, contestant, opponent, "B", opponent_current_arg=current_round.get("a_arg", "")),
-            ),
-        ),
+        call_agent_cfg(contestant, apply_user_instructions(state, prompt)),
         "Tournament contestant B step failed",
     )
+    response, factcheck, extra_updates = _validate_match_turn(state, contestant, prompt, raw_response, "Tournament contestant B retry failed")
     current_round["b_arg"] = response
+    current_round["b_factcheck"] = factcheck.report.model_dump()
     rounds[-1] = current_round
     match_round = int(current_round.get("round") or 0)
     return {
+        "protocol_name": protocol.name,
         "current_match": {**match, "rounds": rounds},
         "current_match_round": match_round,
-        "messages": [make_message(contestant["role"], response, _match_phase(state, f"round_{match_round}_b"))],
+        "messages": [make_message(contestant["role"], response, _match_phase(state, f"round_{match_round}_b"), protocol_name=protocol.name, factcheck=factcheck.report.model_dump())],
+        **extra_updates,
     }
 
 
 def judge_match(state: TournamentState) -> dict:
+    protocol = _match_protocol(state)
     judge = state["agents"][-1]
     match = dict(state["current_match"])
     judge_agent = _judge_agent_for_match(judge, match)
-    response = require_agent_response(
-        judge_agent,
-        call_agent_cfg(judge_agent, apply_user_instructions(state, _judge_prompt(state, judge_agent, match))),
-        "Tournament judge step failed",
-    )
-    cleaned_response = _clean_judge_response(response)
+    final_round = int(state["current_match_round"] or 0) >= max(int(state["max_rounds"] or 1), 1)
+    disqualified_role = str(state.get("disqualified_role") or "").strip()
+    if disqualified_role:
+        winner_token = "B" if disqualified_role == match["a"]["role"] else "A"
+        response = (
+            f"{ADVANCE_MATCH_MARKER}: {winner_token}\n"
+            f"Disqualified role: {disqualified_role}.\n"
+            "Unsupported claims or meta/tool-seeking behavior persisted after retry.\n"
+            "Confidence: 0.90"
+        )
+        decisions = [
+            parse_judge_response(
+                response,
+                protocol_name=protocol.name,
+                final_marker=ADVANCE_MATCH_MARKER,
+                continue_marker=NEED_MORE_ROUNDS_MARKER,
+                allowed_winners=("A", "B"),
+            )
+        ]
+    else:
+        response = require_agent_response(
+            judge_agent,
+            call_agent_cfg(judge_agent, apply_user_instructions(state, _judge_prompt(state, judge_agent, match))),
+            "Tournament judge step failed",
+        )
+        decisions = [
+            parse_judge_response(
+                response,
+                protocol_name=protocol.name,
+                final_marker=ADVANCE_MATCH_MARKER,
+                continue_marker=NEED_MORE_ROUNDS_MARKER,
+                allowed_winners=("A", "B"),
+            )
+        ]
+
+    panel = aggregate_panel_decisions(decisions)
+    if final_round and panel.action == "continue":
+        panel.action = "final"
+    cleaned_response = _clean_judge_response(panel.rationale or response)
+    evidence_lines = [item.summary for item in decisions[0].evidence_items[:3]]
+    unsupported_lines = decisions[0].unsupported_claims[:3]
+    if evidence_lines:
+        cleaned_response += "\n\nEvidence used:\n" + "\n".join(f"- {line}" for line in evidence_lines)
+    if unsupported_lines:
+        cleaned_response += "\n\nUnsupported claims:\n" + "\n".join(f"- {line}" for line in unsupported_lines)
+    cleaned_response += f"\n\nConfidence: {panel.confidence:.2f}"
     rounds = list(match.get("rounds") or [])
     if rounds:
         latest_round = dict(rounds[-1])
         latest_round["judge_note"] = cleaned_response
         rounds[-1] = latest_round
-    final_round = int(state["current_match_round"] or 0) >= max(int(state["max_rounds"] or 1), 1)
-    if final_round or ADVANCE_MATCH_RE.search(response):
+    telemetry = build_protocol_telemetry(
+        protocol.name,
+        texts=[item.get("a_arg", "") for item in rounds] + [item.get("b_arg", "") for item in rounds],
+        confidence=panel.confidence,
+        stances=[decision.winner_token or decision.action for decision in decisions],
+    )
+    if panel.action in {"final", "disqualify"}:
         judge_action = "advance"
-    elif NEED_MORE_ROUNDS_RE.search(response):
-        judge_action = "continue"
     else:
         judge_action = "continue"
     return {
+        "protocol_name": protocol.name,
+        "protocol_telemetry": telemetry.model_dump(),
         "current_match": {
             **match,
             "rounds": rounds,
             "verdict": cleaned_response,
         },
         "judge_action": judge_action,
-        "match_winner": _extract_match_winner(response),
+        "match_winner": panel.winner_token or _extract_match_winner(response),
         "match_verdict": cleaned_response,
         "result": cleaned_response,
-        "messages": [make_message(judge["role"], cleaned_response, _match_phase(state, f"round_{state['current_match_round']}_verdict"))],
+        "messages": [make_message(judge["role"], cleaned_response, _match_phase(state, f"round_{state['current_match_round']}_verdict"), protocol_name=protocol.name, telemetry=telemetry.model_dump(), judge_schema=panel.model_dump())],
     }
 
 

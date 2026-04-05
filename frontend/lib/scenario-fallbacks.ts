@@ -13,6 +13,18 @@ const LOCAL_SCENARIO_FALLBACKS: Record<string, Omit<ScenarioDefinition, "default
     default_config: { max_rounds: 5 },
     is_local_fallback: true,
   },
+  moa: {
+    id: "layered_idea_lab",
+    name: "Layered Idea Lab",
+    mode: "moa",
+    headline: "Пропозеры, агрегаторы и финальный synthesizer собирают сильный candidate ещё до debate stage.",
+    description: "Подходит для breadth-first generation перед ranking, dossier review и дальнейшими stress-test режимами.",
+    recommended_for: "Когда нужно сначала развернуть поле сильных направлений, а не сразу сталкивать варианты в дебатах.",
+    task_placeholder: "Например: возьмите мои локальные репозитории и соберите shortlist сильных startup-направлений с ICP, distribution wedge и build scope.",
+    tags: ["generation", "moa", "breadth"],
+    default_config: { aggregator_count: 2 },
+    is_local_fallback: true,
+  },
 };
 
 function cloneAgents(agents: AgentConfig[]): AgentConfig[] {

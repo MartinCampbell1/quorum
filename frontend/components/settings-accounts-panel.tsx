@@ -31,6 +31,7 @@ function formatTime(ts?: number | null) {
 }
 
 function statusTone(account: ProviderAccount) {
+  if (account.available && account.auth_state !== "verified") return "amber";
   if (account.available && account.last_error) return "amber";
   if (account.available) return "emerald";
   if (account.last_error) return "amber";
@@ -39,6 +40,7 @@ function statusTone(account: ProviderAccount) {
 
 function statusLabel(account: ProviderAccount) {
   if (account.auth_state === "error" && account.last_error) return "Auth error";
+  if (account.available && account.auth_state !== "verified") return "Available (unverified)";
   if (account.available && account.last_error) return "Available with warning";
   if (account.available) return "Available";
   if (account.cooldown_remaining_sec > 0) return `Cooldown ${account.cooldown_remaining_sec}s`;

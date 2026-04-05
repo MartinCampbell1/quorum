@@ -18,6 +18,10 @@ class ToolConfig(BaseModel):
     enabled: bool = True       # can be disabled without deleting
     validation_status: str = "unknown"
     last_validation_result: dict = Field(default_factory=dict)
+    guardrail_status: str = "unknown"
+    last_guardrail_report: dict = Field(default_factory=dict)
+    wrapper_mode: str = "direct"
+    trust_level: str = "unknown"
 
 
 LEGACY_TOOL_ID_ALIASES = {
@@ -26,7 +30,14 @@ LEGACY_TOOL_ID_ALIASES = {
 }
 
 BUILTIN_TOOL_INSTANCE_IDS = {"code_exec", "shell_exec"}
-BUILTIN_TOOL_MUTABLE_FIELDS = {"validation_status", "last_validation_result"}
+BUILTIN_TOOL_MUTABLE_FIELDS = {
+    "validation_status",
+    "last_validation_result",
+    "guardrail_status",
+    "last_guardrail_report",
+    "wrapper_mode",
+    "trust_level",
+}
 
 
 TOOL_TYPE_PROVIDER_ALLOWLIST: dict[str, set[str]] = {
@@ -34,6 +45,7 @@ TOOL_TYPE_PROVIDER_ALLOWLIST: dict[str, set[str]] = {
     "shell": {"claude", "codex"},
     "brave_search": {"claude", "gemini", "codex"},
     "perplexity": {"claude", "gemini", "codex"},
+    "bright_data_serp": {"claude", "gemini", "codex"},
     "http_api": {"claude", "gemini", "codex"},
     "custom_api": {"claude", "gemini", "codex"},
     "ssh": {"claude", "gemini", "codex"},
@@ -133,6 +145,19 @@ TOOL_TYPES = {
         ],
         "mcp_server": "search-server",
         "mcp_tool": "perplexity_search",
+    },
+    "bright_data_serp": {
+        "name": "Bright Data SERP",
+        "category": "search",
+        "icon": "🌐",
+        "fields": [
+            {"name": "api_key", "label": "API Key", "type": "password", "required": True, "placeholder": "Bearer token"},
+            {"name": "zone", "label": "Zone", "type": "text", "required": True, "placeholder": "serp_api1"},
+            {"name": "format", "label": "Format", "type": "select", "required": False, "options": ["raw", "json"], "placeholder": ""},
+            {"name": "description", "label": "Описание для агента", "type": "textarea", "required": False, "placeholder": "Bright Data SERP fetch for current Google result pages and market research."},
+        ],
+        "mcp_server": "configured-tools",
+        "mcp_tool": "bright_data_serp_search",
     },
     "neo4j": {
         "name": "Neo4j Graph",

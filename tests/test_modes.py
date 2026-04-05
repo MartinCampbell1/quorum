@@ -99,9 +99,137 @@ def test_board_check_consensus_is_deterministic(monkeypatch):
 
     result = board.check_consensus(state)
 
-    assert result["consensus_reached"] is True
-    assert result["decision"] == "Deploy on Monday"
+    assert result["consensus_reached"] is False
+    assert result["scrutiny_requested"] is True
     assert result["messages"][0]["phase"] == "consensus_check"
+    scrutiny = board.scrutinize_consensus({**state, **result})
+    assert scrutiny["consensus_reached"] is True
+    assert scrutiny["decision"] == "Deploy on Monday"
+    assert scrutiny["messages"][0]["phase"] == "consensus_scrutiny"
+
+
+def test_board_check_consensus_uses_structured_decision_key(monkeypatch):
+    monkeypatch.setattr(board, "call_agent", _forbidden, raising=False)
+
+    state = {
+        "task": "Pick which project to strengthen first",
+        "agents": [
+            {"role": "chair", "provider": "codex", "system_prompt": "", "tools": []},
+            {"role": "dir_2", "provider": "gemini", "system_prompt": "", "tools": []},
+            {"role": "dir_3", "provider": "codex", "system_prompt": "", "tools": []},
+        ],
+        "messages": [],
+        "positions": [
+            {
+                "director": "chair",
+                "position": "Strengthen GraphRAG first as a paid service.",
+                "reasoning": "Closest to cash.",
+                "action_items": [],
+                "decision_key": "GRAPH_RAG_SERVICE_FIRST",
+            },
+            {
+                "director": "dir_2",
+                "position": "GraphRAG should go first because it is the fastest path to revenue.",
+                "reasoning": "Shorter time to money.",
+                "action_items": [],
+                "decision_key": "GRAPH_RAG_SERVICE_FIRST",
+            },
+            {
+                "director": "dir_3",
+                "position": "Do not pivot. Sell GraphRAG as a service-led intelligence layer first.",
+                "reasoning": "Autopilot can stay internal for now.",
+                "action_items": [],
+                "decision_key": "GRAPH_RAG_SERVICE_FIRST",
+            },
+        ],
+        "vote_round": 1,
+        "max_rounds": 2,
+        "consensus_reached": False,
+        "decision": "",
+        "worker_results": [],
+        "result": "",
+    }
+
+    result = board.check_consensus(state)
+
+    assert result["consensus_reached"] is False
+    assert result["scrutiny_requested"] is True
+    scrutiny = board.scrutinize_consensus({**state, **result})
+    assert scrutiny["consensus_reached"] is True
+    assert scrutiny["decision"] == "Strengthen GraphRAG first as a paid service."
+
+
+def test_board_directors_analyze_retries_meta_reply_with_next_provider(monkeypatch):
+    events: list[tuple[str, str, str]] = []
+
+    class FakeStore:
+        def append_event(self, session_id, event_type, title, detail="", **extra):
+            events.append((event_type, title, detail))
+
+    calls: list[str] = []
+
+    def fake_call_agent_cfg(agent, prompt):
+        calls.append(agent["provider"])
+        if agent["provider"] == "claude":
+            return '{"position":"I need search tool permissions to do proper market research.","reasoning":"","action_items":[]}'
+        return (
+            '{"decision_key":"GRAPH_RAG_SERVICE_FIRST","position":"Sell GraphRAG as a paid diagnostic first.",'
+            '"reasoning":"Fastest path to cash.","action_items":["Define the pilot offer"]}'
+        )
+
+    monkeypatch.setattr(board, "store", FakeStore())
+    monkeypatch.setattr(board, "call_agent_cfg", fake_call_agent_cfg)
+    monkeypatch.setattr(board, "BOARD_PROGRESS_HEARTBEAT_SEC", 999)
+    monkeypatch.setattr(board, "BOARD_MAX_INVALID_ATTEMPTS", 2)
+
+    state = {
+        "task": "Strengthen the GraphRAG project",
+        "agents": [
+            {
+                "role": "product_strengthener",
+                "provider": "claude",
+                "system_prompt": "",
+                "tools": [],
+                "session_id": "sess_test",
+                "session_provider_pool": ["claude", "codex", "gemini"],
+            },
+            {
+                "role": "growth_operator",
+                "provider": "gemini",
+                "system_prompt": "",
+                "tools": [],
+                "session_id": "sess_test",
+                "session_provider_pool": ["claude", "codex", "gemini"],
+            },
+            {
+                "role": "execution_critic",
+                "provider": "codex",
+                "system_prompt": "",
+                "tools": [],
+                "session_id": "sess_test",
+                "session_provider_pool": ["claude", "codex", "gemini"],
+            },
+        ],
+        "messages": [],
+        "user_messages": [],
+        "positions": [],
+        "vote_round": 0,
+        "max_rounds": 3,
+        "consensus_reached": False,
+        "decision": "",
+        "worker_results": [],
+        "result": "",
+    }
+
+    result = board.directors_analyze(state)
+
+    assert result["positions"][0]["decision_key"] == "GRAPH_RAG_SERVICE_FIRST"
+    assert "Reasoning: Fastest path to cash." in result["messages"][0]["content"]
+    assert "Decision key: GRAPH_RAG_SERVICE_FIRST" in result["messages"][0]["content"]
+    assert calls[:2] == ["claude", "codex"]
+    assert any(event_type == "director_invalid" for event_type, _, _ in events)
+    assert any(event_type == "director_started" for event_type, _, _ in events)
+    assert any(event_type == "director_completed" for event_type, _, _ in events)
 
 
 def test_map_reduce_process_chunks_runs_concurrently(monkeypatch):
@@ -339,6 +467,104 @@ def test_tournament_start_round_supports_byes():
     assert result["current_match"]["b"]["role"] == "contestant_2"
 
 
+def test_tournament_start_round_supports_adaptive_pairing_and_repeat_avoidance():
+    state = {
+        "task": "Pick the strongest repo",
+        "agents": [],
+        "messages": [],
+        "user_messages": [],
+        "submissions": [
+            {"role": "contestant_1", "provider": "claude", "workspace_paths": ["/tmp/a"], "project_label": "a"},
+            {"role": "contestant_2", "provider": "codex", "workspace_paths": ["/tmp/b"], "project_label": "b"},
+            {"role": "contestant_3", "provider": "gemini", "workspace_paths": ["/tmp/c"], "project_label": "c"},
+            {"role": "contestant_4", "provider": "gemini", "workspace_paths": ["/tmp/d"], "project_label": "d"},
+            {"role": "contestant_5", "provider": "codex", "workspace_paths": ["/tmp/e"], "project_label": "e"},
+        ],
+        "bracket": [],
+        "config": {
+            "pairing_strategy": "adaptive",
+            "pairing_priors": {"a": 0.92, "b": 0.86, "c": 0.52, "d": 0.5, "e": 0.15},
+        },
+        "current_round": 0,
+        "current_match_index": 0,
+        "current_match_round": 0,
+        "current_match": {},
+        "max_rounds": 5,
+        "winners": [],
+        "champion": {},
+        "match_history": [
+            {
+                "a": {"project_label": "c", "workspace_paths": ["/tmp/c"]},
+                "b": {"project_label": "d", "workspace_paths": ["/tmp/d"]},
+            }
+        ],
+        "match_verdict": "",
+        "judge_action": "",
+        "match_winner": "",
+        "advance_target": "",
+        "result": "",
+    }
+
+    result = tournament.start_round(state)
+
+    assert result["current_round"] == 1
+    assert result["winners"][0]["project_label"] == "a"
+    assert len(result["bracket"]) == 1
+    assert len(result["bracket"][0]) == 2
+    first_pair = {
+        result["current_match"]["a"]["project_label"],
+        result["current_match"]["b"]["project_label"],
+    }
+    assert first_pair == {"b", "c"}
+    second_pair = {
+        result["bracket"][0][1]["a"]["project_label"],
+        result["bracket"][0][1]["b"]["project_label"],
+    }
+    assert second_pair == {"d", "e"}
+
+
+def test_tournament_start_round_uses_archive_cells_to_preserve_diversity():
+    state = {
+        "task": "Pick the strongest repo",
+        "agents": [],
+        "messages": [],
+        "user_messages": [],
+        "submissions": [
+            {"role": "contestant_1", "provider": "claude", "workspace_paths": ["/tmp/a"], "project_label": "a"},
+            {"role": "contestant_2", "provider": "codex", "workspace_paths": ["/tmp/b"], "project_label": "b"},
+            {"role": "contestant_3", "provider": "gemini", "workspace_paths": ["/tmp/c"], "project_label": "c"},
+            {"role": "contestant_4", "provider": "gemini", "workspace_paths": ["/tmp/d"], "project_label": "d"},
+        ],
+        "bracket": [],
+        "config": {
+            "pairing_strategy": "adaptive",
+            "pairing_priors": {"a": 0.91, "b": 0.9, "c": 0.89, "d": 0.12},
+            "pairing_archive_cells": {"a": "developer|low", "b": "developer|low", "c": "security|medium", "d": "ops|high"},
+        },
+        "current_round": 0,
+        "current_match_index": 0,
+        "current_match_round": 0,
+        "current_match": {},
+        "max_rounds": 5,
+        "winners": [],
+        "champion": {},
+        "match_history": [],
+        "match_verdict": "",
+        "judge_action": "",
+        "match_winner": "",
+        "advance_target": "",
+        "result": "",
+    }
+
+    result = tournament.start_round(state)
+
+    first_pair = {
+        result["current_match"]["a"]["project_label"],
+        result["current_match"]["b"]["project_label"],
+    }
+    assert first_pair == {"b", "c"}
+
+
 def test_tournament_match_uses_multi_round_debate_and_judge_control(monkeypatch):
     prompts: list[tuple[str, str]] = []
 
@@ -392,7 +618,7 @@ def test_tournament_match_uses_multi_round_debate_and_judge_control(monkeypatch)
     j1 = tournament.judge_match(j1_state)
 
     assert j1["judge_action"] == "continue"
-    assert j1["current_match"]["rounds"][-1]["judge_note"] == "Both sides need one more concrete comparison."
+    assert "Both sides need one more concrete comparison." in j1["current_match"]["rounds"][-1]["judge_note"]
 
     a2_state = {**j1_state, **j1}
     a2 = tournament.contestant_a_argues(a2_state)
@@ -460,7 +686,7 @@ def test_tournament_judge_accepts_backticked_control_markers(monkeypatch):
 
     assert judged["judge_action"] == "advance"
     assert judged["match_winner"] == "B"
-    assert judged["match_verdict"] == "Winner: B because the evidence is stronger."
+    assert judged["match_verdict"].startswith("Winner: B because the evidence is stronger.")
 
 
 def test_tournament_parallel_stage_spawns_child_sessions_and_aggregates(monkeypatch):
@@ -520,7 +746,7 @@ def test_tournament_parallel_stage_spawns_child_sessions_and_aggregates(monkeypa
         ],
         "messages": [],
         "user_messages": [],
-        "config": {"execution_mode": "parallel", "max_rounds": 3},
+        "config": {"execution_mode": "parallel", "max_rounds": 3, "parallelism_limit": 2},
         "workspace_paths": [],
         "attached_tool_ids": [],
         "submissions": [],
@@ -560,3 +786,116 @@ def test_tournament_parallel_stage_spawns_child_sessions_and_aggregates(monkeypa
     assert [winner["role"] for winner in result["winners"]] == ["contestant_1", "contestant_4"]
     assert len(result["match_history"]) == 2
     assert fake_store.updates[-1][1]["parallel_progress"]["completed"] == 2
+
+
+def test_tournament_parallel_stage_respects_parallelism_limit(monkeypatch):
+    class FakeStore:
+        def __init__(self):
+            self.sessions = {
+                "sess_parent": {
+                    "id": "sess_parent",
+                    "status": "running",
+                }
+            }
+            self.updates: list[tuple[str, dict]] = []
+
+        def update(self, sid: str, **kwargs):
+            self.updates.append((sid, kwargs))
+            current = self.sessions.setdefault(sid, {"id": sid})
+            current.update(kwargs)
+
+        def get(self, sid: str):
+            current = self.sessions.get(sid)
+            if current and sid.startswith("sess_child_") and current.get("status") == "running":
+                current["status"] = "completed"
+                current["result"] = "Winner: A"
+                current["config"] = {
+                    "match_result": {
+                        "winner_token": "A",
+                        "verdict": "Winner: A",
+                    }
+                }
+            return current
+
+    fake_store = FakeStore()
+    spawn_calls: list[dict] = []
+    max_running_at_spawn = 0
+
+    async def fake_run(**kwargs):
+        nonlocal max_running_at_spawn
+        child_id = f"sess_child_{len(spawn_calls) + 1}"
+        running_now = sum(
+            1
+            for session_id, session in fake_store.sessions.items()
+            if session_id.startswith("sess_child_") and session.get("status") == "running"
+        )
+        fake_store.sessions[child_id] = {
+            "id": child_id,
+            "status": "running",
+            "parallel_label": kwargs.get("parallel_label"),
+        }
+        max_running_at_spawn = max(max_running_at_spawn, running_now + 1)
+        spawn_calls.append({"id": child_id, **kwargs})
+        return child_id
+
+    monkeypatch.setattr(engine, "run", fake_run)
+    monkeypatch.setattr(engine, "request_cancel", lambda session_id: True)
+    monkeypatch.setattr(tournament, "store", fake_store)
+
+    state = {
+        "session_id": "sess_parent",
+        "mode": "tournament",
+        "task": "Pick the strongest project",
+        "agents": [
+            {"role": "contestant_1", "provider": "claude", "system_prompt": "", "tools": [], "workspace_paths": ["/tmp/a"]},
+            {"role": "contestant_2", "provider": "codex", "system_prompt": "", "tools": [], "workspace_paths": ["/tmp/b"]},
+            {"role": "contestant_3", "provider": "gemini", "system_prompt": "", "tools": [], "workspace_paths": ["/tmp/c"]},
+            {"role": "contestant_4", "provider": "claude", "system_prompt": "", "tools": [], "workspace_paths": ["/tmp/d"]},
+            {"role": "contestant_5", "provider": "codex", "system_prompt": "", "tools": [], "workspace_paths": ["/tmp/e"]},
+            {"role": "contestant_6", "provider": "gemini", "system_prompt": "", "tools": [], "workspace_paths": ["/tmp/f"]},
+            {"role": "judge", "provider": "gemini", "system_prompt": "", "tools": [], "workspace_paths": []},
+        ],
+        "messages": [],
+        "user_messages": [],
+        "config": {"execution_mode": "parallel", "max_rounds": 3, "parallelism_limit": 1},
+        "workspace_paths": [],
+        "attached_tool_ids": [],
+        "submissions": [],
+        "bracket": [[
+            {
+                "a": {"role": "contestant_1", "provider": "claude", "system_prompt": "", "tools": [], "workspace_paths": ["/tmp/a"], "project_label": "a"},
+                "b": {"role": "contestant_2", "provider": "codex", "system_prompt": "", "tools": [], "workspace_paths": ["/tmp/b"], "project_label": "b"},
+            },
+            {
+                "a": {"role": "contestant_3", "provider": "gemini", "system_prompt": "", "tools": [], "workspace_paths": ["/tmp/c"], "project_label": "c"},
+                "b": {"role": "contestant_4", "provider": "claude", "system_prompt": "", "tools": [], "workspace_paths": ["/tmp/d"], "project_label": "d"},
+            },
+            {
+                "a": {"role": "contestant_5", "provider": "codex", "system_prompt": "", "tools": [], "workspace_paths": ["/tmp/e"], "project_label": "e"},
+                "b": {"role": "contestant_6", "provider": "gemini", "system_prompt": "", "tools": [], "workspace_paths": ["/tmp/f"], "project_label": "f"},
+            },
+        ]],
+        "current_round": 1,
+        "current_stage_label": "QF",
+        "current_match_index": 0,
+        "current_match_round": 0,
+        "current_match": {},
+        "max_rounds": 3,
+        "winners": [],
+        "champion": {},
+        "match_history": [],
+        "match_verdict": "",
+        "judge_action": "",
+        "match_winner": "",
+        "advance_target": "",
+        "result": "",
+        "parallel_stage_children": [],
+        "parallel_stage_group_id": "",
+    }
+
+    result = asyncio.run(tournament.run_parallel_stage(state))
+
+    assert len(spawn_calls) == 3
+    assert max_running_at_spawn == 1
+    assert result["advance_target"] == "start_round"
+    assert len(result["match_history"]) == 3

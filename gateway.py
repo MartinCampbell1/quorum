@@ -36,15 +36,17 @@ import tempfile
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Optional
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from orchestrator.models import capability_for_tool
+from orchestrator.tools.security import tool_requires_guarded_wrapper, tool_runtime_allowed
 from orchestrator.tool_configs import (
     ToolConfig,
     codex_native_http_mcp_bearer_token,
@@ -85,10 +87,12 @@ DEFAULT_TIMEOUT = int(os.getenv("MULTI_AGENT_CLI_TIMEOUT_SEC", "3000"))
 COOLDOWN_SECONDS = 300  # 5 минут кулдаун после rate limit
 PROFILE_ACQUIRE_WAIT_SECONDS = float(os.getenv("MULTI_AGENT_PROFILE_WAIT_SEC", "45"))
 DEFAULT_STALL_TIMEOUT = int(os.getenv("MULTI_AGENT_CLI_STALL_TIMEOUT_SEC", "420"))
+DEFAULT_CLAUDE_STALL_TIMEOUT = int(os.getenv("MULTI_AGENT_CLAUDE_STALL_TIMEOUT_SEC", "0"))
 
 # Рабочая директория по умолчанию
 DEFAULT_WORKDIR = REAL_HOME
 DEFAULT_GATEWAY_HOST = os.getenv("GATEWAY_HOST", "127.0.0.1")
+DEFAULT_GATEWAY_PORT = int(os.getenv("GATEWAY_PORT", "8800"))
 
 
 def _parse_csv_env(name: str, default: list[str]) -> list[str]:
@@ -145,6 +149,8 @@ class Profile:
     last_failure_at: float = 0
     last_checked_at: float = 0
     in_flight: bool = False
+    active_leases: int = 0
+    max_parallel_leases: int = 1
 
 
 @dataclass
@@ -160,6 +166,19 @@ class ProfilePool:
             if not profile.is_available and now >= profile.cooldown_until:
                 profile.is_available = True
                 profile.consecutive_errors = 0
+                profile.cooldown_until = 0
+
+    @staticmethod
+    def _lease_profile_locked(profile: Profile, now: float) -> None:
+        profile.last_used = now
+        profile.requests_made += 1
+        profile.active_leases += 1
+        profile.in_flight = profile.active_leases > 0
+
+    @staticmethod
+    def _release_profile_locked(profile: Profile) -> None:
+        profile.active_leases = max(int(profile.active_leases or 0) - 1, 0)
+        profile.in_flight = profile.active_leases > 0
 
     def _next_profile_locked(self, now: float) -> Optional[Profile]:
         self._restore_cooled_profiles_locked(now)
@@ -167,11 +186,10 @@ class ProfilePool:
         for i in range(len(self.profiles)):
             idx = (self._index + i) % len(self.profiles)
             profile = self.profiles[idx]
-            if profile.is_available and not profile.in_flight:
+            max_parallel = max(int(getattr(profile, "max_parallel_leases", 1) or 1), 1)
+            if profile.is_available and profile.active_leases < max_parallel:
                 self._index = (idx + 1) % len(self.profiles)
-                profile.last_used = now
-                profile.requests_made += 1
-                profile.in_flight = True
+                self._lease_profile_locked(profile, now)
                 return profile
 
         return None
@@ -185,10 +203,12 @@ class ProfilePool:
                 "label": p.label,
                 "identity": p.identity or None,
                 "display_name": p.label or p.identity or p.name,
-                "available": p.is_available and not p.in_flight and p.auth_state != "error",
+                "available": p.is_available and p.active_leases < max(int(getattr(p, "max_parallel_leases", 1) or 1), 1) and p.auth_state != "error",
                 "auth_state": p.auth_state,
                 "requests_made": p.requests_made,
-                "in_flight": p.in_flight,
+                "in_flight": p.active_leases > 0,
+                "active_leases": p.active_leases,
+                "max_parallel_leases": max(int(getattr(p, "max_parallel_leases", 1) or 1), 1),
                 "last_error": p.last_error or None,
                 "last_failure_at": round(p.last_failure_at) if p.last_failure_at else None,
                 "last_used_at": round(p.last_used) if p.last_used else None,
@@ -233,7 +253,7 @@ class ProfilePool:
     async def mark_rate_limited(self, profile: Profile, reason: str | None = None):
         """Пометить профиль как rate-limited."""
         async with self._lock:
-            profile.in_flight = False
+            self._release_profile_locked(profile)
             profile.is_available = False
             profile.consecutive_errors += 1
             if reason:
@@ -249,16 +269,18 @@ class ProfilePool:
     async def mark_success(self, profile: Profile):
         """Сбросить счетчик ошибок при успехе."""
         async with self._lock:
-            profile.in_flight = False
-            profile.consecutive_errors = 0
-            profile.last_error = ""
+            self._release_profile_locked(profile)
+            if profile.is_available:
+                profile.consecutive_errors = 0
+                profile.last_error = ""
             profile.last_checked_at = time.time()
-            profile.auth_state = "verified"
+            if profile.auth_state != "error":
+                profile.auth_state = "verified"
 
     async def mark_failure(self, profile: Profile, reason: str | None = None):
         """Release an in-flight lease after a non-rate-limit failure."""
         async with self._lock:
-            profile.in_flight = False
+            self._release_profile_locked(profile)
             if reason:
                 profile.last_error = reason.strip()[:400]
                 profile.last_failure_at = time.time()
@@ -266,7 +288,7 @@ class ProfilePool:
 
     async def release(self, profile: Profile):
         async with self._lock:
-            profile.in_flight = False
+            self._release_profile_locked(profile)
 
     def status(self) -> list[dict]:
         now = time.time()
@@ -379,6 +401,7 @@ def discover_profiles():
                 path=str(acc_dir),
                 label=get_account_label(PROFILES_DIR, provider, acc_dir.name),
                 identity=_profile_identity_hint(provider, acc_dir),
+                max_parallel_leases=_default_max_parallel_leases(provider),
             ))
 
         if pool.profiles:
@@ -390,6 +413,7 @@ def build_env(profile: Profile) -> dict:
     env = os.environ.copy()
 
     if profile.provider == "gemini":
+        _ensure_gemini_auth_settings(Path(profile.path) / "home")
         env["HOME"] = os.path.join(profile.path, "home")
         # Обязательно сохранить рабочий PATH
         env["PATH"] = ":".join([
@@ -425,12 +449,92 @@ def build_env(profile: Profile) -> dict:
             env.get("PATH", ""),
         ])
 
-    return env
+    return sanitize_provider_env(profile.provider, env, managed_profile=True)
+
+
+def _default_max_parallel_leases(provider: str) -> int:
+    normalized = str(provider or "").strip().lower()
+    env_key = f"MULTI_AGENT_{normalized.upper()}_MAX_PARALLEL_PER_ACCOUNT" if normalized else ""
+    if env_key:
+        raw = os.getenv(env_key, "").strip()
+        if raw:
+            try:
+                return max(int(raw), 1)
+            except ValueError:
+                pass
+    defaults = {
+        "claude": 2,
+        "gemini": 1,
+        "codex": 1,
+        "minimax": 1,
+    }
+    return defaults.get(normalized, 1)
+
+
+def _ensure_gemini_auth_settings(home_dir: Path) -> None:
+    gemini_dir = home_dir / ".gemini"
+    settings_path = gemini_dir / "settings.json"
+    oauth_path = gemini_dir / "oauth_creds.json"
+    if not oauth_path.exists():
+        return
+
+    data: dict
+    try:
+        if settings_path.exists():
+            data = json.loads(settings_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = {}
+        else:
+            data = {}
+    except (OSError, json.JSONDecodeError):
+        data = {}
+
+    security = data.setdefault("security", {})
+    if not isinstance(security, dict):
+        security = {}
+        data["security"] = security
+    auth = security.setdefault("auth", {})
+    if not isinstance(auth, dict):
+        auth = {}
+        security["auth"] = auth
+    selected_type = str(auth.get("selectedType", "")).strip()
+    if selected_type:
+        return
+
+    auth["selectedType"] = "oauth-personal"
+    try:
+        gemini_dir.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        return
 
 
 def default_env() -> dict:
     """Environment по умолчанию (без подмены HOME)."""
     return os.environ.copy()
+
+
+CLAUDE_TRANSIENT_ENV_KEYS = (
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_SESSION",
+    "CLAUDE_CODE_PARENT_SESSION",
+)
+CLAUDE_MANAGED_PROFILE_ENV_KEYS = (
+    *CLAUDE_TRANSIENT_ENV_KEYS,
+    "ANTHROPIC_API_KEY",
+)
+
+
+def sanitize_provider_env(provider: str, env: dict, *, managed_profile: bool = False) -> dict:
+    """Strip parent-process env that can confuse provider CLIs."""
+    sanitized = dict(env)
+    keys_to_remove: tuple[str, ...] = ()
+    if provider == "claude":
+        keys_to_remove = CLAUDE_MANAGED_PROFILE_ENV_KEYS if managed_profile else CLAUDE_TRANSIENT_ENV_KEYS
+    for key in keys_to_remove:
+        sanitized.pop(key, None)
+    return sanitized
 
 
 async def probe_profile(profile: Profile, timeout: int = 25) -> None:
@@ -461,7 +565,12 @@ async def probe_profile(profile: Profile, timeout: int = 25) -> None:
         return
 
     try:
-        stdout, stderr, rc = await run_cli(cmd, DEFAULT_WORKDIR, timeout, env)
+        stdout, stderr, rc = await run_cli(
+            cmd,
+            workdir=DEFAULT_WORKDIR,
+            timeout=timeout,
+            env=env,
+        )
     except Exception as exc:
         profile.auth_state = "error"
         profile.is_available = False
@@ -587,8 +696,30 @@ RATE_LIMIT_PATTERNS = [
 ]
 
 
+def _strip_allowed_claude_rate_limit_events(text: str) -> str:
+    filtered_lines: list[str] = []
+    for raw_line in str(text or "").splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            filtered_lines.append(raw_line)
+            continue
+        if not isinstance(payload, dict) or payload.get("type") != "rate_limit_event":
+            filtered_lines.append(raw_line)
+            continue
+        info = payload.get("rate_limit_info")
+        status = str(info.get("status", "")).strip().lower() if isinstance(info, dict) else ""
+        if status == "allowed":
+            continue
+        filtered_lines.append(raw_line)
+    return "\n".join(filtered_lines)
+
+
 def is_rate_limited(text: str) -> bool:
-    lower = text.lower()
+    lower = _strip_allowed_claude_rate_limit_events(text).lower()
     return any(p in lower for p in RATE_LIMIT_PATTERNS)
 
 
@@ -663,6 +794,129 @@ def resolve_stall_timeout(timeout: int | None) -> int | None:
     return resolved
 
 
+def effective_stall_timeout(provider: str, stall_timeout: int | None) -> int | None:
+    """Allow provider-specific stall defaults without changing explicit overrides."""
+    if stall_timeout is not None:
+        return stall_timeout
+    if provider == "claude":
+        return DEFAULT_CLAUDE_STALL_TIMEOUT
+    return None
+
+
+def _slugify_log_part(value: str | None, fallback: str) -> str:
+    rendered = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "").strip()).strip("._")
+    return rendered or fallback
+
+
+def _command_preview(cmd: list[str]) -> list[str]:
+    preview: list[str] = []
+    redact_next = False
+    for part in cmd:
+        if redact_next:
+            preview.append(f"<redacted:{len(part)} chars>")
+            redact_next = False
+            continue
+        preview.append(part if len(part) <= 240 else f"{part[:240]}...<{len(part)} chars>")
+        if part in {"-p", "--system-prompt", "--append-system-prompt"}:
+            redact_next = True
+    return preview
+
+
+def _append_jsonl(path: str | None, payload: dict) -> None:
+    if not path:
+        return
+    try:
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False)
+            handle.write("\n")
+    except OSError:
+        return
+
+
+def append_runtime_event(path: str | None, event_type: str, title: str, detail: str = "", **extra) -> None:
+    _append_jsonl(
+        path,
+        {
+            "type": event_type,
+            "title": title,
+            "detail": detail,
+            **extra,
+        },
+    )
+
+
+def append_process_log(path: str | None, event: str, **payload) -> None:
+    _append_jsonl(
+        path,
+        {
+            "timestamp": time.time(),
+            "event": event,
+            **payload,
+        },
+    )
+
+
+def _provider_log_path(
+    session_id: str | None,
+    provider: str,
+    agent_role: str | None,
+    profile_name: str | None,
+) -> str:
+    logs_dir = Path(REAL_HOME) / ".multi-agent" / "provider_logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    sid = _slugify_log_part(session_id, "adhoc")
+    role = _slugify_log_part(agent_role, "agent")
+    profile = _slugify_log_part(profile_name, "default")
+    return str(logs_dir / f"{sid}__{provider}__{role}__{profile}__{timestamp}__{uuid4().hex[:8]}.jsonl")
+
+
+def _claude_stream_payloads(text: str) -> list[dict]:
+    payloads: list[dict] = []
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            data = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            payloads.append(data)
+    if payloads:
+        return payloads
+    fallback = _extract_json_payload(text)
+    return [fallback] if isinstance(fallback, dict) else []
+
+
+def _parse_claude_output(stdout: str) -> str:
+    payloads = _claude_stream_payloads(stdout)
+    for payload in reversed(payloads):
+        result = str(payload.get("result", "")).strip()
+        if result:
+            return strip_runtime_warning_prefix(result)
+
+    assistant_parts: list[str] = []
+    for payload in payloads:
+        if payload.get("type") != "assistant":
+            continue
+        message = payload.get("message")
+        if not isinstance(message, dict):
+            continue
+        for item in message.get("content", []) if isinstance(message.get("content"), list) else []:
+            if isinstance(item, dict) and item.get("type") == "text":
+                text = str(item.get("text", "")).strip()
+                if text:
+                    assistant_parts.append(text)
+
+    if assistant_parts:
+        return strip_runtime_warning_prefix("\n\n".join(assistant_parts))
+
+    return strip_runtime_warning_prefix(stdout)
+
+
 # =========================================================================
 #  CLI RUNNERS
 # =========================================================================
@@ -673,6 +927,7 @@ async def run_cli(
     timeout: int | None = DEFAULT_TIMEOUT,
     stall_timeout: int | None = None,
     env: dict = None,
+    log_path: str | None = None,
 ) -> tuple[str, str, int]:
     """Запустить CLI команду, вернуть (stdout, stderr, returncode)."""
     stall_timeout = resolve_stall_timeout(stall_timeout)
@@ -686,8 +941,17 @@ async def run_cli(
     stdout_chunks: list[bytes] = []
     stderr_chunks: list[bytes] = []
     last_activity_at = time.time()
+    append_process_log(
+        log_path,
+        "spawn",
+        cmd=_command_preview(cmd),
+        cwd=workdir or DEFAULT_WORKDIR,
+        stall_timeout=stall_timeout,
+        timeout=timeout,
+        pid=proc.pid,
+    )
 
-    async def _drain_stream(stream, sink: list[bytes]) -> None:
+    async def _drain_stream(stream, sink: list[bytes], stream_name: str) -> None:
         nonlocal last_activity_at
         while True:
             chunk = await stream.read(4096)
@@ -695,12 +959,19 @@ async def run_cli(
                 return
             sink.append(chunk)
             last_activity_at = time.time()
+            append_process_log(
+                log_path,
+                "stream",
+                stream=stream_name,
+                chunk=chunk.decode("utf-8", errors="replace"),
+            )
 
-    stdout_task = asyncio.create_task(_drain_stream(proc.stdout, stdout_chunks))
-    stderr_task = asyncio.create_task(_drain_stream(proc.stderr, stderr_chunks))
+    stdout_task = asyncio.create_task(_drain_stream(proc.stdout, stdout_chunks, "stdout"))
+    stderr_task = asyncio.create_task(_drain_stream(proc.stderr, stderr_chunks, "stderr"))
     wait_task = asyncio.create_task(proc.wait())
 
-    async def _terminate_process() -> None:
+    async def _terminate_process(reason: str) -> None:
+        append_process_log(log_path, "terminate", reason=reason, pid=proc.pid)
         if proc.returncode is None:
             proc.kill()
         with contextlib.suppress(ProcessLookupError):
@@ -714,11 +985,18 @@ async def run_cli(
 
             now = time.time()
             if timeout is not None and now - started_at >= timeout:
-                await _terminate_process()
+                append_process_log(log_path, "timeout", elapsed_sec=round(now - started_at, 2))
+                await _terminate_process(f"timeout_after_{timeout}s")
                 raise HTTPException(408, f"Timeout after {timeout}s")
 
             if stall_timeout is not None and now - last_activity_at >= stall_timeout:
-                await _terminate_process()
+                append_process_log(
+                    log_path,
+                    "stall",
+                    idle_sec=round(now - last_activity_at, 2),
+                    elapsed_sec=round(now - started_at, 2),
+                )
+                await _terminate_process(f"stall_after_{stall_timeout}s")
                 raise HTTPException(408, f"CLI stalled after {stall_timeout}s without stdout/stderr activity")
 
             await asyncio.sleep(0.25)
@@ -726,6 +1004,13 @@ async def run_cli(
         await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
         if not wait_task.done():
             await asyncio.gather(wait_task, return_exceptions=True)
+        append_process_log(
+            log_path,
+            "exit",
+            returncode=proc.returncode,
+            stdout_bytes=sum(len(chunk) for chunk in stdout_chunks),
+            stderr_bytes=sum(len(chunk) for chunk in stderr_chunks),
+        )
 
     return (
         b"".join(stdout_chunks).decode("utf-8", errors="replace"),
@@ -799,7 +1084,7 @@ def _runtime_event_stream_path(session_id: str | None) -> str | None:
 def _bridge_tool_definition(tool_id: str) -> dict | None:
     canonical = normalize_tool_id(tool_id)
     configured = tool_config_store.get(canonical)
-    if configured and configured.enabled:
+    if configured and tool_runtime_allowed(configured):
         return configured.model_dump()
 
     builtin_bridge_tools = {
@@ -844,7 +1129,9 @@ def _registered_server_definition(provider: str, server_name: str) -> dict | Non
         return definition
 
     configured = tool_config_store.get(server_name)
-    if not configured or not configured.enabled or configured.tool_type != "mcp_server":
+    if not configured or not tool_runtime_allowed(configured) or configured.tool_type != "mcp_server":
+        return None
+    if tool_requires_guarded_wrapper(configured):
         return None
     if capability_for_tool(provider, server_name) != "native":
         return None
@@ -940,9 +1227,9 @@ async def ensure_registered_mcp_servers(
             if server_name not in REGISTERED_MCP_SERVERS:
                 await run_cli(
                     [GEMINI_BIN, "mcp", "remove", "--scope", "user", server_name],
-                    DEFAULT_WORKDIR,
-                    20,
-                    env,
+                    workdir=DEFAULT_WORKDIR,
+                    timeout=20,
+                    env=env,
                 )
             cmd = [GEMINI_BIN, "mcp", "add", "--scope", "user", "--transport", transport]
             if transport == "http":
@@ -980,7 +1267,12 @@ async def ensure_registered_mcp_servers(
                     cmd.extend(["--env", f"{key}={value}"])
                 cmd.extend([server_name, "--", definition["command"], *definition.get("args", [])])
 
-        stdout, stderr, rc = await run_cli(cmd, DEFAULT_WORKDIR, 20, env)
+        stdout, stderr, rc = await run_cli(
+            cmd,
+            workdir=DEFAULT_WORKDIR,
+            timeout=20,
+            env=env,
+        )
         combined = f"{stdout}\n{stderr}".lower()
         if rc == 0 or "already" in combined or "exists" in combined:
             BOOTSTRAPPED_MCP_SERVERS.add(cache_key)
@@ -1016,9 +1308,9 @@ def build_mcp_config(tool_keys: list[str]) -> tuple[str | None, list[str]]:
         from orchestrator.tool_configs import normalize_tool_id, tool_config_store
         for tool_id in tool_keys:
             tc = tool_config_store.get(normalize_tool_id(tool_id))
-            if not tc or not tc.enabled:
+            if not tc or not tool_runtime_allowed(tc):
                 continue
-            if tc.tool_type == "mcp_server":
+            if tc.tool_type == "mcp_server" and not tool_requires_guarded_wrapper(tc):
                 transport = tc.config.get("transport", "").strip().lower() or "stdio"
                 if transport == "http":
                     url = tc.config.get("url", "").strip()
@@ -1086,10 +1378,13 @@ def resolve_mcp_servers(tool_keys: list[str] | None) -> list[str]:
         for raw_key in tool_keys or []:
             tool_id = normalize_tool_id(raw_key)
             configured_tool = tool_config_store.get(tool_id)
-            if not configured_tool or not configured_tool.enabled:
+            if not configured_tool or not tool_runtime_allowed(configured_tool):
                 continue
             if configured_tool.tool_type == "mcp_server":
-                needed_servers.add(configured_tool.id)
+                if tool_requires_guarded_wrapper(configured_tool):
+                    needed_servers.add("configured-tools")
+                else:
+                    needed_servers.add(configured_tool.id)
             elif not is_builtin_tool_instance(configured_tool.id):
                 needed_servers.add("configured-tools")
     except ImportError:
@@ -1109,7 +1404,7 @@ def build_cmd(
     """Собрать команду для CLI."""
     workspace_paths = [path for path in (workspace_paths or []) if path]
     if provider == "claude":
-        cmd = [CLAUDE_BIN, "-p", prompt, "--output-format", "json"]
+        cmd = [CLAUDE_BIN, "-p", prompt, "--output-format", "stream-json", "--verbose"]
         if model:
             cmd.extend(["--model", model])
         if workspace_paths:
@@ -1145,11 +1440,7 @@ def build_cmd(
 def parse_output(provider: str, stdout: str) -> str:
     """Извлечь чистый текст из CLI output."""
     if provider == "claude":
-        try:
-            data = json.loads(stdout)
-            return strip_runtime_warning_prefix(data.get("result", stdout))
-        except json.JSONDecodeError:
-            return strip_runtime_warning_prefix(stdout)
+        return _parse_claude_output(stdout)
 
     # codex exec: clean response goes to stdout, metadata to stderr
     # gemini: plain text to stdout
@@ -1182,6 +1473,7 @@ async def call_agent(
     model: str = None,
     system_prompt: str = None,
     timeout: int | None = DEFAULT_TIMEOUT,
+    stall_timeout: int | None = None,
     mcp_tools: list[str] = None,
     workspace_paths: list[str] | None = None,
     session_id: str | None = None,
@@ -1211,8 +1503,9 @@ async def call_agent(
         and configured.tool_type == "mcp_server"
     ]
     allowed_mcp_servers = resolve_mcp_servers(native_tools)
-    bridge_payload_path = build_bridge_payload(provider, bridged_tools) if bridged_tools else None
-    mcp_config_path, mcp_temp_paths = build_mcp_config(native_tools) if provider == "claude" and native_tools else (None, [])
+    bridge_payload_path = build_bridge_payload(provider, bridged_tools) if bridged_tools and provider in {"gemini", "codex"} else None
+    claude_tool_keys = list(dict.fromkeys([*native_tools, *bridged_tools])) if provider == "claude" else []
+    mcp_config_path, mcp_temp_paths = build_mcp_config(claude_tool_keys) if provider == "claude" and claude_tool_keys else (None, [])
     runtime_event_stream_path = _runtime_event_stream_path(session_id)
     temp_codex_home: str | None = None
     try:
@@ -1231,8 +1524,9 @@ async def call_agent(
 
         # Если нет профилей - вызов с дефолтным env
         if not pool or not pool.profiles:
+            process_log_path = _provider_log_path(session_id, provider, agent_role, "default")
             try:
-                env = default_env()
+                env = sanitize_provider_env(provider, default_env())
                 if provider == "codex" and codex_native_external_servers:
                     env, temp_codex_home = prepare_isolated_codex_home(env)
                 if bridge_payload_path:
@@ -1242,10 +1536,38 @@ async def call_agent(
                 if agent_role:
                     env["CONFIGURED_TOOLS_AGENT_ROLE"] = agent_role
                 bootstrap_servers = list(dict.fromkeys(allowed_mcp_servers + (["configured-tools"] if bridge_payload_path and provider in {"gemini", "codex"} else [])))
+                append_runtime_event(
+                    runtime_event_stream_path,
+                    "provider_call_started",
+                    "Provider call started",
+                    f"{provider}/default for {agent_role or 'agent'}.",
+                    provider=provider,
+                    profile="default",
+                    agent_id=agent_role,
+                    process_log_path=process_log_path,
+                )
                 await ensure_registered_mcp_servers(provider, env, bootstrap_servers)
-                stdout, stderr, rc = await run_cli(cmd, workdir, timeout, env)
+                stdout, stderr, rc = await run_cli(
+                    cmd,
+                    workdir=workdir,
+                    timeout=timeout,
+                    stall_timeout=effective_stall_timeout(provider, stall_timeout),
+                    env=env,
+                    log_path=process_log_path,
+                )
                 output = parse_output(provider, stdout)
                 usable_output = has_usable_output(output)
+                append_runtime_event(
+                    runtime_event_stream_path,
+                    "provider_call_finished",
+                    "Provider call finished",
+                    f"{provider}/default completed in {round(time.time() - t0, 2)}s.",
+                    provider=provider,
+                    profile="default",
+                    agent_id=agent_role,
+                    success=bool(rc == 0 and usable_output),
+                    process_log_path=process_log_path,
+                )
                 return {
                     "agent": provider,
                     "profile_used": "default",
@@ -1255,8 +1577,19 @@ async def call_agent(
                     "usable_output": usable_output,
                     "error": output_error_message(provider, stderr, output) if rc != 0 or not usable_output else None,
                     "retries": 0,
+                    "process_log_path": process_log_path,
                 }
             except Exception as e:
+                append_runtime_event(
+                    runtime_event_stream_path,
+                    "provider_call_failed",
+                    "Provider call failed",
+                    f"{provider}/default failed: {str(e)}",
+                    provider=provider,
+                    profile="default",
+                    agent_id=agent_role,
+                    process_log_path=process_log_path,
+                )
                 return {
                     "agent": provider,
                     "profile_used": "default",
@@ -1266,6 +1599,7 @@ async def call_agent(
                     "usable_output": False,
                     "error": str(e),
                     "retries": 0,
+                    "process_log_path": process_log_path,
                 }
 
         # С ротацией
@@ -1309,6 +1643,7 @@ async def call_agent(
                 }
 
             env = build_env(profile)
+            process_log_path = _provider_log_path(session_id, provider, agent_role, profile.name)
             if temp_codex_home:
                 _clear_bootstrap_cache(provider, profile_root=temp_codex_home)
                 shutil.rmtree(temp_codex_home, ignore_errors=True)
@@ -1329,14 +1664,44 @@ async def call_agent(
             )
 
             try:
+                append_runtime_event(
+                    runtime_event_stream_path,
+                    "provider_call_started",
+                    "Provider call started",
+                    f"{provider}/{profile.name} for {agent_role or 'agent'} (attempt {attempt + 1}/{max_attempts}).",
+                    provider=provider,
+                    profile=profile.name,
+                    agent_id=agent_role,
+                    attempt=attempt + 1,
+                    process_log_path=process_log_path,
+                )
                 await ensure_registered_mcp_servers(provider, env, bootstrap_servers)
-                stdout, stderr, rc = await run_cli(cmd, workdir, timeout, env)
+                stdout, stderr, rc = await run_cli(
+                    cmd,
+                    workdir=workdir,
+                    timeout=timeout,
+                    stall_timeout=effective_stall_timeout(provider, stall_timeout),
+                    env=env,
+                    log_path=process_log_path,
+                )
             except Exception as e:
                 error_text = str(e)
                 if should_cooldown_profile(error_text):
                     await pool.mark_rate_limited(profile, error_text)
                 else:
                     await pool.mark_failure(profile, error_text)
+                append_runtime_event(
+                    runtime_event_stream_path,
+                    "provider_call_failed",
+                    "Provider call failed",
+                    f"{provider}/{profile.name} failed: {error_text}",
+                    provider=provider,
+                    profile=profile.name,
+                    agent_id=agent_role,
+                    attempt=attempt + 1,
+                    will_retry=attempt < max_attempts - 1,
+                    process_log_path=process_log_path,
+                )
                 retries += 1
                 print(f"[ROTATE] {provider}/{profile.name} error: {e}")
                 continue
@@ -1345,6 +1710,17 @@ async def call_agent(
 
             if is_rate_limited(combined):
                 await pool.mark_rate_limited(profile, combined.strip() or "Rate limited")
+                append_runtime_event(
+                    runtime_event_stream_path,
+                    "provider_call_rate_limited",
+                    "Provider call rate-limited",
+                    f"{provider}/{profile.name} hit a quota or auth limit and will rotate.",
+                    provider=provider,
+                    profile=profile.name,
+                    agent_id=agent_role,
+                    attempt=attempt + 1,
+                    process_log_path=process_log_path,
+                )
                 retries += 1
                 print(f"[ROTATE] {provider}/{profile.name} rate-limited, switching...")
                 continue
@@ -1358,6 +1734,18 @@ async def call_agent(
 
             if rc != 0 or not usable_output:
                 error_message = output_error_message(provider, stderr, output)
+                append_runtime_event(
+                    runtime_event_stream_path,
+                    "provider_call_failed",
+                    "Provider call failed",
+                    f"{provider}/{profile.name}: {error_message}",
+                    provider=provider,
+                    profile=profile.name,
+                    agent_id=agent_role,
+                    attempt=attempt + 1,
+                    will_retry=attempt < max_attempts - 1,
+                    process_log_path=process_log_path,
+                )
                 if attempt < max_attempts - 1:
                     if should_cooldown_profile(error_message):
                         await pool.mark_rate_limited(profile, error_message)
@@ -1378,9 +1766,22 @@ async def call_agent(
                     "usable_output": usable_output,
                     "error": error_message,
                     "retries": retries,
+                    "process_log_path": process_log_path,
                 }
 
             await pool.mark_success(profile)
+            append_runtime_event(
+                runtime_event_stream_path,
+                "provider_call_finished",
+                "Provider call finished",
+                f"{provider}/{profile.name} completed in {round(time.time() - t0, 2)}s.",
+                provider=provider,
+                profile=profile.name,
+                agent_id=agent_role,
+                attempt=attempt + 1,
+                success=True,
+                process_log_path=process_log_path,
+            )
 
             return {
                 "agent": provider,
@@ -1391,6 +1792,7 @@ async def call_agent(
                 "usable_output": True,
                 "error": None,
                 "retries": retries,
+                "process_log_path": process_log_path,
             }
 
         return {
@@ -1464,6 +1866,7 @@ class AgentRequest(BaseModel):
     model: Optional[str] = None
     system_prompt: Optional[str] = None
     timeout: Optional[int] = DEFAULT_TIMEOUT
+    stall_timeout: Optional[int] = None
     mcp_tools: Optional[list[str]] = None
     workspace_paths: Optional[list[str]] = None
     session_id: Optional[str] = None
@@ -1619,21 +2022,21 @@ async def ep_accounts_update(provider: str, account_name: str, req: AccountLabel
 @app.post("/claude")
 async def ep_claude(req: AgentRequest):
     return await call_agent("claude", req.prompt, req.workdir, req.model,
-                            req.system_prompt, req.timeout,
+                            req.system_prompt, req.timeout, req.stall_timeout,
                             mcp_tools=req.mcp_tools, workspace_paths=req.workspace_paths,
                             session_id=req.session_id, agent_role=req.agent_role)
 
 @app.post("/gemini")
 async def ep_gemini(req: AgentRequest):
     return await call_agent("gemini", req.prompt, req.workdir, req.model,
-                            req.system_prompt, req.timeout,
+                            req.system_prompt, req.timeout, req.stall_timeout,
                             mcp_tools=req.mcp_tools, workspace_paths=req.workspace_paths,
                             session_id=req.session_id, agent_role=req.agent_role)
 
 @app.post("/codex")
 async def ep_codex(req: AgentRequest):
     return await call_agent("codex", req.prompt, req.workdir, req.model,
-                            req.system_prompt, req.timeout,
+                            req.system_prompt, req.timeout, req.stall_timeout,
                             mcp_tools=req.mcp_tools, workspace_paths=req.workspace_paths,
                             session_id=req.session_id, agent_role=req.agent_role)
 
@@ -1642,7 +2045,7 @@ async def ep_ask(req: AgentRequest):
     if not req.agent:
         raise HTTPException(400, "Specify 'agent': 'claude' | 'gemini' | 'codex'")
     return await call_agent(req.agent, req.prompt, req.workdir, req.model,
-                            req.system_prompt, req.timeout,
+                            req.system_prompt, req.timeout, req.stall_timeout,
                             mcp_tools=req.mcp_tools, workspace_paths=req.workspace_paths,
                             session_id=req.session_id, agent_role=req.agent_role)
 
@@ -1848,4 +2251,4 @@ app.include_router(orchestrate_router)
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host=DEFAULT_GATEWAY_HOST, port=8800)
+    uvicorn.run(app, host=DEFAULT_GATEWAY_HOST, port=DEFAULT_GATEWAY_PORT)

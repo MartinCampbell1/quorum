@@ -170,7 +170,7 @@ def test_scenarios_endpoint_returns_personal_catalog():
 
     assert response.status_code == 200
     payload = response.json()
-    assert {"repo_audit", "pattern_mining", "news_context", "portfolio_pivot_lab", "project_strengthening_lab", "consensus_vote", "structured_debate", "strategy_review", "project_tournament"} == {
+    assert {"repo_audit", "pattern_mining", "news_context", "portfolio_pivot_lab", "project_strengthening_lab", "project_monetization_lab", "consensus_vote", "structured_debate", "strategy_review", "layered_idea_lab", "project_tournament"} == {
         item["id"] for item in payload
     }
 
@@ -188,7 +188,16 @@ def test_scenarios_endpoint_covers_all_primary_wizard_modes():
 
     assert response.status_code == 200
     modes = {item["mode"] for item in response.json()}
-    assert {"dictator", "board", "democracy", "debate", "map_reduce", "creator_critic", "tournament"}.issubset(modes)
+    assert {"dictator", "board", "democracy", "debate", "map_reduce", "creator_critic", "moa", "tournament"}.issubset(modes)
+
+
+def test_tool_types_endpoint_includes_bright_data_serp():
+    response = client.get("/orchestrate/settings/tools/types")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "bright_data_serp" in payload
+    assert payload["bright_data_serp"]["name"] == "Bright Data SERP"
 
 
 def test_run_accepts_agent_specific_workspace_paths():
@@ -344,6 +353,32 @@ def test_settings_tools_api_rejects_builtin_tool_override():
     assert "cannot be replaced" in response.json()["detail"]
 
 
+def test_settings_tools_listing_exposes_guardrail_posture():
+    tool = ToolConfig(
+        id="guarded_remote_tool",
+        name="Guarded Remote Tool",
+        tool_type="mcp_server",
+        icon="🔌",
+        config={"transport": "stdio", "command": "uvx", "args": "repomix"},
+        enabled=True,
+        guardrail_status="warn",
+        last_guardrail_report={"summary": "Code-launcher binary detected"},
+        wrapper_mode="guarded",
+        trust_level="untrusted",
+    )
+    tool_config_store.add(tool)
+
+    try:
+        response = client.get("/orchestrate/settings/tools")
+        assert response.status_code == 200
+        payload = next(item for item in response.json() if item["id"] == "guarded_remote_tool")
+        assert payload["guardrail_status"] == "warn"
+        assert payload["wrapper_mode"] == "guarded"
+        assert payload["trust_level"] == "untrusted"
+    finally:
+        tool_config_store.delete("guarded_remote_tool")
+
+
 def test_run_rejects_scenario_mode_mismatch():
     response = client.post(
         "/orchestrate/run",
@@ -486,6 +521,107 @@ def test_session_endpoint_exposes_runtime_state_flags():
     assert runtime_state["reasons"]["branch_from_checkpoint"]["code"] == "checkpoint_runtime_unavailable"
 
 
+def test_session_endpoint_exposes_topology_state_from_config():
+    session_id = store.create(
+        "creator_critic",
+        "Topology-aware snapshot",
+        [
+            AgentConfig(role="creator", provider="claude", tools=[]),
+            AgentConfig(role="critic", provider="codex", tools=[]),
+        ],
+        {
+            "topology_state": {
+                "search_id": "search_test",
+                "generated_at": 1.0,
+                "class_key": "creator_critic:default:developer_tooling:high",
+                "selected_template": "branch_merge",
+                "selected_execution_mode": "parallel",
+                "chosen_reason": "Branch-and-merge keeps multiple lines alive before synthesis.",
+                "task_profile": {
+                    "domain_key": "developer_tooling",
+                    "complexity": "high",
+                    "uncertainty": 0.78,
+                    "coordination_need": 0.73,
+                    "delivery_pressure": 0.41,
+                    "reasoning_depth": 0.68,
+                    "recommended_execution_mode": "parallel",
+                    "specializations": ["builder", "skeptic"],
+                    "evidence_bias": 0.55,
+                },
+                "team_plan": {
+                    "strategy": "branch_merge",
+                    "quorum_size": 2,
+                    "branch_factor": 2,
+                    "blackboard_enabled": False,
+                    "task_profile": {
+                        "domain_key": "developer_tooling",
+                        "complexity": "high",
+                        "uncertainty": 0.78,
+                        "coordination_need": 0.73,
+                        "delivery_pressure": 0.41,
+                        "reasoning_depth": 0.68,
+                        "recommended_execution_mode": "parallel",
+                        "specializations": ["builder", "skeptic"],
+                        "evidence_bias": 0.55,
+                    },
+                    "role_recommendations": [
+                        {
+                            "role": "creator",
+                            "provider": "claude",
+                            "tools": [],
+                            "expertise_tags": ["builder"],
+                            "importance_score": 0.72,
+                            "believability_score": 0.86,
+                            "origin": "existing",
+                            "rationale": "Creates the initial branch.",
+                        }
+                    ],
+                    "suggested_roles": [],
+                    "notes": ["Heuristic topology selection."],
+                },
+                "graph_optimization": {
+                    "selected_template": "branch_merge",
+                    "recommended_execution_mode": "parallel",
+                    "estimated_parallelism": 2,
+                    "branch_factor": 2,
+                    "blackboard_enabled": False,
+                    "node_weights": [],
+                    "edge_weights": [],
+                    "optimization_notes": ["Planning and evaluation stay hot for branching."],
+                },
+                "routing_plan": {
+                    "route_family": "branch_merge",
+                    "recommended_execution_mode": "parallel",
+                    "branch_merge_enabled": True,
+                    "blackboard_enabled": False,
+                    "route_reasons": ["Bounded branches merge into synthesis."],
+                    "opportunistic_roles": [],
+                    "branch_lines": [],
+                },
+                "candidates": [
+                    {
+                        "candidate_id": "cand_1",
+                        "template": "branch_merge",
+                        "score": 0.88,
+                        "recommended_execution_mode": "parallel",
+                        "strengths": ["Preserves alternative lines longer."],
+                        "risks": [],
+                        "estimated_parallelism": 2,
+                    }
+                ],
+            }
+        },
+    )
+
+    response = client.get(f"/orchestrate/session/{session_id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["topology_state"]["selected_template"] == "branch_merge"
+    assert payload["topology_state"]["graph_optimization"]["estimated_parallelism"] == 2
+    assert payload["config"]["topology_state"]["class_key"] == "creator_critic:default:developer_tooling:high"
+
+
 def test_sessions_list_exposes_runtime_state_flags():
     session_id = store.create(
         "dictator",
@@ -504,6 +640,97 @@ def test_sessions_list_exposes_runtime_state_flags():
     payload = next(item for item in response.json() if item["id"] == session_id)
     assert payload["runtime_state"]["has_checkpoints"] is True
     assert payload["runtime_state"]["can_branch_from_checkpoint"] is False
+
+
+def test_session_runtime_state_marks_terminal_only_checkpoint_sessions_uncontinuable():
+    session_id = store.create(
+        "debate",
+        "Terminal-only branch",
+        [
+            AgentConfig(role="proponent", provider="claude", tools=[]),
+            AgentConfig(role="opponent", provider="codex", tools=[]),
+            AgentConfig(role="judge", provider="gemini", tools=[]),
+        ],
+        {},
+    )
+    store.update(session_id, status="completed", current_checkpoint_id="cp_1")
+    store.add_checkpoint(
+        session_id,
+        {
+            "id": "cp_1",
+            "timestamp": 1.0,
+            "next_node": None,
+            "status": "terminal",
+            "result_preview": "Stale verdict",
+            "graph_checkpoint_id": "graph_cp_terminal",
+        },
+    )
+
+    with patch("orchestrator.api.has_checkpoint_runtime", return_value=True):
+        response = client.get(f"/orchestrate/session/{session_id}")
+
+    assert response.status_code == 200
+    runtime_state = response.json()["runtime_state"]
+    assert runtime_state["has_checkpoints"] is True
+    assert runtime_state["has_branchable_checkpoints"] is False
+    assert runtime_state["can_continue_conversation"] is False
+    assert runtime_state["can_branch_from_checkpoint"] is False
+    assert runtime_state["reasons"]["continue_conversation"]["code"] == "checkpoint_terminal_only"
+    assert runtime_state["reasons"]["branch_from_checkpoint"]["code"] == "checkpoint_terminal_only"
+
+
+def test_delete_session_removes_branch_tree():
+    parent_id = store.create(
+        "creator_critic",
+        "Delete me",
+        [
+            AgentConfig(role="creator", provider="claude", tools=[]),
+            AgentConfig(role="critic", provider="codex", tools=[]),
+        ],
+        {},
+    )
+    child_id = store.create(
+        "creator_critic",
+        "Delete child too",
+        [
+            AgentConfig(role="creator", provider="claude", tools=[]),
+            AgentConfig(role="critic", provider="codex", tools=[]),
+        ],
+        {},
+        forked_from=parent_id,
+        forked_checkpoint_id="cp_1",
+    )
+    store.update(parent_id, status="completed")
+    store.update(child_id, status="failed")
+
+    response = client.delete(f"/orchestrate/session/{parent_id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "deleted"
+    assert set(payload["deleted_session_ids"]) == {parent_id, child_id}
+    assert store.get(parent_id) is None
+    assert store.get(child_id) is None
+
+
+def test_delete_session_rejects_active_runs():
+    session_id = store.create(
+        "dictator",
+        "Still running",
+        [
+            AgentConfig(role="director", provider="claude", tools=[]),
+            AgentConfig(role="worker", provider="codex", tools=[]),
+        ],
+        {},
+    )
+
+    response = client.delete(f"/orchestrate/session/{session_id}")
+
+    assert response.status_code == 409
+    payload = response.json()["detail"]
+    assert payload["reason"]["code"] == "session_not_deletable"
+    assert payload["action"] == "delete_session"
+    assert payload["active_sessions"][0]["id"] == session_id
 
 
 def test_cancel_reports_missing_runtime_for_paused_session():

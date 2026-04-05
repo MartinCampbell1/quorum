@@ -15,6 +15,15 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { DebateReplayCard } from "@/components/ideas/DebateReplayCard";
+import { DailyDigest } from "@/components/ideas/DailyDigest";
+import { DaemonStatus } from "@/components/ideas/DaemonStatus";
+import { DiscoveryScoreboard } from "@/components/ideas/DiscoveryScoreboard";
+import { Inbox } from "@/components/ideas/Inbox";
+import { PersonaLab } from "@/components/ideas/PersonaLab";
+import { RankBoard } from "@/components/ideas/RankBoard";
+import { SimulationView } from "@/components/ideas/SimulationView";
+import { SwipeQueue } from "@/components/ideas/SwipeQueue";
 import { cn } from "@/lib/utils";
 import { useLocale } from "@/lib/locale";
 import { useSessions } from "@/hooks/use-sessions";
@@ -51,6 +60,7 @@ const RESEARCH_SCENARIOS = new Set([
   "consensus_vote",
   "structured_debate",
   "strategy_review",
+  "project_monetization_lab",
 ]);
 
 function cloneAgents(agents: AgentConfig[]): AgentConfig[] {
@@ -495,6 +505,10 @@ export function FounderOsBoard({ onSelectSession, onOpenDraftWizard }: FounderOs
                 <FlaskConical className="mr-2 h-4 w-4" />
                 {copy.founderOs.newStrengtheningLab}
               </Button>
+              <Button type="button" variant="outline" onClick={() => openScenarioDraft("project_monetization_lab")} className="h-10 rounded-full">
+                <Rocket className="mr-2 h-4 w-4" />
+                {copy.founderOs.newMonetizationLab}
+              </Button>
               <Button type="button" onClick={() => openScenarioDraft("project_tournament")} className="h-10 rounded-full bg-black text-white hover:bg-black/90">
                 <Swords className="mr-2 h-4 w-4" />
                 {copy.founderOs.newTournament}
@@ -519,6 +533,17 @@ export function FounderOsBoard({ onSelectSession, onOpenDraftWizard }: FounderOs
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto px-8 py-6">
+        <div className="space-y-6 pb-6">
+          <Inbox />
+          <DaemonStatus />
+          <DailyDigest />
+          <PersonaLab />
+          <DiscoveryScoreboard />
+          <SimulationView />
+          <SwipeQueue />
+          <RankBoard />
+          <DebateReplayCard />
+        </div>
         <div className="flex min-h-max items-start gap-4 pb-6">
           <StageShell
             stage="research"
@@ -536,7 +561,7 @@ export function FounderOsBoard({ onSelectSession, onOpenDraftWizard }: FounderOs
                   copy={copy}
                   onOpen={() => onSelectSession(session.id)}
                   onLaunchWinner={
-                    session.active_scenario === "project_strengthening_lab" && session.status === "completed"
+                    (session.active_scenario === "project_strengthening_lab" || session.active_scenario === "project_monetization_lab") && session.status === "completed"
                       ? () => handleLaunchWinner(session.id)
                       : undefined
                   }

@@ -14,6 +14,9 @@ import {
   FolderTree,
   Loader2,
   RefreshCw,
+  Shield,
+  ShieldAlert,
+  ShieldCheck,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -367,6 +370,13 @@ const TOOL_ADD_TYPE_META: Record<
     detail: "Подходит как отдельный research connector. Если нужен любой другой поставщик, используй HTTP API или Custom API.",
     hints: ["Answer-first search", "Подходит для research", "Не ограничивает другие API-интеграции"],
   },
+  bright_data_serp: {
+    eyebrow: "SEARCH",
+    title: "Bright Data SERP",
+    description: "Google SERP и web-fetch через Bright Data как отдельный research connector.",
+    detail: "Это не просто generic POST. Инструмент понимает запросы как search query или URL и годится для более тяжёлого market/web research, чем обычный поиск.",
+    hints: ["Можно импортировать из curl Bright Data", "Подходит для current SERP fetch", "Хорошо работает для research-heavy агентов"],
+  },
   mcp_server: {
     eyebrow: "MCP",
     title: "External MCP Server",
@@ -392,7 +402,7 @@ const TOOL_ADD_GROUPS = [
     id: "search",
     label: "Search Providers",
     description: "Готовые профили для поиска и research-задач.",
-    types: ["brave_search", "perplexity"],
+    types: ["brave_search", "perplexity", "bright_data_serp"],
   },
   {
     id: "advanced",
@@ -590,6 +600,28 @@ function detectCurlDraft(raw: string): ToolAddDraft | null {
     delete headers["content-type"];
 
     const hasBody = bodyParts.length > 0;
+    const bodyText = bodyParts.join("\n");
+    if (parsed.hostname === "api.brightdata.com" && parsed.pathname === "/request" && hasBody) {
+      let parsedBody: Record<string, unknown> | null = null;
+      try {
+        const candidate = JSON.parse(bodyText);
+        if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+          parsedBody = candidate as Record<string, unknown>;
+        }
+      } catch {
+        parsedBody = null;
+      }
+      return {
+        tool_type: "bright_data_serp",
+        name: "Bright Data SERP",
+        config: {
+          api_key: authHeader.replace(/^Bearer\s+/i, "").trim(),
+          zone: String(parsedBody?.zone ?? "serp_api1"),
+          format: String(parsedBody?.format ?? "raw"),
+          description: "Bright Data SERP fetch for current search-result pages and market research. Pass a plain query or full URL.",
+        },
+      };
+    }
     return {
       tool_type: hasBody ? "custom_api" : "http_api",
       name: `${formatHostName(parsed.hostname, "HTTP")} API`,
@@ -600,7 +632,7 @@ function detectCurlDraft(raw: string): ToolAddDraft | null {
             auth_header: authHeader,
             headers_json: Object.keys(headers).length ? JSON.stringify(headers, null, 2) : "",
             content_type: contentType || "application/json",
-            body_template: bodyParts.join("\n"),
+            body_template: bodyText,
             description: "Импортировано из curl. Проверь тело запроса и при необходимости замени значения на шаблонные переменные.",
           }
         : {
@@ -1498,6 +1530,9 @@ export function SettingsView() {
     );
     const validationOk = tool.validation_status === "valid";
     const validationError = tool.validation_status === "invalid";
+    const guardrailBlocked = tool.guardrail_status === "blocked";
+    const guardrailWarn = tool.guardrail_status === "warn";
+    const guardrailSummary = tool.last_guardrail_report?.summary;
 
     return (
       <div
@@ -1528,6 +1563,19 @@ export function SettingsView() {
                 <CheckCircle2 size={13} />
               </span>
             ) : null}
+            {guardrailBlocked ? (
+              <span title="Заблокировано guardrails" className="text-rose-600">
+                <ShieldAlert size={13} />
+              </span>
+            ) : guardrailWarn ? (
+              <span title="Под guarded wrapper" className="text-amber-600">
+                <Shield size={13} />
+              </span>
+            ) : tool.guardrail_status === "safe" ? (
+              <span title="Security scan чистый" className="text-emerald-600">
+                <ShieldCheck size={13} />
+              </span>
+            ) : null}
           </div>
           <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
             <Badge variant="outline" className="border-[#e0e4ec] bg-white px-1.5 py-0 text-[10px] font-normal">
@@ -1539,6 +1587,26 @@ export function SettingsView() {
             {tool.tool_type === "mcp_server" && (
               <Badge variant="outline" className="border-[#e0e4ec] bg-white px-1.5 py-0 text-[10px] font-normal uppercase">
                 {(tool.config.transport || "stdio").toUpperCase()}
+              </Badge>
+            )}
+            {tool.guardrail_status && tool.guardrail_status !== "unknown" && (
+              <Badge
+                variant="outline"
+                className={cn(
+                  "px-1.5 py-0 text-[10px] font-normal uppercase",
+                  guardrailBlocked
+                    ? "border-rose-200 bg-rose-50 text-rose-700"
+                    : guardrailWarn
+                      ? "border-amber-200 bg-amber-50 text-amber-700"
+                      : "border-emerald-200 bg-emerald-50 text-emerald-700"
+                )}
+              >
+                security: {tool.guardrail_status}
+              </Badge>
+            )}
+            {tool.wrapper_mode && tool.wrapper_mode !== "direct" && (
+              <Badge variant="outline" className="border-sky-200 bg-sky-50 px-1.5 py-0 text-[10px] font-normal uppercase text-sky-700">
+                {tool.wrapper_mode}
               </Badge>
             )}
             {compatibilityEntries.map(([provider, capability]) => (
@@ -1567,6 +1635,11 @@ export function SettingsView() {
           {tool.last_validation_result?.log?.length ? (
             <p className="mt-1 text-[11px] text-muted-foreground/70">
               {tool.last_validation_result.log[tool.last_validation_result.log.length - 1]}
+            </p>
+          ) : null}
+          {guardrailSummary ? (
+            <p className={cn("mt-1 text-[11px]", guardrailBlocked ? "text-rose-600" : guardrailWarn ? "text-amber-700" : "text-emerald-700")}>
+              {guardrailSummary}
             </p>
           ) : null}
         </div>

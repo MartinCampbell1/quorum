@@ -1,0 +1,4 @@
+{"server": "configured-tools", "tool": "local_probe", "arguments": {"input": "health"}, "result_preview": "[local_probe] Blocked by guardrails: Prompt injection in tool output", "elapsed_sec": 0.0, "timestamp": 1775120192.621404}
+{"server": "configured-tools", "tool": "local_probe", "arguments": {"input": "health"}, "result_preview": "[local_probe] Blocked by guardrails: Prompt injection in tool output", "elapsed_sec": 0.0, "timestamp": 1775120214.4452538}
+{"server": "configured-tools", "tool": "local_probe", "arguments": {"input": "health"}, "result_preview": "[local_probe] Blocked by guardrails: Prompt injection in tool output", "elapsed_sec": 0.0, "timestamp": 1775121333.677185}
+{"server": "configured-tools", "tool": "local_probe", "arguments": {"input": "health"}, "result_preview": "[local_probe] Blocked by guardrails: Prompt injection in tool output", "elapsed_sec": 0.0, "timestamp": 1775124068.871607}

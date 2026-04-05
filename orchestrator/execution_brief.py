@@ -226,6 +226,13 @@ def _brief_prompt(context: str, scenario_id: str = "") -> str:
             "- MVP scope should focus on the first strengthening wedge: monetization fix, packaging, growth loop, onboarding, pricing, or execution bottleneck removal.\n"
             "- existing_repos should prioritize the concrete repo roots discussed in the strengthening session.\n"
         )
+    elif normalized_scenario == "project_monetization_lab":
+        strengthening_rules = (
+            "- Treat the strongest recommendation as the first practical route to money for the project, not as a broad product vision.\n"
+            "- A light pivot in packaging, ICP, channel, or offer is allowed when the session supports it.\n"
+            "- MVP scope should focus on the first monetization wedge: offer packaging, lead magnet, sample artifacts, landing page, outreach assets, or delivery workflow.\n"
+            "- existing_repos should prioritize the concrete repo roots discussed in the monetization session.\n"
+        )
     return (
         "Convert this orchestration session into an execution-ready brief for an autonomous build system.\n\n"
         "Return ONLY valid JSON with this exact shape:\n"

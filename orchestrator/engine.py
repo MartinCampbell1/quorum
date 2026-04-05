@@ -12,6 +12,9 @@ from typing import Any, Optional
 
 from langgraph.checkpoint.memory import MemorySaver
 
+from orchestrator.debate.blueprints import ProtocolBlueprint, StateTransitionTrace
+from orchestrator.debate.judge_pack import FOUNDER_JUDGE_CRITERIA
+from orchestrator.generation.moa import build_moa_graph
 from orchestrator.models import (
     AgentConfig,
     build_provider_capabilities_snapshot,
@@ -26,6 +29,13 @@ from orchestrator.modes.board import build_board_graph
 from orchestrator.modes.map_reduce import build_map_reduce_graph
 from orchestrator.modes.creator_critic import build_creator_critic_graph
 from orchestrator.modes.tournament import build_tournament_graph, build_tournament_match_graph
+from orchestrator.topology.graph_optimizer import apply_graph_optimization
+from orchestrator.topology.meta_search import run_meta_agent_search
+from orchestrator.topology.protocol_compiler import (
+    build_trace_state_excerpt,
+    compile_protocol_blueprint,
+    shadow_validate_transition,
+)
 
 
 DEFAULT_AGENTS = {
@@ -35,9 +45,9 @@ DEFAULT_AGENTS = {
         AgentConfig(role="worker_2", provider="gemini", tools=["web_search", "perplexity", "http_request"]),
     ],
     "board": [
-        AgentConfig(role="director_1", provider="claude", tools=["web_search", "perplexity"]),
-        AgentConfig(role="director_2", provider="codex", tools=["code_exec", "shell_exec"]),
-        AgentConfig(role="director_3", provider="gemini", tools=["web_search", "perplexity"]),
+        AgentConfig(role="director_1", provider="codex", tools=["web_search", "code_exec", "shell_exec"]),
+        AgentConfig(role="director_2", provider="gemini", tools=["web_search", "perplexity", "http_request"]),
+        AgentConfig(role="director_3", provider="codex", tools=["web_search", "code_exec", "shell_exec"]),
     ],
     "democracy": [
         AgentConfig(role="voter_claude", provider="claude", tools=["web_search", "perplexity"]),
@@ -59,6 +69,13 @@ DEFAULT_AGENTS = {
         AgentConfig(role="creator", provider="codex", tools=["code_exec", "web_search", "shell_exec"]),
         AgentConfig(role="critic", provider="claude", tools=["web_search", "perplexity"]),
     ],
+    "moa": [
+        AgentConfig(role="proposer_market", provider="claude", tools=["web_search", "perplexity"]),
+        AgentConfig(role="proposer_builder", provider="codex", tools=["code_exec", "shell_exec", "web_search"]),
+        AgentConfig(role="aggregator_operator", provider="gemini", tools=["web_search", "perplexity", "http_request"]),
+        AgentConfig(role="aggregator_editor", provider="claude", tools=["web_search", "perplexity"]),
+        AgentConfig(role="final_synthesizer", provider="codex", tools=["web_search", "code_exec"]),
+    ],
     "tournament": [
         AgentConfig(role="contestant_1", provider="claude", tools=["web_search", "code_exec"]),
         AgentConfig(role="contestant_2", provider="codex", tools=["code_exec", "shell_exec"]),
@@ -76,6 +93,7 @@ AVAILABLE_MODES = {
     "debate": "Proponent vs opponent argue in rounds, judge decides winner",
     "map_reduce": "Split task into chunks, process in parallel, synthesize results",
     "creator_critic": "Creator produces work, critic reviews, iterate until approved",
+    "moa": "Layered Mixture-of-Agents generation: proposers, aggregators, judge-pack scoring, final synthesis",
     "tournament": "Projects debate head-to-head through a bracket, judge picks who advances",
     "tournament_match": "Internal head-to-head tournament match executor",
 }
@@ -121,26 +139,45 @@ def _build_initial_state(
                 "iteration": 0, "max_iterations": config.get("max_iterations", 3)}
     if mode == "democracy":
         return {**base, "votes": [], "round": 0,
-                "max_rounds": config.get("max_rounds", 3), "majority_position": ""}
+                "max_rounds": config.get("max_rounds", 3), "majority_position": "",
+                "majority_candidate": "", "protocol_name": "", "protocol_telemetry": {}, "scrutiny_requested": False}
     if mode == "debate":
         return {**base, "rounds": [], "current_round": 0,
-                "max_rounds": config.get("max_rounds", 3), "verdict": "", "judge_action": ""}
+                "max_rounds": config.get("max_rounds", 3), "verdict": "", "judge_action": "",
+                "protocol_name": "", "protocol_telemetry": {}, "fact_check_failures": {}, "disqualified_role": ""}
     if mode == "board":
         return {**base, "positions": [], "vote_round": 0,
                 "max_rounds": config.get("max_rounds", 3),
-                "consensus_reached": False, "decision": "", "worker_results": []}
+                "consensus_reached": False, "decision": "", "worker_results": [],
+                "protocol_name": "", "protocol_telemetry": {}, "scrutiny_requested": False, "scrutiny_passed": False}
     if mode == "map_reduce":
         return {**base, "chunks": [], "chunk_results": [], "synthesis": ""}
     if mode == "creator_critic":
         return {**base, "versions": [], "critiques": [],
-                "iteration": 0, "max_iterations": config.get("max_iterations", 3), "approved": False}
+                "iteration": 0, "max_iterations": config.get("max_iterations", 3), "approved": False,
+                "protocol_name": "", "protocol_telemetry": {}}
+    if mode == "moa":
+        normalized_config = dict(config)
+        normalized_config.setdefault("aggregator_count", 2)
+        normalized_config.setdefault("judge_criteria", list(FOUNDER_JUDGE_CRITERIA))
+        normalized_config.setdefault("local_first", False)
+        return {
+            **base,
+            "config": normalized_config,
+            "layer1_outputs": [],
+            "layer2_outputs": [],
+            "judge_scores": [],
+            "trace_artifacts": [],
+            "selected_candidate_id": "",
+        }
     if mode == "tournament":
         return {**base, "submissions": [], "bracket": [],
                 "current_round": 0, "current_match_index": 0, "current_match_round": 0,
                 "current_match": {}, "max_rounds": config.get("max_rounds", 5),
                 "winners": [], "champion": {}, "match_history": [], "match_verdict": "",
                 "judge_action": "", "match_winner": "", "advance_target": "",
-                "current_stage_label": "", "parallel_stage_children": [], "parallel_stage_group_id": ""}
+                "current_stage_label": "", "parallel_stage_children": [], "parallel_stage_group_id": "",
+                "protocol_name": "", "protocol_telemetry": {}, "fact_check_failures": {}, "disqualified_role": ""}
     if mode == "tournament_match":
         return {**base,
                 "current_round": int(config.get("tournament_round", 1) or 1),
@@ -151,7 +188,8 @@ def _build_initial_state(
                 "max_rounds": config.get("max_rounds", 5),
                 "match_history": [], "match_verdict": "", "judge_action": "",
                 "match_winner": "", "advance_target": "", "champion": {},
-                "parallel_stage_children": [], "parallel_stage_group_id": ""}
+                "parallel_stage_children": [], "parallel_stage_group_id": "",
+                "protocol_name": "", "protocol_telemetry": {}, "fact_check_failures": {}, "disqualified_role": ""}
     raise ValueError(f"Unknown mode: {mode}")
 
 
@@ -163,6 +201,7 @@ def _build_graph(mode: str, **compile_kwargs):
         "board": build_board_graph,
         "map_reduce": build_map_reduce_graph,
         "creator_critic": build_creator_critic_graph,
+        "moa": build_moa_graph,
         "tournament": build_tournament_graph,
         "tournament_match": build_tournament_match_graph,
     }
@@ -170,6 +209,59 @@ def _build_graph(mode: str, **compile_kwargs):
     if not builder:
         raise ValueError(f"Unknown mode: {mode}")
     return builder(**compile_kwargs)
+
+
+def _coerce_protocol_blueprint(payload: Any) -> ProtocolBlueprint | None:
+    if not isinstance(payload, dict) or not payload:
+        return None
+    try:
+        return ProtocolBlueprint.model_validate(payload)
+    except Exception:
+        return None
+
+
+def _initial_protocol_shadow_validation(
+    blueprint: ProtocolBlueprint,
+    *,
+    cache_hit: bool,
+    branched_from: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "blueprint_id": blueprint.blueprint_id,
+        "cache_key": blueprint.cache_key,
+        "cache_hit": cache_hit,
+        "validated_transitions": 0,
+        "invalid_transitions": 0,
+        "last_validation": None,
+        "branched_from": dict(branched_from or {}),
+    }
+
+
+def _trim_protocol_trace_to_checkpoint(trace: list[dict] | None, checkpoint_id: str | None) -> list[dict]:
+    normalized_checkpoint_id = str(checkpoint_id or "").strip()
+    if not normalized_checkpoint_id:
+        return []
+    trimmed: list[dict] = []
+    for item in list(trace or []):
+        if not isinstance(item, dict):
+            continue
+        trimmed.append(copy.deepcopy(item))
+        if str(item.get("checkpoint_id") or "").strip() == normalized_checkpoint_id:
+            break
+    return trimmed
+
+
+def _protocol_trace_counts(trace: list[dict] | None) -> tuple[int, int]:
+    validated = 0
+    invalid = 0
+    for item in list(trace or []):
+        if not isinstance(item, dict):
+            continue
+        if bool(item.get("ok")):
+            validated += 1
+        else:
+            invalid += 1
+    return validated, invalid
 
 
 RUNNERS: dict[str, "SessionRunner"] = {}
@@ -270,6 +362,29 @@ def _load_persisted_checkpointer_state(session_id: str) -> MemorySaver | None:
     return saver
 
 
+def _retarget_branch_state_value(value: Any, new_session_id: str, session_provider_pool: list[str]) -> Any:
+    if isinstance(value, list):
+        return [_retarget_branch_state_value(item, new_session_id, session_provider_pool) for item in value]
+
+    if isinstance(value, tuple):
+        return tuple(_retarget_branch_state_value(item, new_session_id, session_provider_pool) for item in value)
+
+    if not isinstance(value, dict):
+        return copy.deepcopy(value)
+
+    updated = {
+        key: _retarget_branch_state_value(item, new_session_id, session_provider_pool)
+        for key, item in value.items()
+    }
+    if "session_id" in updated:
+        updated["session_id"] = new_session_id
+    if "role" in updated and "provider" in updated:
+        updated["session_id"] = new_session_id
+        if session_provider_pool:
+            updated["session_provider_pool"] = list(session_provider_pool)
+    return updated
+
+
 @dataclass
 class SessionRunner:
     session_id: str
@@ -290,12 +405,76 @@ class SessionRunner:
     last_chunk_result_count: int = 0
     last_round_started: int = 0
     last_round_completed: int = 0
+    last_moa_layer1_count: int = 0
+    last_moa_layer2_count: int = 0
+    last_moa_judge_score_count: int = 0
+    protocol_blueprint: ProtocolBlueprint | None = None
+    protocol_trace: list[dict[str, Any]] = field(default_factory=list)
+    protocol_shadow_validation: dict[str, Any] = field(default_factory=dict)
+    planned_node_id: str | None = None
 
     def __post_init__(self) -> None:
         self.resume_event.set()
+        if self.protocol_blueprint and not self.planned_node_id:
+            self.planned_node_id = self.protocol_blueprint.entry_node_id
 
     def _emit_event(self, event_type: str, title: str, detail: str = "", **extra: object) -> None:
         store.append_event(self.session_id, event_type, title, detail, **extra)
+
+    def _record_protocol_transition(
+        self,
+        values: dict[str, Any],
+        next_node: str | None,
+        checkpoint_id: str,
+        graph_checkpoint_id: str | None,
+    ) -> None:
+        if not self.protocol_blueprint:
+            return
+
+        executed_node_id = str(self.planned_node_id or self.protocol_blueprint.entry_node_id)
+        validation = shadow_validate_transition(
+            self.protocol_blueprint,
+            executed_node_id,
+            next_node,
+            values,
+        )
+        summary = {
+            **dict(self.protocol_shadow_validation or {}),
+            "blueprint_id": self.protocol_blueprint.blueprint_id,
+            "cache_key": self.protocol_blueprint.cache_key,
+        }
+        if validation.ok:
+            summary["validated_transitions"] = int(summary.get("validated_transitions") or 0) + 1
+        else:
+            summary["invalid_transitions"] = int(summary.get("invalid_transitions") or 0) + 1
+        summary["last_validation"] = validation.model_dump()
+        self.protocol_shadow_validation = summary
+
+        trace_entry = StateTransitionTrace(
+            blueprint_id=self.protocol_blueprint.blueprint_id,
+            step_index=len(self.protocol_trace) + 1,
+            from_node_id=executed_node_id,
+            to_node_id=str(next_node or "__end__"),
+            checkpoint_id=checkpoint_id,
+            graph_checkpoint_id=graph_checkpoint_id,
+            guard_id=validation.guard_id,
+            ok=validation.ok,
+            errors=list(validation.errors),
+            warnings=list(validation.warnings),
+            state_excerpt=build_trace_state_excerpt(values),
+        )
+        self.protocol_trace.append(trace_entry.model_dump())
+
+        if not validation.ok:
+            self._emit_event(
+                "protocol_transition_warning",
+                "Protocol transition escaped blueprint guard",
+                "; ".join(validation.errors)[:240],
+                blueprint_id=self.protocol_blueprint.blueprint_id,
+                from_node=executed_node_id,
+                to_node=str(next_node or "__end__"),
+                checkpoint_id=checkpoint_id,
+            )
 
     def request_pause(self) -> bool:
         session = store.get(self.session_id)
@@ -362,6 +541,32 @@ class SessionRunner:
         )
         return True
 
+    async def _retarget_branch_state(self) -> None:
+        if not self.resume_from_checkpoint_id:
+            return
+
+        snapshot = await self.graph.aget_state(self.graph_config)
+        values = snapshot.values or {}
+        agents = list(values.get("agents", []) or [])
+        session_provider_pool = list(
+            dict.fromkeys(
+                str(agent.get("provider", "")).strip()
+                for agent in agents
+                if str(agent.get("provider", "")).strip()
+            )
+        )
+
+        updates: dict[str, Any] = {}
+        if str(values.get("session_id", "")).strip() != self.session_id:
+            updates["session_id"] = self.session_id
+        for key, value in values.items():
+            retargeted = _retarget_branch_state_value(value, self.session_id, session_provider_pool)
+            if retargeted != value:
+                updates[key] = retargeted
+
+        if updates:
+            self.graph_config = await self.graph.aupdate_state(self.graph_config, updates)
+
     async def _apply_pending_instructions(self) -> None:
         instructions = store.pop_pending_instructions(self.session_id)
         if not instructions:
@@ -401,13 +606,21 @@ class SessionRunner:
 
         self.checkpoint_index += 1
         next_node = snapshot.next[0] if snapshot.next else None
+        checkpoint_id = f"cp_{self.checkpoint_index}"
+        graph_checkpoint_id = ((snapshot.config or {}).get("configurable") or {}).get("checkpoint_id")
+        self._record_protocol_transition(
+            values,
+            next_node,
+            checkpoint_id,
+            graph_checkpoint_id,
+        )
         checkpoint = {
-            "id": f"cp_{self.checkpoint_index}",
+            "id": checkpoint_id,
             "timestamp": time.time(),
             "next_node": next_node,
             "status": "terminal" if not snapshot.next else "ready",
             "result_preview": str(values.get("result", ""))[:160],
-            "graph_checkpoint_id": ((snapshot.config or {}).get("configurable") or {}).get("checkpoint_id"),
+            "graph_checkpoint_id": graph_checkpoint_id,
         }
         store.add_checkpoint(self.session_id, checkpoint)
         checkpoint_detail = (
@@ -429,7 +642,10 @@ class SessionRunner:
             elapsed_sec=round(time.time() - self.started_at, 2),
             active_node=next_node,
             config=values.get("config", {}),
+            protocol_trace=self.protocol_trace,
+            protocol_shadow_validation=self.protocol_shadow_validation,
         )
+        self.planned_node_id = next_node or None
 
     def _emit_mode_progress_events(self, values: dict[str, Any], next_node: str | None) -> None:
         if self.mode == "democracy":
@@ -530,11 +746,70 @@ class SessionRunner:
                     agent_id=str(chunk_result.get("worker", "")).strip() or None,
                 )
             self.last_chunk_result_count = len(chunk_results)
+            return
+
+        if self.mode == "moa":
+            layer1_outputs = list(values.get("layer1_outputs", []) or [])
+            for artifact in layer1_outputs[self.last_moa_layer1_count:]:
+                self._emit_event(
+                    "generation_candidate_created",
+                    "Layer 1 candidate created",
+                    str(artifact.get("summary") or artifact.get("content") or "")[:240],
+                    agent_id=str(artifact.get("agent_role") or "").strip() or None,
+                    candidate_id=artifact.get("candidate_id"),
+                    layer="layer1",
+                )
+            self.last_moa_layer1_count = len(layer1_outputs)
+
+            layer2_outputs = list(values.get("layer2_outputs", []) or [])
+            for artifact in layer2_outputs[self.last_moa_layer2_count:]:
+                self._emit_event(
+                    "generation_candidate_promoted",
+                    "Layer 2 candidate synthesized",
+                    str(artifact.get("summary") or artifact.get("content") or "")[:240],
+                    agent_id=str(artifact.get("agent_role") or "").strip() or None,
+                    candidate_id=artifact.get("candidate_id"),
+                    layer="layer2",
+                )
+            self.last_moa_layer2_count = len(layer2_outputs)
+
+            judge_scores = list(values.get("judge_scores", []) or [])
+            for score in judge_scores[self.last_moa_judge_score_count:]:
+                detail = (
+                    f"{score.get('candidate_id')}: {score.get('overall_score')}"
+                )
+                self._emit_event(
+                    "generation_candidate_scored",
+                    "Judge-pack score recorded",
+                    detail[:240],
+                    agent_id=str(score.get("judge_role") or "").strip() or None,
+                    candidate_id=score.get("candidate_id"),
+                    layer="judge_pack",
+                )
+            self.last_moa_judge_score_count = len(judge_scores)
 
     async def run(self) -> None:
         next_input: Any = self.initial_state
         try:
             session = store.get(self.session_id) or {}
+            if self.protocol_blueprint:
+                self._emit_event(
+                    "protocol_blueprint_ready",
+                    "Protocol blueprint bound",
+                    self.protocol_blueprint.blueprint_class,
+                    blueprint_id=self.protocol_blueprint.blueprint_id,
+                    cache_key=self.protocol_blueprint.cache_key,
+                    cache_hit=bool((self.protocol_shadow_validation or {}).get("cache_hit")),
+                )
+            topology_state = dict((session.get("config") or {}).get("topology_state") or {})
+            if topology_state:
+                self._emit_event(
+                    "topology_runtime_plan",
+                    "Topology plan active",
+                    str(topology_state.get("chosen_reason") or "")[:240],
+                    topology_template=topology_state.get("selected_template"),
+                    recommended_execution_mode=topology_state.get("selected_execution_mode"),
+                )
             if self.resume_from_checkpoint_id:
                 self._emit_event(
                     "branch_started",
@@ -553,6 +828,7 @@ class SessionRunner:
                     mode=self.mode,
                     status="running",
                 )
+            await self._retarget_branch_state()
             while True:
                 await self.resume_event.wait()
                 if self.cancel_requested:
@@ -677,10 +953,37 @@ async def run(
     parallel_stage: str | None = None,
     parallel_label: str | None = None,
 ) -> str:
-    config = config or {}
+    config = dict(config or {})
     agents = agents or DEFAULT_AGENTS.get(mode, [])
     resolved_attached_tools = collect_attached_tool_ids(agents, attached_tool_ids)
     provider_capabilities_snapshot = build_provider_capabilities_snapshot(agents)
+    compiled_blueprint = compile_protocol_blueprint(
+        mode,
+        agents,
+        config,
+        task=task,
+        scenario_id=scenario_id,
+    )
+    cached_blueprint = None if config.get("refresh_protocol_blueprint") else store.get_cached_protocol_blueprint(compiled_blueprint.cache_key)
+    base_blueprint = _coerce_protocol_blueprint(cached_blueprint) or compiled_blueprint
+    blueprint_cache_hit = cached_blueprint is not None
+    if not blueprint_cache_hit:
+        store.put_cached_protocol_blueprint(base_blueprint.cache_key, base_blueprint.model_dump())
+    topology_state = run_meta_agent_search(
+        mode,
+        task,
+        agents,
+        config,
+        base_blueprint,
+        provider_capabilities_snapshot=provider_capabilities_snapshot,
+        scenario_id=scenario_id,
+    )
+    protocol_blueprint = apply_graph_optimization(base_blueprint, topology_state.graph_optimization)
+    config["topology_state"] = topology_state.model_dump()
+    protocol_shadow_validation = _initial_protocol_shadow_validation(
+        protocol_blueprint,
+        cache_hit=blueprint_cache_hit,
+    )
     session_id = store.create(
         mode,
         task,
@@ -696,6 +999,18 @@ async def run(
         parallel_slot_key=parallel_slot_key,
         parallel_stage=parallel_stage,
         parallel_label=parallel_label,
+        protocol_blueprint=protocol_blueprint.model_dump(),
+        protocol_trace=[],
+        protocol_shadow_validation=protocol_shadow_validation,
+    )
+    store.append_event(
+        session_id,
+        "topology_optimized",
+        "Meta-topology selected",
+        topology_state.chosen_reason[:240],
+        topology_template=topology_state.selected_template,
+        class_key=topology_state.class_key,
+        recommended_execution_mode=topology_state.selected_execution_mode,
     )
 
     saver = MemorySaver()
@@ -721,6 +1036,10 @@ async def run(
         graph_config=graph_config,
         initial_state=initial_state,
         checkpointer=saver,
+        protocol_blueprint=protocol_blueprint,
+        protocol_trace=[],
+        protocol_shadow_validation=protocol_shadow_validation,
+        planned_node_id=protocol_blueprint.entry_node_id,
     )
     RUNNERS[session_id] = runner
     CHECKPOINT_SAVERS[session_id] = saver
@@ -823,12 +1142,40 @@ def _resolve_checkpoint(session: dict, checkpoint_id: str | None) -> dict | None
     return None
 
 
+def _resolve_branch_checkpoint(session: dict, checkpoint_id: str | None) -> dict | None:
+    checkpoints = list(session.get("checkpoints", []) or [])
+    if not checkpoints:
+        return None
+
+    requested = _resolve_checkpoint(session, checkpoint_id)
+    if not requested:
+        return None
+
+    def is_resumable(checkpoint: dict) -> bool:
+        return bool(checkpoint.get("graph_checkpoint_id")) and checkpoint.get("status") != "terminal" and bool(
+            checkpoint.get("next_node")
+        )
+
+    if is_resumable(requested):
+        return requested
+
+    try:
+        requested_index = checkpoints.index(requested)
+    except ValueError:
+        requested_index = len(checkpoints) - 1
+
+    for checkpoint in reversed(checkpoints[:requested_index]):
+        if is_resumable(checkpoint):
+            return checkpoint
+    return None
+
+
 def fork_from_checkpoint(session_id: str, checkpoint_id: str = "", content: str = "") -> str | None:
     session = store.get(session_id)
     if not session:
         return None
 
-    checkpoint = _resolve_checkpoint(session, checkpoint_id or None)
+    checkpoint = _resolve_branch_checkpoint(session, checkpoint_id or None)
     graph_checkpoint_id = (checkpoint or {}).get("graph_checkpoint_id")
     if not checkpoint or not graph_checkpoint_id:
         return None
@@ -838,6 +1185,38 @@ def fork_from_checkpoint(session_id: str, checkpoint_id: str = "", content: str 
         return None
 
     agents = [AgentConfig(**agent) for agent in session.get("agents", [])]
+    protocol_blueprint = _coerce_protocol_blueprint(session.get("protocol_blueprint"))
+    if protocol_blueprint is None:
+        protocol_blueprint = compile_protocol_blueprint(
+            session["mode"],
+            agents,
+            session.get("config", {}),
+            task=session.get("task", ""),
+            scenario_id=session.get("active_scenario"),
+        )
+    protocol_trace = _trim_protocol_trace_to_checkpoint(session.get("protocol_trace"), checkpoint.get("id"))
+    protocol_shadow_validation = _initial_protocol_shadow_validation(
+        protocol_blueprint,
+        cache_hit=bool((session.get("protocol_shadow_validation") or {}).get("cache_hit")),
+        branched_from={
+            "session_id": session_id,
+            "checkpoint_id": str(checkpoint.get("id") or ""),
+        },
+    )
+    inherited_validated, inherited_invalid = _protocol_trace_counts(protocol_trace)
+    protocol_shadow_validation["validated_transitions"] = inherited_validated
+    protocol_shadow_validation["invalid_transitions"] = inherited_invalid
+    if protocol_trace:
+        protocol_shadow_validation["last_validation"] = {
+            "blueprint_id": protocol_blueprint.blueprint_id,
+            "from_node_id": str(protocol_trace[-1].get("from_node_id") or ""),
+            "to_node_id": str(protocol_trace[-1].get("to_node_id") or ""),
+            "ok": bool(protocol_trace[-1].get("ok")),
+            "guard_id": protocol_trace[-1].get("guard_id"),
+            "errors": list(protocol_trace[-1].get("errors") or []),
+            "warnings": list(protocol_trace[-1].get("warnings") or []),
+            "checked_at": float(protocol_trace[-1].get("timestamp") or time.time()),
+        }
     new_session_id = store.create(
         session["mode"],
         session["task"],
@@ -850,6 +1229,9 @@ def fork_from_checkpoint(session_id: str, checkpoint_id: str = "", content: str 
         workspace_paths=session.get("workspace_paths", []),
         attached_tool_ids=session.get("attached_tool_ids", []),
         provider_capabilities_snapshot=session.get("provider_capabilities_snapshot", {}),
+        protocol_blueprint=protocol_blueprint.model_dump(),
+        protocol_trace=protocol_trace,
+        protocol_shadow_validation=protocol_shadow_validation,
     )
 
     saver = MemorySaver()
@@ -874,6 +1256,10 @@ def fork_from_checkpoint(session_id: str, checkpoint_id: str = "", content: str 
         initial_state=None,
         checkpointer=saver,
         resume_from_checkpoint_id=checkpoint.get("id"),
+        protocol_blueprint=protocol_blueprint,
+        protocol_trace=protocol_trace,
+        protocol_shadow_validation=protocol_shadow_validation,
+        planned_node_id=str(checkpoint.get("next_node") or protocol_blueprint.entry_node_id),
     )
     if content.strip():
         runner.inject_instruction(content)

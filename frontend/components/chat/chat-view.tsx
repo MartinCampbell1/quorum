@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useSWRConfig } from "swr";
 import { Folder, Globe, HardDrive, Loader2, Sparkles, TerminalSquare } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -21,7 +22,7 @@ import { ChatHeader } from "./chat-header";
 import { CheckpointPanel } from "./checkpoint-panel";
 import { ConversationPanel, EventTimeline } from "./event-timeline";
 import { InputBar } from "./input-bar";
-import { RichText } from "./rich-text";
+import { RichText, extractReadableAgentText, hasToolMarkup, sanitizeAgentText } from "./rich-text";
 import { TopologyPanel } from "./topology-panel";
 
 interface ChatViewProps {
@@ -70,16 +71,27 @@ function TaskSummaryCard({ task }: { task: string }) {
   );
 }
 
+function truncateText(text: string, limit: number = 160) {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= limit) {
+    return normalized;
+  }
+  return `${normalized.slice(0, limit - 1)}…`;
+}
+
 function SessionResultPanel({ session }: { session: Session }) {
   const { copy } = useLocale();
   const judgeRole = session.agents.find((agent) => agent.role === "judge")?.role;
-  const latestJudgeVerdict =
+  const rawVerdict =
     [...session.messages]
       .reverse()
       .find((message) => message.agent_id === judgeRole && message.phase === "verdict")?.content ??
     session.result;
+  const visibleVerdict = extractReadableAgentText(rawVerdict, { preferStructuredAnswer: true });
+  const hasHiddenRuntimeDetails =
+    hasToolMarkup(rawVerdict) || sanitizeAgentText(rawVerdict) !== visibleVerdict;
 
-  if (!latestJudgeVerdict) {
+  if (!sanitizeAgentText(rawVerdict)) {
     return null;
   }
 
@@ -96,15 +108,136 @@ function SessionResultPanel({ session }: { session: Session }) {
             {copy.monitor.judgeVerdict}
           </span>
         ) : null}
+        {hasHiddenRuntimeDetails ? (
+          <span className="rounded-full border border-[#d6dbe6] bg-[#fbfcff] px-3 py-1 text-[10px] uppercase tracking-[0.16em] text-[#6b7280] dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
+            {copy.monitor.hiddenRuntimeDetails}
+          </span>
+        ) : null}
       </div>
       <h2 className="mt-3 text-[22px] font-medium tracking-[-0.03em] text-[#111111] dark:text-slate-100">
         {title}
       </h2>
       <div className="mt-4 rounded-[16px] border border-[#e5e7eb] bg-[#fbfcff] px-5 py-5 dark:border-slate-800 dark:bg-slate-900/70">
-        <RichText text={latestJudgeVerdict} className="text-[15px] leading-8" />
+        <RichText text={visibleVerdict || copy.monitor.finalAnswerFallback} className="text-[15px] leading-8" />
       </div>
     </section>
   );
+}
+
+function assessLastInstruction(session: Session, copy: ReturnType<typeof useLocale>["copy"]) {
+  const latestInstruction = [...session.messages]
+    .reverse()
+    .find((message) => message.agent_id === "user" && sanitizeAgentText(message.content));
+
+  if (!latestInstruction) {
+    return {
+      tone: "neutral" as const,
+      statusLabel: copy.monitor.lastInstructionNone,
+      explanation: copy.monitor.lastInstructionNoneHint,
+      preview: "",
+    };
+  }
+
+  const responsesAfterInstruction = session.messages.filter(
+    (message) =>
+      message.timestamp >= latestInstruction.timestamp &&
+      message.agent_id !== "user" &&
+      Boolean(extractReadableAgentText(message.content))
+  );
+
+  if (
+    responsesAfterInstruction.length > 0 ||
+    (["completed", "failed", "cancelled"].includes(session.status) &&
+      Boolean(extractReadableAgentText(session.result, { preferStructuredAnswer: true })))
+  ) {
+    return {
+      tone: "answered" as const,
+      statusLabel: copy.monitor.lastInstructionAnswered,
+      explanation: copy.monitor.lastInstructionAnsweredHint,
+      preview: sanitizeAgentText(latestInstruction.content),
+    };
+  }
+
+  if (
+    (session.pending_instructions ?? 0) > 0 ||
+    ["running", "pause_requested", "cancel_requested", "paused"].includes(session.status)
+  ) {
+    return {
+      tone: "pending" as const,
+      statusLabel: copy.monitor.lastInstructionPending,
+      explanation: copy.monitor.lastInstructionPendingHint,
+      preview: sanitizeAgentText(latestInstruction.content),
+    };
+  }
+
+  return {
+    tone: "unanswered" as const,
+    statusLabel: copy.monitor.lastInstructionNotAnswered,
+    explanation: copy.monitor.lastInstructionNotAnsweredHint,
+    preview: sanitizeAgentText(latestInstruction.content),
+  };
+}
+
+function LastInstructionPanel({ session }: { session: Session }) {
+  const { copy } = useLocale();
+  const assessment = useMemo(() => assessLastInstruction(session, copy), [session, copy]);
+  const [expanded, setExpanded] = useState(false);
+  const preview = assessment.preview;
+  const canExpand = preview.length > 160;
+  const visiblePreview = expanded ? preview : truncateText(preview, 160);
+
+  const toneClassName =
+    assessment.tone === "answered"
+      ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300"
+      : assessment.tone === "pending"
+        ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300"
+        : assessment.tone === "unanswered"
+          ? "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/30 dark:text-rose-300"
+          : "border-[#d6dbe6] bg-[#fbfcff] text-[#6b7280] dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400";
+
+  return (
+    <section className="rounded-[18px] border border-[#d6dbe6] bg-white p-4 shadow-[0_10px_24px_-18px_rgba(17,48,105,0.18)] dark:border-slate-800 dark:bg-slate-950/60 dark:shadow-none">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="text-[10px] uppercase tracking-[0.16em] text-[#6b7280] dark:text-slate-400">
+            {copy.monitor.lastInstructionStatus}
+          </div>
+          <h3 className="mt-2 text-[18px] font-medium tracking-[-0.03em] text-[#111111] dark:text-slate-100">
+            {assessment.statusLabel}
+          </h3>
+        </div>
+        <span className={`rounded-full border px-3 py-1 text-[10px] uppercase tracking-[0.16em] ${toneClassName}`}>
+          {assessment.statusLabel}
+        </span>
+      </div>
+
+      <p className="mt-3 text-[14px] leading-6 text-[#4b5563] dark:text-slate-300">{assessment.explanation}</p>
+
+      {preview ? (
+        <div className="mt-3 rounded-[14px] border border-[#e5e7eb] bg-[#fbfcff] px-4 py-3 dark:border-slate-800 dark:bg-slate-900/70">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-[10px] uppercase tracking-[0.16em] text-[#6b7280] dark:text-slate-400">
+              {copy.monitor.instructionPreview}
+            </span>
+            {canExpand ? (
+              <button
+                type="button"
+                onClick={() => setExpanded((value) => !value)}
+                className="rounded-full border border-[#d6dbe6] bg-white px-3 py-1 text-[11px] uppercase tracking-[0.14em] text-[#6b7280] dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400"
+              >
+                {expanded ? copy.monitor.hideInstruction : copy.monitor.showFullInstruction}
+              </button>
+            ) : null}
+          </div>
+          <p className="mt-2 text-[13px] leading-6 text-[#273142] dark:text-slate-300">{visiblePreview}</p>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function latestRuntimeRecoveredEvent(session: Session) {
+  return [...(session.events ?? [])].reverse().find((event) => event.type === "runtime_recovered");
 }
 
 export function ChatView({
@@ -115,6 +248,7 @@ export function ChatView({
   onOpenSessions,
 }: ChatViewProps) {
   const { copy } = useLocale();
+  const { mutate } = useSWRConfig();
   const { session, isLoading, refresh } = useSession(sessionId);
   const { events } = useSessionEvents(session?.id ?? null, session?.events ?? []);
   const [isWorking, setIsWorking] = useState(false);
@@ -126,12 +260,20 @@ export function ChatView({
   const [selectedLaunchPresetId, setSelectedLaunchPresetId] = useState("team");
   const [bridgeStatus, setBridgeStatus] = useState<string | null>(null);
   const [selectedCheckpointId, setSelectedCheckpointId] = useState<string | null>(null);
+  const [composerFocusToken, setComposerFocusToken] = useState(0);
   const trackedSessionIdRef = useRef<string | null>(null);
   const trackedCurrentCheckpointRef = useRef<string | null>(null);
   const currentSessionId = session?.id ?? null;
   const currentCheckpointId = session?.current_checkpoint_id ?? null;
   const isParallelChild = Boolean(session?.parallel_parent_id);
   const canPrepareTournament = session?.active_scenario === "portfolio_pivot_lab";
+  const runtimeRecoveredEvent = useMemo(() => (session ? latestRuntimeRecoveredEvent(session) : null), [session]);
+  const canRecoveryContinue = Boolean(session?.runtime_state?.can_continue_conversation);
+  const canRecoveryBranch = Boolean(session?.runtime_state?.can_branch_from_checkpoint);
+  const showRecoveryActions =
+    session?.status === "failed" &&
+    Boolean(runtimeRecoveredEvent) &&
+    (canRecoveryContinue || canRecoveryBranch);
 
   const activeConnections = useMemo(() => {
     if (!session) return [];
@@ -197,6 +339,7 @@ export function ChatView({
           selectedCheckpointId ?? session.current_checkpoint_id ?? undefined
         );
         if (result.new_session_id) {
+          await mutate("/orchestrate/sessions");
           onForkSession?.(result.new_session_id);
         }
       } else {
@@ -297,6 +440,30 @@ export function ChatView({
     }
   }
 
+  async function handleRecoveryBranch() {
+    if (!session?.current_checkpoint_id) return;
+    setIsWorking(true);
+    try {
+      const result = await controlSession(
+        session.id,
+        "restart_from_checkpoint",
+        "",
+        session.current_checkpoint_id
+      );
+      await refresh();
+      if (result.new_session_id) {
+        await mutate("/orchestrate/sessions");
+        onForkSession?.(result.new_session_id);
+      }
+    } finally {
+      setIsWorking(false);
+    }
+  }
+
+  function handleRecoveryContinue() {
+    setComposerFocusToken((value) => value + 1);
+  }
+
   function primaryLabel() {
     if (!session) return copy.monitor.stopSession;
     if (session.status === "paused") return copy.monitor.resumeSession;
@@ -325,8 +492,45 @@ export function ChatView({
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_356px]">
           <div className="space-y-4">
             <TaskSummaryCard task={session.task} />
+            {showRecoveryActions ? (
+              <section className="rounded-[18px] border border-amber-200 bg-[linear-gradient(135deg,rgba(255,251,235,0.96),rgba(255,247,237,0.9))] p-4 shadow-[0_10px_24px_-18px_rgba(180,83,9,0.2)] dark:border-amber-900/60 dark:bg-[linear-gradient(135deg,rgba(67,20,7,0.55),rgba(30,27,75,0.38))] dark:shadow-none">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-amber-700 dark:text-amber-300">
+                  {copy.monitor.runtimeRecoveredActionsTitle}
+                </div>
+                <div className="mt-2 text-[15px] font-medium text-[#111111] dark:text-slate-100">
+                  {copy.monitor.runtimeRecoveredActionsHint.replace("{checkpoint}", session.current_checkpoint_id ?? "checkpoint")}
+                </div>
+                <div className="mt-2 text-[13px] leading-6 text-[#6b7280] dark:text-slate-400">
+                  {runtimeRecoveredEvent?.detail}
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {session.runtime_state?.can_continue_conversation ? (
+                    <Button
+                      type="button"
+                      onClick={handleRecoveryContinue}
+                      className="h-[42px] rounded-[12px] bg-black px-4 text-[13px] font-medium text-white hover:bg-black/92"
+                    >
+                      {copy.monitor.continueFromCurrentCheckpoint}
+                    </Button>
+                  ) : null}
+                  {session.runtime_state?.can_branch_from_checkpoint && session.current_checkpoint_id ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={handleRecoveryBranch}
+                      disabled={isWorking}
+                      className="h-[42px] rounded-[12px] border-[#111111] bg-white px-4 text-[13px] font-medium text-[#111111] dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:hover:bg-slate-900"
+                    >
+                      {isWorking ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                      {copy.monitor.branchFromCurrentCheckpoint.replace("{checkpoint}", session.current_checkpoint_id ?? "checkpoint")}
+                    </Button>
+                  ) : null}
+                </div>
+              </section>
+            ) : null}
             <TopologyPanel session={session} onOpenSession={onForkSession} />
             <SessionResultPanel session={session} />
+            <LastInstructionPanel session={session} />
             <ConversationPanel
               key={session.id}
               sessionId={session.id}
@@ -336,12 +540,18 @@ export function ChatView({
               scenarioId={session.active_scenario}
               agents={session.agents}
               status={session.status}
+              parallelProgress={session.parallel_progress}
+              parallelChildren={session.parallel_children}
+              onOpenSession={onForkSession}
             />
             <EventTimeline
               events={events}
               mode={session.mode}
               scenarioId={session.active_scenario}
               agents={session.agents}
+              status={session.status}
+              parallelProgress={session.parallel_progress}
+              parallelChildren={session.parallel_children}
             />
           </div>
 
@@ -392,7 +602,8 @@ export function ChatView({
             <div className="mt-auto rounded-[18px] border border-[#d6dbe6] bg-white p-4 dark:border-slate-800 dark:bg-slate-950/60">
               {isParallelChild ? (
                 <div className="rounded-[14px] border border-[#d6dbe6] bg-[#fafbff] px-4 py-4 text-[13px] leading-6 text-[#6b7280] dark:border-slate-800 dark:bg-slate-900/80 dark:text-slate-400">
-                  Этот дочерний матч управляется из родительского турнира. Здесь доступен monitor, но pause / cancel / branch выполняются только из parent run.
+                  <div>{copy.monitor.managedByParent}</div>
+                  <div className="mt-2">{copy.monitor.managedByParentHint}</div>
                 </div>
               ) : (
                 <div className="flex flex-col gap-3">
@@ -497,8 +708,12 @@ export function ChatView({
             pendingInstructions={session.pending_instructions}
             checkpointId={selectedCheckpointId ?? session.current_checkpoint_id}
             continueCheckpointId={session.current_checkpoint_id}
+            parentSessionId={session.forked_from}
+            runtimeState={session.runtime_state}
             onForkSession={onForkSession}
+            onOpenSession={onForkSession}
             onRefresh={refresh}
+            focusToken={composerFocusToken}
           />
         ) : null}
       </div>
