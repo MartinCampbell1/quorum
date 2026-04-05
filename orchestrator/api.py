@@ -108,18 +108,6 @@ from orchestrator.models import (
     resolve_workspace_paths,
     validate_agents_for_mode,
 )
-from orchestrator.engine import (
-    fork_from_checkpoint,
-    has_checkpoint_runtime,
-    has_live_runtime,
-    inject_instruction,
-    request_cancel,
-    request_pause,
-    request_resume,
-    run,
-    AVAILABLE_MODES,
-    DEFAULT_AGENTS,
-)
 from orchestrator.brief_v2_adapter import shared_brief_to_v2
 from orchestrator.execution_feedback import get_execution_feedback_service
 from orchestrator.scenarios import get_scenario, list_scenarios
@@ -273,6 +261,54 @@ def _generate_session_tournament_preparation(session: dict, provider: str | None
     return generate_session_tournament_preparation(session, provider)
 
 
+def _engine_module():
+    # Keep route-level imports hermetic: the LangGraph stack is only required
+    # for execution surfaces, not for discovery/bootstrap/handoff routes.
+    from orchestrator import engine as engine_module
+
+    return engine_module
+
+
+def has_checkpoint_runtime(session_id: str):
+    return _engine_module().has_checkpoint_runtime(session_id)
+
+
+def has_live_runtime(session_id: str):
+    return _engine_module().has_live_runtime(session_id)
+
+
+def inject_instruction(session_id: str, instruction: str):
+    return _engine_module().inject_instruction(session_id, instruction)
+
+
+def request_cancel(session_id: str):
+    return _engine_module().request_cancel(session_id)
+
+
+def request_pause(session_id: str):
+    return _engine_module().request_pause(session_id)
+
+
+def request_resume(session_id: str, content: str | None = None):
+    return _engine_module().request_resume(session_id, content)
+
+
+def fork_from_checkpoint(session_id: str, checkpoint_id: str, content: str | None = None):
+    return _engine_module().fork_from_checkpoint(session_id, checkpoint_id, content)
+
+
+async def run(*args, **kwargs):
+    return await _engine_module().run(*args, **kwargs)
+
+
+def _available_modes() -> dict[str, str]:
+    return _engine_module().AVAILABLE_MODES
+
+
+def _default_agents():
+    return _engine_module().DEFAULT_AGENTS
+
+
 async def _sync_existing_autopilot_brief_if_present(idea_id: str) -> dict[str, object] | None:
     dossier = _discovery_store().get_dossier(idea_id)
     if dossier is None or dossier.execution_brief_candidate is None:
@@ -353,8 +389,18 @@ async def _update_execution_brief_candidate_approval(
             },
         ),
     )
-    await _sync_existing_autopilot_brief_if_present(idea_id)
-    return brief
+    try:
+        sync_result = await _sync_existing_autopilot_brief_if_present(idea_id)
+    except HTTPException as exc:
+        return brief, {
+            "status": "pending_retry",
+            "status_code": exc.status_code,
+            "error": exc.detail,
+        }
+
+    if sync_result is None:
+        return brief, {"status": "not_linked"}
+    return brief, {"status": "ok", "result": sync_result}
 
 
 def _tool_transport(tool: ToolConfig) -> str:
@@ -1046,7 +1092,7 @@ def _resolve_agents(req: RunRequest):
     scenario = get_scenario(req.scenario_id) if req.scenario_id else None
     if scenario:
         return scenario["default_agents"]
-    return DEFAULT_AGENTS.get(req.mode, [])
+    return _default_agents().get(req.mode, [])
 
 
 @router.post("/run")
@@ -1059,8 +1105,9 @@ async def ep_run(req: RunRequest):
             422,
             f"Scenario '{req.scenario_id}' is bound to mode '{scenario['mode']}', not '{req.mode}'.",
         )
-    if req.mode not in AVAILABLE_MODES:
-        raise HTTPException(400, f"Unknown mode: {req.mode}. Available: {list(AVAILABLE_MODES.keys())}")
+    available_modes = _available_modes()
+    if req.mode not in available_modes:
+        raise HTTPException(400, f"Unknown mode: {req.mode}. Available: {list(available_modes.keys())}")
     agents = normalize_agent_configs(_resolve_agents(req))
     run_config = dict(scenario.get("default_config", {})) if scenario else {}
     run_config.update(req.config)
@@ -1463,8 +1510,11 @@ async def ep_update_discovery_execution_brief_approval(
     idea_id: str,
     body: ExecutionBriefApprovalUpdateRequest,
 ):
-    brief = await _update_execution_brief_candidate_approval(idea_id, body)
-    return brief
+    brief, autopilot_sync = await _update_execution_brief_candidate_approval(idea_id, body)
+    return {
+        **brief.model_dump(mode="json"),
+        "autopilot_sync": autopilot_sync,
+    }
 
 
 @router.get("/discovery/ideas/{idea_id}/dossier")
@@ -2210,10 +2260,10 @@ async def ep_modes():
     return {
         mode: {
             "description": desc,
-            "default_agents": [a.model_dump() for a in DEFAULT_AGENTS.get(mode, [])],
+            "default_agents": [a.model_dump() for a in _default_agents().get(mode, [])],
             "requirements": MODE_AGENT_REQUIREMENTS.get(mode, {}),
         }
-        for mode, desc in AVAILABLE_MODES.items()
+        for mode, desc in _available_modes().items()
     }
 
 
@@ -2615,7 +2665,7 @@ class _ApproveBriefRequest(BaseModel):
 async def ep_approve_brief(idea_id: str, body: _ApproveBriefRequest | None = None):
     """Approve a pending execution brief for launch."""
     payload = body or _ApproveBriefRequest()
-    brief = await _update_execution_brief_candidate_approval(
+    brief, autopilot_sync = await _update_execution_brief_candidate_approval(
         idea_id,
         ExecutionBriefApprovalUpdateRequest(
             status="approved",
@@ -2627,7 +2677,12 @@ async def ep_approve_brief(idea_id: str, body: _ApproveBriefRequest | None = Non
         decision_type="execution_brief_approved",
         rationale="Founder approved the execution brief.",
     )
-    return {"status": "ok", "idea_id": idea_id, "brief": brief.model_dump(mode="json")}
+    return {
+        "status": "ok",
+        "idea_id": idea_id,
+        "brief": brief.model_dump(mode="json"),
+        "autopilot_sync": autopilot_sync,
+    }
 
 
 class _RejectBriefRequest(BaseModel):
@@ -2641,7 +2696,7 @@ class _RejectBriefRequest(BaseModel):
 async def ep_reject_brief(idea_id: str, body: _RejectBriefRequest | None = None):
     """Reject a pending execution brief."""
     payload = body or _RejectBriefRequest()
-    brief = await _update_execution_brief_candidate_approval(
+    brief, autopilot_sync = await _update_execution_brief_candidate_approval(
         idea_id,
         ExecutionBriefApprovalUpdateRequest(
             status="rejected",
@@ -2653,4 +2708,9 @@ async def ep_reject_brief(idea_id: str, body: _RejectBriefRequest | None = None)
         decision_type="execution_brief_rejected",
         rationale=payload.reason or "Founder rejected the execution brief.",
     )
-    return {"status": "ok", "idea_id": idea_id, "brief": brief.model_dump(mode="json")}
+    return {
+        "status": "ok",
+        "idea_id": idea_id,
+        "brief": brief.model_dump(mode="json"),
+        "autopilot_sync": autopilot_sync,
+    }
