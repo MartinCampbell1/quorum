@@ -551,6 +551,9 @@ class DiscoveryHandoffService:
                 autopilot_meta["project_name"] = effective_name
             if project_path:
                 autopilot_meta["project_path"] = project_path
+            autopilot_api_base = str(autopilot_payload.get("autopilot_api_base") or "").strip()
+            if autopilot_api_base:
+                autopilot_meta["autopilot_api_base"] = autopilot_api_base
             if dossier.execution_brief_candidate is not None:
                 autopilot_meta["brief_id"] = dossier.execution_brief_candidate.brief_id
             if autopilot_payload:

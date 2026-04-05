@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from orchestrator.execution_brief import SendExecutionBriefRequest
+from orchestrator.handoff_models import SendExecutionBriefRequest
 from orchestrator.handoff_bridge import _infer_brief_kind, _send_brief_to_autopilot
 
 

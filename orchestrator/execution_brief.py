@@ -7,11 +7,16 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from orchestrator.handoff_models import (
+    DEFAULT_AUTOPILOT_API_BASE,
+    AutopilotLaunchPreset,
+    AutopilotLaunchProfile,
+    ExecutionBriefExportRequest,
+    SendExecutionBriefRequest,
+)
 from orchestrator.modes.base import call_agent, strip_markdown_fence
 from orchestrator.models import AgentConfig
 from orchestrator.scenarios import get_scenario
-
-DEFAULT_AUTOPILOT_API_BASE = "http://127.0.0.1:8420/api"
 
 
 class FounderContext(BaseModel):
@@ -72,33 +77,6 @@ class ExecutionBrief(BaseModel):
     monetization: MonetizationContext = Field(default_factory=MonetizationContext)
     evaluation: EvaluationContext = Field(default_factory=EvaluationContext)
     provenance: ProvenanceContext = Field(default_factory=ProvenanceContext)
-
-
-class ExecutionBriefExportRequest(BaseModel):
-    provider: str | None = None
-
-
-class AutopilotLaunchProfile(BaseModel):
-    preset: str = "fast"
-    story_execution_mode: str | None = None
-    project_concurrency_mode: str | None = None
-    max_parallel_stories: int | None = None
-
-
-class AutopilotLaunchPreset(BaseModel):
-    id: str
-    label: str
-    description: str = ""
-    launch_profile: AutopilotLaunchProfile
-
-
-class SendExecutionBriefRequest(ExecutionBriefExportRequest):
-    autopilot_url: str = DEFAULT_AUTOPILOT_API_BASE
-    project_name: str | None = None
-    project_path: str | None = None
-    priority: str = "normal"
-    launch: bool = False
-    launch_profile: AutopilotLaunchProfile | None = None
 
 
 class TournamentCandidate(BaseModel):
