@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 import orchestrator.api as orchestrator_api
@@ -391,8 +391,56 @@ def test_founder_approval_alias_syncs_existing_autopilot_project():
 
     assert approve.status_code == 200, approve.text
     assert approve.json()["brief"]["brief_approval_status"] == "approved"
+    assert approve.json()["autopilot_sync"]["status"] == "ok"
     assert captured["url"] == f"http://autopilot:8001/api/projects/briefs/{candidate['brief_id']}/sync-v2"
     payload = captured["payload"]
     assert payload["brief"]["brief_approval_status"] == "approved"
     assert payload["brief"]["approved_by"] == "founder"
     assert payload["brief"]["revision_id"] == candidate["revision_id"]
+
+
+def test_founder_approval_alias_preserves_local_approval_when_autopilot_sync_fails():
+    seeded = _seed_discovery_idea(with_simulation=False)
+    idea_id = seeded["idea_id"]
+
+    with patch(
+        "orchestrator.api._send_brief_to_autopilot",
+        new=AsyncMock(return_value={"project_id": "proj_123", "status": "ok", "launched": False}),
+    ):
+        send = client.post(
+            f"/orchestrate/discovery/ideas/{idea_id}/handoff/send-to-autopilot",
+            json={
+                "autopilot_url": "http://autopilot:8001/api",
+                "project_path": "/tmp/repo-signal-monitor",
+                "priority": "high",
+                "launch": False,
+            },
+        )
+    assert send.status_code == 200, send.text
+
+    dossier = client.get(f"/orchestrate/discovery/ideas/{idea_id}/dossier").json()
+    candidate = dossier["execution_brief_candidate"]
+
+    with patch(
+        "orchestrator.api._sync_existing_autopilot_brief_if_present",
+        new=AsyncMock(side_effect=HTTPException(502, "Failed to reach Autopilot sync bridge: timeout")),
+    ):
+        approve = client.post(
+            f"/orchestrate/founder/approval/{idea_id}/approve",
+            json={
+                "actor": "founder",
+                "expected_brief_id": candidate["brief_id"],
+                "expected_revision_id": candidate["revision_id"],
+            },
+        )
+
+    assert approve.status_code == 200, approve.text
+    payload = approve.json()
+    assert payload["brief"]["brief_approval_status"] == "approved"
+    assert payload["autopilot_sync"]["status"] == "pending_retry"
+    assert payload["autopilot_sync"]["status_code"] == 502
+    assert "Autopilot sync bridge" in payload["autopilot_sync"]["error"]
+
+    refreshed = client.get(f"/orchestrate/discovery/ideas/{idea_id}/dossier").json()
+    assert refreshed["execution_brief_candidate"]["brief_approval_status"] == "approved"
+    assert refreshed["execution_brief_candidate"]["approved_by"] == "founder"

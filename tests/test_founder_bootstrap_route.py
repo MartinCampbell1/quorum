@@ -2,17 +2,6 @@
 
 from __future__ import annotations
 
-import sys
-from unittest.mock import MagicMock
-
-# Pre-mock heavy dependencies to avoid requiring langgraph for route tests
-for mod in [
-    "langgraph", "langgraph.graph", "langgraph.graph.state",
-    "langgraph.prebuilt", "langgraph.checkpoint",
-    "langgraph.checkpoint.memory",
-]:
-    sys.modules.setdefault(mod, MagicMock())
-
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
