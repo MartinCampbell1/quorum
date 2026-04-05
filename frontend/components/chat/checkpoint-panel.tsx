@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useSWRConfig } from "swr";
 import { GitBranch, Loader2, RotateCcw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -8,6 +9,8 @@ import { controlSession } from "@/lib/api";
 import { useLocale } from "@/lib/locale";
 import type { Session } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+import { extractReadableAgentText } from "./rich-text";
 
 interface CheckpointPanelProps {
   session: Session;
@@ -32,7 +35,12 @@ export function CheckpointPanel({
   onRefresh,
 }: CheckpointPanelProps) {
   const { copy } = useLocale();
+  const { mutate } = useSWRConfig();
   const [branchingCheckpointId, setBranchingCheckpointId] = useState<string | null>(null);
+  const canBranchFromCheckpoint = session.runtime_state?.can_branch_from_checkpoint ?? true;
+  const branchUnavailableReason = !canBranchFromCheckpoint
+    ? session.runtime_state?.reasons?.branch_from_checkpoint?.message ?? null
+    : null;
 
   const checkpoints = useMemo(
     () => [...(session.checkpoints ?? [])].sort((a, b) => b.timestamp - a.timestamp),
@@ -50,6 +58,7 @@ export function CheckpointPanel({
       );
       await onRefresh?.();
       if (result.new_session_id) {
+        await mutate("/orchestrate/sessions");
         onForkSession?.(result.new_session_id);
       }
     } finally {
@@ -136,7 +145,7 @@ export function CheckpointPanel({
                     </div>
                     {checkpoint.result_preview ? (
                       <div className="mt-2 text-[12px] leading-5 text-[#111111]/80 dark:text-slate-300">
-                        {checkpoint.result_preview}
+                        {extractReadableAgentText(checkpoint.result_preview, { preferStructuredAnswer: true }) || checkpoint.result_preview}
                       </div>
                     ) : null}
                   </button>
@@ -146,13 +155,18 @@ export function CheckpointPanel({
                     size="sm"
                     className="rounded-[10px] border-[#d6dbe6] bg-white text-[11px] dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:hover:bg-slate-900"
                     onClick={() => branchFromCheckpoint(checkpoint.id)}
-                    disabled={isBranching || Boolean(session.parallel_parent_id) || ["running", "pause_requested", "cancel_requested"].includes(session.status)}
-                    >
-                      {isBranching ? (
-                        <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <GitBranch className="mr-1.5 h-3.5 w-3.5" />
-                      )}
+                    disabled={
+                      isBranching ||
+                      Boolean(session.parallel_parent_id) ||
+                      ["running", "pause_requested", "cancel_requested"].includes(session.status) ||
+                      !canBranchFromCheckpoint
+                    }
+                  >
+                    {isBranching ? (
+                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <GitBranch className="mr-1.5 h-3.5 w-3.5" />
+                    )}
                     {copy.monitor.fork}
                   </Button>
                 </div>
@@ -171,6 +185,12 @@ export function CheckpointPanel({
           <div className="flex items-center gap-2 rounded-[14px] border border-[#d6dbe6] bg-[#fafbff] px-3 py-3 text-[12px] text-[#6b7280] dark:border-slate-800 dark:bg-slate-900/80 dark:text-slate-400">
             <RotateCcw className="h-4 w-4" />
             {copy.monitor.selectedHistoricCheckpoint} {selectedCheckpointId}. {copy.monitor.selectedHistoricHint}
+          </div>
+        ) : null}
+
+        {branchUnavailableReason ? (
+          <div className="rounded-[14px] border border-[#d6dbe6] bg-[#fafbff] px-3 py-3 text-[12px] leading-5 text-[#6b7280] dark:border-slate-800 dark:bg-slate-900/80 dark:text-slate-400">
+            {branchUnavailableReason}
           </div>
         ) : null}
       </div>

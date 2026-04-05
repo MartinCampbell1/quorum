@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -153,6 +154,34 @@ def test_custom_shell_tool_routes_through_configured_tools_server(tmp_path):
         tool_config_store.delete("local_probe")
 
 
+def test_blocked_mcp_server_is_skipped_from_gateway_registration():
+    tool = ToolConfig(
+        id="blocked_remote_mcp",
+        name="Blocked Remote MCP",
+        tool_type="mcp_server",
+        icon="🔌",
+        config={"transport": "http", "url": "https://example.com/mcp"},
+        enabled=True,
+        guardrail_status="blocked",
+        last_guardrail_report={"summary": "Blocked by test"},
+        wrapper_mode="blocked",
+        trust_level="blocked",
+    )
+    tool_config_store.add(tool)
+    gateway.BOOTSTRAPPED_MCP_SERVERS.clear()
+    env = {"CODEX_HOME": "/tmp/codex_blocked_guardrail"}
+
+    try:
+        with patch("gateway.run_cli", new=AsyncMock(return_value=("", "", 0))) as mock_run:
+            asyncio.run(gateway.ensure_registered_mcp_servers("codex", env, ["blocked_remote_mcp"]))
+
+        assert gateway.resolve_mcp_servers(["blocked_remote_mcp"]) == []
+        assert mock_run.await_count == 0
+    finally:
+        tool_config_store.delete("blocked_remote_mcp")
+        gateway.BOOTSTRAPPED_MCP_SERVERS.clear()
+
+
 def test_call_agent_marks_empty_output_as_failed_even_with_zero_exit_code():
     with (
         patch("gateway.run_cli", new=AsyncMock(return_value=("", "no visible response", 0))),
@@ -174,6 +203,66 @@ def test_parse_output_strips_runtime_warning_prefix_from_provider_text():
     warning = "MCP issues detected. Run /mcp list for status."
     assert gateway.parse_output("gemini", f"{warning} Final answer") == "Final answer"
     assert gateway.has_usable_output(gateway.parse_output("gemini", warning)) is False
+
+
+def test_parse_output_reads_claude_stream_json_result():
+    stdout = "\n".join(
+        [
+            json.dumps({"type": "system", "subtype": "init"}),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {"type": "text", "text": "Interim text"},
+                        ]
+                    },
+                }
+            ),
+            json.dumps({"type": "result", "result": "Final answer"}),
+        ]
+    )
+
+    assert gateway.parse_output("claude", stdout) == "Final answer"
+
+
+def test_is_rate_limited_ignores_allowed_claude_rate_limit_events():
+    stdout = "\n".join(
+        [
+            json.dumps({"type": "system", "subtype": "init"}),
+            json.dumps(
+                {
+                    "type": "rate_limit_event",
+                    "rate_limit_info": {
+                        "status": "allowed",
+                        "rateLimitType": "five_hour",
+                    },
+                }
+            ),
+            json.dumps({"type": "result", "result": "OK"}),
+        ]
+    )
+
+    assert gateway.is_rate_limited(stdout) is False
+
+
+def test_build_env_strips_claude_managed_profile_api_and_session_env():
+    profile = gateway.Profile(name="acc1", provider="claude", path="/tmp/claude-acc1")
+    original_env = os.environ.copy()
+    os.environ["ANTHROPIC_API_KEY"] = "secret"
+    os.environ["CLAUDE_CODE_SESSION"] = "session-123"
+    os.environ["CLAUDE_CODE_PARENT_SESSION"] = "parent-456"
+
+    try:
+        env = gateway.build_env(profile)
+    finally:
+        os.environ.clear()
+        os.environ.update(original_env)
+
+    assert env["HOME"] == "/tmp/claude-acc1/home"
+    assert "ANTHROPIC_API_KEY" not in env
+    assert "CLAUDE_CODE_SESSION" not in env
+    assert "CLAUDE_CODE_PARENT_SESSION" not in env
 
 
 def test_build_cmd_skips_codex_search_flag_when_cli_does_not_support_it():
@@ -289,6 +378,40 @@ def test_profile_pool_can_wait_for_busy_profile_release():
     asyncio.run(scenario())
 
 
+def test_profile_pool_allows_multiple_parallel_leases_when_profile_capacity_allows():
+    pool = gateway.ProfilePool(
+        provider="claude",
+        profiles=[
+            gateway.Profile(
+                name="acc1",
+                provider="claude",
+                path="/tmp/claude-acc1",
+                max_parallel_leases=2,
+            ),
+        ],
+    )
+
+    async def scenario():
+        first = await pool.get_next()
+        second = await pool.get_next()
+        third = await pool.get_next()
+
+        assert first is not None and first.name == "acc1"
+        assert second is not None and second.name == "acc1"
+        assert third is None
+
+        statuses = pool.status()
+        assert statuses[0]["active_leases"] == 2
+        assert statuses[0]["available"] is False
+
+        await pool.mark_success(first)
+        statuses = pool.status()
+        assert statuses[0]["active_leases"] == 1
+        assert statuses[0]["available"] is True
+
+    asyncio.run(scenario())
+
+
 def test_call_agent_does_not_put_profile_on_cooldown_for_generic_cli_error():
     pool = gateway.ProfilePool(
         provider="claude",
@@ -325,6 +448,20 @@ def test_call_agent_does_not_put_profile_on_cooldown_for_generic_cli_error():
     assert statuses["acc1"]["available"] is True
 
 
+def test_ensure_gemini_auth_settings_restores_selected_auth_type(tmp_path):
+    home_dir = tmp_path / "home"
+    gemini_dir = home_dir / ".gemini"
+    gemini_dir.mkdir(parents=True)
+    (gemini_dir / "oauth_creds.json").write_text('{"refresh_token":"token"}', encoding="utf-8")
+    (gemini_dir / "settings.json").write_text('{"mcpServers":{"search-server":{"command":"python3"}}}', encoding="utf-8")
+
+    gateway._ensure_gemini_auth_settings(home_dir)
+
+    settings = json.loads((gemini_dir / "settings.json").read_text(encoding="utf-8"))
+    assert settings["security"]["auth"]["selectedType"] == "oauth-personal"
+    assert "mcpServers" in settings
+
+
 def test_resolve_timeout_supports_default_and_disabled_mode():
     assert gateway.resolve_timeout(None) == gateway.DEFAULT_TIMEOUT
     assert gateway.resolve_timeout(0) is None
@@ -344,3 +481,56 @@ def test_run_cli_raises_on_silent_stall():
         assert "stalled" in str(exc_info.value.detail).lower()
 
     asyncio.run(scenario())
+
+
+def test_call_agent_forwards_stall_timeout_to_cli_runner():
+    with (
+        patch("gateway.run_cli", new=AsyncMock(return_value=("ok", "", 0))) as mock_run,
+        patch.dict(gateway.pools, {}, clear=True),
+    ):
+        result = asyncio.run(
+            gateway.call_agent(
+                "codex",
+                "Reply with exactly ok",
+                stall_timeout=33,
+            )
+        )
+
+    assert result["success"] is True
+    assert mock_run.await_args.kwargs["stall_timeout"] == 33
+
+
+def test_call_agent_uses_claude_streaming_defaults_and_writes_runtime_events(tmp_path):
+    stdout = "\n".join(
+        [
+            json.dumps({"type": "system", "subtype": "init"}),
+            json.dumps({"type": "result", "result": "OK"}),
+        ]
+    )
+
+    with (
+        patch.object(gateway, "REAL_HOME", str(tmp_path)),
+        patch("gateway.default_env", return_value={"PATH": "/usr/bin", "ANTHROPIC_API_KEY": "secret"}),
+        patch("gateway.run_cli", new=AsyncMock(return_value=(stdout, "", 0))) as mock_run,
+        patch.dict(gateway.pools, {}, clear=True),
+    ):
+        result = asyncio.run(
+            gateway.call_agent(
+                "claude",
+                "Reply with exactly OK",
+                session_id="sess_runtime",
+                agent_role="judge",
+            )
+        )
+
+    assert result["success"] is True
+    assert result["output"] == "OK"
+    assert result["process_log_path"].startswith(str(tmp_path / ".multi-agent" / "provider_logs"))
+    assert mock_run.await_args.kwargs["stall_timeout"] == 0
+
+    runtime_file = tmp_path / ".multi-agent" / "runtime_events" / "sess_runtime.jsonl"
+    assert runtime_file.exists() is True
+    events = [json.loads(line) for line in runtime_file.read_text(encoding="utf-8").splitlines()]
+    event_types = [event["type"] for event in events]
+    assert "provider_call_started" in event_types
+    assert "provider_call_finished" in event_types

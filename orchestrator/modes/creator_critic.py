@@ -6,6 +6,7 @@ from typing import Annotated
 from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
 
+from orchestrator.debate.protocols import build_protocol_telemetry, resolve_protocol_for_mode
 from orchestrator.modes.base import apply_user_instructions, call_agent_cfg, make_message, require_agent_response
 
 
@@ -14,15 +15,23 @@ class CreatorCriticState(TypedDict):
     agents: list[dict]
     messages: Annotated[list[dict], operator.add]
     user_messages: list[str]
+    config: dict
     versions: list[str]
     critiques: list[str]
     iteration: int
     max_iterations: int
     approved: bool
+    protocol_name: str
+    protocol_telemetry: dict
     result: str
 
 
+def _protocol(state: CreatorCriticState):
+    return resolve_protocol_for_mode("creator_critic", state.get("config") or {})
+
+
 def creator_produces(state: CreatorCriticState) -> dict:
+    protocol = _protocol(state)
     creator = state["agents"][0]
     if state["iteration"] == 0:
         prompt = f"Complete this task:\n\n{state['task']}"
@@ -39,10 +48,15 @@ def creator_produces(state: CreatorCriticState) -> dict:
         call_agent_cfg(creator, apply_user_instructions(state, prompt)),
         "Creator step failed",
     )
-    return {"versions": [*state["versions"], response], "messages": [make_message(creator["role"], response, f"version_{state['iteration'] + 1}")]}
+    return {
+        "protocol_name": protocol.name,
+        "versions": [*state["versions"], response],
+        "messages": [make_message(creator["role"], response, f"version_{state['iteration'] + 1}", protocol_name=protocol.name)],
+    }
 
 
 def critic_evaluates(state: CreatorCriticState) -> dict:
+    protocol = _protocol(state)
     critic = state["agents"][1]
     latest_version = state["versions"][-1]
     prompt = (
@@ -56,10 +70,17 @@ def critic_evaluates(state: CreatorCriticState) -> dict:
         "Critic step failed",
     )
     approved = "APPROVED" in response.upper() and "NEEDS_WORK" not in response.upper()
+    telemetry = build_protocol_telemetry(
+        protocol.name,
+        texts=[*state["versions"], response],
+        confidence=0.82 if approved else 0.46,
+    )
     return {
         "critiques": [*state["critiques"], response], "iteration": state["iteration"] + 1,
         "approved": approved, "result": latest_version if approved else "",
-        "messages": [make_message(critic["role"], response, f"critique_{state['iteration'] + 1}")],
+        "protocol_name": protocol.name,
+        "protocol_telemetry": telemetry.model_dump(),
+        "messages": [make_message(critic["role"], response, f"critique_{state['iteration'] + 1}", protocol_name=protocol.name, telemetry=telemetry.model_dump())],
     }
 
 
@@ -72,9 +93,17 @@ def route_after_critique(state: CreatorCriticState) -> str:
 
 
 def final_version(state: CreatorCriticState) -> dict:
+    protocol = _protocol(state)
+    telemetry = build_protocol_telemetry(
+        protocol.name,
+        texts=[*state["versions"], *state["critiques"]],
+        confidence=0.68 if state["versions"] else 0.0,
+    )
     return {
         "result": state["versions"][-1] if state["versions"] else "",
-        "messages": [make_message("system", f"Max iterations ({state['max_iterations']}) reached.", "max_iterations")],
+        "protocol_name": protocol.name,
+        "protocol_telemetry": telemetry.model_dump(),
+        "messages": [make_message("system", f"Max iterations ({state['max_iterations']}) reached.", "max_iterations", protocol_name=protocol.name, telemetry=telemetry.model_dump())],
     }
 
 

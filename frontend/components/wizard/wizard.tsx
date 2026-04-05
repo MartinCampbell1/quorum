@@ -58,6 +58,7 @@ export function Wizard({ onSessionCreated, onOpenSettings, resumeDraft = false }
   const [workspacePaths, setWorkspacePaths] = useState<string[]>(initialDraft?.workspacePaths ?? []);
   const [taskDraft, setTaskDraft] = useState(initialDraft?.taskDraft ?? "");
   const [launchConfigDraft, setLaunchConfigDraft] = useState<Record<string, unknown>>(initialDraft?.launchConfig ?? {});
+  const [launchError, setLaunchError] = useState<string | null>(null);
 
   function cloneAgents(source: AgentConfig[]): AgentConfig[] {
     return source.map((agent) => ({
@@ -103,6 +104,7 @@ export function Wizard({ onSessionCreated, onOpenSettings, resumeDraft = false }
   }, [step, selectedScenarioId, agents, workspacePresetIds, workspacePaths, taskDraft, launchConfigDraft]);
 
   function handleScenarioSelect(scenarioId: string) {
+    setLaunchError(null);
     setSelectedScenarioId(scenarioId);
     const scenario = findScenario(scenarios, scenarioId);
     if (scenario) {
@@ -114,6 +116,7 @@ export function Wizard({ onSessionCreated, onOpenSettings, resumeDraft = false }
     const scenario = findScenario(scenarios, selectedScenarioId);
     if (!scenario) return;
     setIsLaunching(true);
+    setLaunchError(null);
     try {
       const result = await runSession({
         mode: scenario.mode,
@@ -129,6 +132,7 @@ export function Wizard({ onSessionCreated, onOpenSettings, resumeDraft = false }
       onSessionCreated(result.session_id);
     } catch (err) {
       console.error("Launch failed:", err);
+      setLaunchError(err instanceof Error ? err.message : "Не удалось запустить сессию.");
     } finally {
       setIsLaunching(false);
     }
@@ -186,6 +190,8 @@ export function Wizard({ onSessionCreated, onOpenSettings, resumeDraft = false }
       defaultConfig={selectedScenario?.default_config}
       initialTask={taskDraft}
       initialConfig={launchConfigDraft}
+      launchError={launchError}
+      onClearLaunchError={() => setLaunchError(null)}
       onDraftChange={(task, config) => {
         setTaskDraft(task);
         setLaunchConfigDraft(config);

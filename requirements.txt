@@ -1,6 +1,9 @@
 fastapi>=0.104.0
 uvicorn>=0.24.0
 httpx>=0.25.0
+clickhouse-connect>=0.8.10
 langchain-core>=0.3.0
 langgraph>=1.0.0
 langchain-openai>=0.3.0
+mcp>=1.26.0
+neo4j>=5.28.0

@@ -16,6 +16,11 @@ from typing import Annotated, Literal, Optional
 from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
+from orchestrator.debate.blueprints import (
+    ProtocolBlueprint,
+    ShadowValidationSummary,
+    StateTransitionTrace,
+)
 from orchestrator.tool_configs import (
     TOOL_TYPES,
     codex_supports_native_mcp_server,
@@ -25,6 +30,7 @@ from orchestrator.tool_configs import (
     supported_providers_for_tool_type,
     tool_config_store,
 )
+from orchestrator.tools.security import tool_requires_guarded_wrapper
 
 
 CapabilityLevel = Literal["native", "bridged", "unavailable"]
@@ -100,6 +106,7 @@ MODE_AGENT_REQUIREMENTS: dict[str, dict[str, object]] = {
     "debate": {"exact": 3, "label": "proponent, opponent, judge"},
     "map_reduce": {"min": 3, "label": "planner, at least 1 worker, synthesizer"},
     "creator_critic": {"exact": 2, "label": "creator and critic"},
+    "moa": {"min": 5, "label": "at least 2 proposers + 2 aggregators + final synthesizer"},
     "tournament": {"min": 3, "label": "at least 2 contestants + judge"},
     "tournament_match": {"exact": 3, "label": "contestant A, contestant B, judge"},
 }
@@ -157,6 +164,12 @@ CONFIGURED_TOOL_CAPABILITIES: dict[str, dict[str, CapabilityLevel]] = {
         "minimax": "unavailable",
     },
     "perplexity": {
+        "claude": "native",
+        "gemini": "bridged",
+        "codex": "bridged",
+        "minimax": "unavailable",
+    },
+    "bright_data_serp": {
         "claude": "native",
         "gemini": "bridged",
         "codex": "bridged",
@@ -277,7 +290,219 @@ class SessionResponse(BaseModel):
     branch_children: list[dict] = Field(default_factory=list)
     parallel_children: list[dict] = Field(default_factory=list)
     parallel_progress: dict = Field(default_factory=dict)
+    protocol_blueprint: ProtocolBlueprint | None = None
+    protocol_trace: list[StateTransitionTrace] = Field(default_factory=list)
+    protocol_shadow_validation: ShadowValidationSummary | None = None
+    topology_state: dict | None = None
+    generation_trace: dict | None = None
     runtime_state: dict = Field(default_factory=dict)
+
+
+MoAGenerationLayer = Literal["layer1", "layer2", "judge_pack", "final"]
+
+
+class MoALayerArtifact(BaseModel):
+    artifact_id: str = Field(default_factory=lambda: f"moa_artifact_{uuid.uuid4().hex[:12]}")
+    layer: MoAGenerationLayer
+    agent_role: str
+    provider: str
+    candidate_id: Optional[str] = None
+    content: str
+    summary: str = ""
+    metadata: dict[str, object] = Field(default_factory=dict)
+    generated_at: float = Field(default_factory=time.time)
+
+
+class MoAJudgeScore(BaseModel):
+    judge_role: str
+    candidate_id: str
+    overall_score: float = 0.0
+    criteria: dict[str, float] = Field(default_factory=dict)
+    rationale: str = ""
+
+
+class MoAGenerationTrace(BaseModel):
+    local_first: bool = False
+    aggregator_count: int = 2
+    judge_criteria: list[str] = Field(default_factory=list)
+    prompt_profile_id: Optional[str] = None
+    prompt_profile_label: Optional[str] = None
+    improvement_tactics: list[str] = Field(default_factory=list)
+    novelty_context: dict[str, object] = Field(default_factory=dict)
+    layer1_outputs: list[MoALayerArtifact] = Field(default_factory=list)
+    layer2_outputs: list[MoALayerArtifact] = Field(default_factory=list)
+    judge_scores: list[MoAJudgeScore] = Field(default_factory=list)
+    trace_artifacts: list[MoALayerArtifact] = Field(default_factory=list)
+    selected_candidate_id: Optional[str] = None
+    final_artifact: MoALayerArtifact | None = None
+
+
+RepoSourceType = Literal["local", "github"]
+RepoComplexity = Literal["low", "medium", "high", "very_high"]
+
+
+class RepoDigestAnalyzeRequest(BaseModel):
+    """Request body for fast repo digest + RepoDNA extraction."""
+
+    source: str
+    branch: Optional[str] = None
+    include_patterns: list[str] = Field(default_factory=list)
+    exclude_patterns: list[str] = Field(default_factory=list)
+    issue_texts: list[str] = Field(default_factory=list)
+    issue_limit: int = 8
+    max_files: int = 250
+    hot_file_limit: int = 8
+    refresh: bool = False
+
+
+class RepoHotFile(BaseModel):
+    path: str
+    language: Optional[str] = None
+    line_count: int = 0
+    importance_score: float = 0.0
+    reasons: list[str] = Field(default_factory=list)
+
+
+class RepoIssueTheme(BaseModel):
+    label: str
+    frequency: int = 0
+    evidence: list[str] = Field(default_factory=list)
+
+
+class RepoDigestSummary(BaseModel):
+    digest_id: str = Field(default_factory=lambda: f"digest_{uuid.uuid4().hex[:12]}")
+    source: str
+    source_type: RepoSourceType
+    repo_name: str
+    repo_root: Optional[str] = None
+    branch: Optional[str] = None
+    commit_sha: Optional[str] = None
+    generated_at: float = Field(default_factory=time.time)
+    tree_preview: list[str] = Field(default_factory=list)
+    languages: dict[str, int] = Field(default_factory=dict)
+    tech_stack: list[str] = Field(default_factory=list)
+    dominant_domains: list[str] = Field(default_factory=list)
+    readme_claims: list[str] = Field(default_factory=list)
+    issue_themes: list[RepoIssueTheme] = Field(default_factory=list)
+    hot_files: list[RepoHotFile] = Field(default_factory=list)
+    key_paths: list[str] = Field(default_factory=list)
+    file_count: int = 0
+
+
+class RepoDNAProfile(BaseModel):
+    profile_id: str = Field(default_factory=lambda: f"repodna_{uuid.uuid4().hex[:12]}")
+    source: str
+    repo_name: str
+    generated_at: float = Field(default_factory=time.time)
+    languages: list[str] = Field(default_factory=list)
+    domain_clusters: list[str] = Field(default_factory=list)
+    preferred_complexity: RepoComplexity = "medium"
+    recurring_pain_areas: list[str] = Field(default_factory=list)
+    adjacent_product_opportunities: list[str] = Field(default_factory=list)
+    repeated_builds: list[str] = Field(default_factory=list)
+    avoids: list[str] = Field(default_factory=list)
+    breaks_often: list[str] = Field(default_factory=list)
+    adjacent_buyer_pain: list[str] = Field(default_factory=list)
+    idea_generation_context: str = ""
+    ranking_priors: list[str] = Field(default_factory=list)
+    swipe_explanation_points: list[str] = Field(default_factory=list)
+
+
+class RepoDigestResult(BaseModel):
+    digest: RepoDigestSummary
+    profile: RepoDNAProfile
+    cache_hit: bool = False
+    warnings: list[str] = Field(default_factory=list)
+
+
+RepoGraphTrigger = Literal["promoted", "explicit", "background"]
+
+
+class RepoGraphAnalyzeRequest(BaseModel):
+    """Request body for on-demand deep repo intelligence."""
+
+    source: str
+    branch: Optional[str] = None
+    issue_texts: list[str] = Field(default_factory=list)
+    max_files: int = 400
+    refresh: bool = False
+    trigger: RepoGraphTrigger = "explicit"
+
+
+class RepoGraphNodeRecord(BaseModel):
+    node_id: str
+    kind: str
+    label: str
+    source_ref: Optional[str] = None
+    weight: float = 1.0
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class RepoGraphEdgeRecord(BaseModel):
+    edge_id: str
+    kind: str
+    source_node_id: str
+    target_node_id: str
+    weight: float = 1.0
+    evidence: list[str] = Field(default_factory=list)
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class RepoGraphCommunityRecord(BaseModel):
+    community_id: str
+    title: str
+    summary: str
+    node_ids: list[str] = Field(default_factory=list)
+    finding_points: list[str] = Field(default_factory=list)
+    rank_score: float = 0.0
+
+
+class RepoGraphEvidenceTrail(BaseModel):
+    trail_id: str
+    thesis: str
+    explanation: str
+    supporting_node_ids: list[str] = Field(default_factory=list)
+    supporting_edge_ids: list[str] = Field(default_factory=list)
+
+
+class RepoDeepDiveRecord(BaseModel):
+    deep_dive_id: str
+    graph_id: str
+    startup_territories: list[str] = Field(default_factory=list)
+    architectural_focus: list[str] = Field(default_factory=list)
+    risk_hotspots: list[str] = Field(default_factory=list)
+    adjacency_opportunities: list[str] = Field(default_factory=list)
+    why_now: list[str] = Field(default_factory=list)
+    evidence_trails: list[RepoGraphEvidenceTrail] = Field(default_factory=list)
+
+
+class RepoGraphStats(BaseModel):
+    node_count: int = 0
+    edge_count: int = 0
+    community_count: int = 0
+    api_count: int = 0
+    package_count: int = 0
+    problem_count: int = 0
+    generated_at: float = Field(default_factory=time.time)
+
+
+class RepoGraphResult(BaseModel):
+    graph_id: str = Field(default_factory=lambda: f"graph_{uuid.uuid4().hex[:12]}")
+    source: str
+    source_type: RepoSourceType
+    repo_name: str
+    branch: Optional[str] = None
+    commit_sha: Optional[str] = None
+    trigger: RepoGraphTrigger = "explicit"
+    generated_at: float = Field(default_factory=time.time)
+    repo_dna_profile: RepoDNAProfile | None = None
+    nodes: list[RepoGraphNodeRecord] = Field(default_factory=list)
+    edges: list[RepoGraphEdgeRecord] = Field(default_factory=list)
+    communities: list[RepoGraphCommunityRecord] = Field(default_factory=list)
+    deep_dive: RepoDeepDiveRecord
+    stats: RepoGraphStats = Field(default_factory=RepoGraphStats)
+    cache_hit: bool = False
+    warnings: list[str] = Field(default_factory=list)
 
 
 # ---- LangGraph State (TypedDict for graph nodes) ----
@@ -377,6 +602,9 @@ def _tool_subtitle(tool_id: str) -> str:
         host = str(configured.config.get("host", "")).strip()
         port = str(configured.config.get("port", "")).strip() or "22"
         return f"Host: {host}:{port}" if host else "Remote shell"
+    if configured.tool_type == "bright_data_serp":
+        zone = str(configured.config.get("zone", "")).strip() or "serp"
+        return f"Service: Bright Data · {zone}"
     if configured.tool_type in {"http_api", "custom_api"}:
         base_url = str(configured.config.get("base_url", "")).strip()
         return f"Base URL: {base_url}" if base_url else "Service: remote API"
@@ -394,6 +622,8 @@ def _tool_subtitle(tool_id: str) -> str:
         return "Provider: Brave"
     if configured.tool_type == "perplexity":
         return "Provider: Perplexity"
+    if configured.tool_type == "bright_data_serp":
+        return "Provider: Bright Data"
     return "MCP connection"
 
 
@@ -448,7 +678,11 @@ def capability_for_tool(provider: str, tool_id: str) -> CapabilityLevel:
     configured = tool_config_store.get(canonical_tool_id)
     if not configured or not configured.enabled:
         return "unavailable"
+    if configured.guardrail_status == "blocked":
+        return "unavailable"
     if configured.tool_type == "mcp_server":
+        if tool_requires_guarded_wrapper(configured):
+            return "bridged" if provider_key in {"claude", "gemini", "codex"} else "unavailable"
         transport = mcp_server_transport(configured.config)
         if provider_key == "claude":
             return "native"
@@ -659,6 +893,9 @@ _RUN_JSON_COLUMNS = {
     "attached_tool_ids",
     "provider_capabilities_snapshot",
     "parallel_progress",
+    "protocol_blueprint",
+    "protocol_trace",
+    "protocol_shadow_validation",
 }
 
 
@@ -716,7 +953,10 @@ class SessionStore:
                     workspace_paths_json TEXT NOT NULL,
                     attached_tool_ids_json TEXT NOT NULL,
                     provider_capabilities_snapshot_json TEXT NOT NULL,
-                    parallel_progress_json TEXT NOT NULL DEFAULT '{}'
+                    parallel_progress_json TEXT NOT NULL DEFAULT '{}',
+                    protocol_blueprint_json TEXT NOT NULL DEFAULT '{}',
+                    protocol_trace_json TEXT NOT NULL DEFAULT '[]',
+                    protocol_shadow_validation_json TEXT NOT NULL DEFAULT '{}'
                 )
                 """
             )
@@ -729,7 +969,21 @@ class SessionStore:
                     "parallel_stage": "TEXT",
                     "parallel_label": "TEXT",
                     "parallel_progress_json": "TEXT NOT NULL DEFAULT '{}'",
+                    "protocol_blueprint_json": "TEXT NOT NULL DEFAULT '{}'",
+                    "protocol_trace_json": "TEXT NOT NULL DEFAULT '[]'",
+                    "protocol_shadow_validation_json": "TEXT NOT NULL DEFAULT '{}'",
                 },
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS protocol_blueprint_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    blueprint_json TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    last_used_at REAL NOT NULL,
+                    use_count INTEGER NOT NULL DEFAULT 1
+                )
+                """
             )
             conn.execute(
                 """
@@ -774,6 +1028,7 @@ class SessionStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_checkpoints_session_ord ON checkpoints(session_id, ordinal)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_forked_from ON runs(forked_from)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_parallel_parent_id ON runs(parallel_parent_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_protocol_blueprint_cache_last_used ON protocol_blueprint_cache(last_used_at DESC)")
 
     def _ensure_run_columns(self, conn: sqlite3.Connection, required: dict[str, str]) -> None:
         existing = {row["name"] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
@@ -811,11 +1066,88 @@ class SessionStore:
                 candidate.unlink(missing_ok=True)
             self.checkpoint_runtime_path(sid).unlink(missing_ok=True)
 
+    def _collect_session_tree_ids_conn(
+        self,
+        conn: sqlite3.Connection,
+        sid: str,
+        seen: set[str],
+    ) -> None:
+        if sid in seen:
+            return
+        row = conn.execute("SELECT id FROM runs WHERE id = ?", (sid,)).fetchone()
+        if not row:
+            return
+        seen.add(sid)
+        child_rows = conn.execute(
+            """
+            SELECT id
+            FROM runs
+            WHERE forked_from = ? OR parallel_parent_id = ?
+            ORDER BY created_at ASC
+            """,
+            (sid, sid),
+        ).fetchall()
+        for child in child_rows:
+            self._collect_session_tree_ids_conn(conn, child["id"], seen)
+
+    def _delete_session_ids_conn(self, conn: sqlite3.Connection, session_ids: list[str]) -> None:
+        if not session_ids:
+            return
+        conn.executemany("DELETE FROM events WHERE session_id = ?", [(sid,) for sid in session_ids])
+        conn.executemany("DELETE FROM checkpoints WHERE session_id = ?", [(sid,) for sid in session_ids])
+        conn.executemany("DELETE FROM runs WHERE id = ?", [(sid,) for sid in session_ids])
+        for sid in session_ids:
+            for candidate in self._runtime_events_dir.glob(f"{sid}*.jsonl"):
+                candidate.unlink(missing_ok=True)
+            self.checkpoint_runtime_path(sid).unlink(missing_ok=True)
+
     def _runtime_event_path(self, sid: str) -> Path:
         return self._runtime_events_dir / f"{sid}.jsonl"
 
     def checkpoint_runtime_path(self, sid: str) -> Path:
         return self._checkpoint_runtimes_dir / f"{sid}.pkl"
+
+    def get_cached_protocol_blueprint(self, cache_key: str) -> dict | None:
+        normalized_cache_key = str(cache_key or "").strip()
+        if not normalized_cache_key:
+            return None
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT blueprint_json FROM protocol_blueprint_cache WHERE cache_key = ?",
+                (normalized_cache_key,),
+            ).fetchone()
+            if not row:
+                return None
+            now = time.time()
+            conn.execute(
+                """
+                UPDATE protocol_blueprint_cache
+                SET last_used_at = ?, use_count = use_count + 1
+                WHERE cache_key = ?
+                """,
+                (now, normalized_cache_key),
+            )
+            return self._decode(row["blueprint_json"], {})
+
+    def put_cached_protocol_blueprint(self, cache_key: str, blueprint: dict) -> None:
+        normalized_cache_key = str(cache_key or "").strip()
+        if not normalized_cache_key:
+            return
+        now = time.time()
+        encoded = self._encode(copy.deepcopy(blueprint))
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO protocol_blueprint_cache (
+                    cache_key, blueprint_json, created_at, last_used_at, use_count
+                ) VALUES (?, ?, ?, ?, 1)
+                ON CONFLICT(cache_key) DO UPDATE SET
+                    blueprint_json = excluded.blueprint_json,
+                    last_used_at = excluded.last_used_at,
+                    use_count = protocol_blueprint_cache.use_count + 1
+                """,
+                (normalized_cache_key, encoded, now, now),
+            )
 
     def _append_event_conn(
         self,
@@ -899,6 +1231,9 @@ class SessionStore:
         parallel_stage: Optional[str] = None,
         parallel_label: Optional[str] = None,
         parallel_progress: dict | None = None,
+        protocol_blueprint: dict | None = None,
+        protocol_trace: list[dict] | None = None,
+        protocol_shadow_validation: dict | None = None,
     ) -> str:
         sid = f"sess_{uuid.uuid4().hex[:12]}"
         payload = {
@@ -931,6 +1266,9 @@ class SessionStore:
             "attached_tool_ids": list(attached_tool_ids or []),
             "provider_capabilities_snapshot": copy.deepcopy(provider_capabilities_snapshot or {}),
             "parallel_progress": copy.deepcopy(parallel_progress or {}),
+            "protocol_blueprint": copy.deepcopy(protocol_blueprint or {}),
+            "protocol_trace": copy.deepcopy(protocol_trace or []),
+            "protocol_shadow_validation": copy.deepcopy(protocol_shadow_validation or {}),
         }
         with self._lock, self._connect() as conn:
             conn.execute(
@@ -943,8 +1281,9 @@ class SessionStore:
                     created_at, elapsed_sec, current_checkpoint_id, next_event_seq,
                     pending_instruction_queue_json, pending_instructions, active_node,
                     workspace_preset_ids_json, workspace_paths_json, attached_tool_ids_json,
-                    provider_capabilities_snapshot_json, parallel_progress_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    provider_capabilities_snapshot_json, parallel_progress_json,
+                    protocol_blueprint_json, protocol_trace_json, protocol_shadow_validation_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     sid,
@@ -976,6 +1315,9 @@ class SessionStore:
                     self._encode(payload["attached_tool_ids"]),
                     self._encode(payload["provider_capabilities_snapshot"]),
                     self._encode(payload["parallel_progress"]),
+                    self._encode(payload["protocol_blueprint"]),
+                    self._encode(payload["protocol_trace"]),
+                    self._encode(payload["protocol_shadow_validation"]),
                 ),
             )
             self._trim_sessions(conn)
@@ -1042,6 +1384,8 @@ class SessionStore:
         provider_capabilities_snapshot = self._decode(
             row["provider_capabilities_snapshot_json"], {}
         )
+        protocol_blueprint = self._decode(row["protocol_blueprint_json"], {})
+        protocol_shadow_validation = self._decode(row["protocol_shadow_validation_json"], {})
         return {
             "id": sid,
             "mode": row["mode"],
@@ -1079,6 +1423,9 @@ class SessionStore:
             "branch_children": branch_children,
             "parallel_children": parallel_children,
             "parallel_progress": self._decode(row["parallel_progress_json"], {}),
+            "protocol_blueprint": protocol_blueprint or None,
+            "protocol_trace": self._decode(row["protocol_trace_json"], []),
+            "protocol_shadow_validation": protocol_shadow_validation or None,
         }
 
     def get(self, sid: str) -> Optional[dict]:
@@ -1116,6 +1463,9 @@ class SessionStore:
             "attached_tool_ids": "attached_tool_ids_json",
             "provider_capabilities_snapshot": "provider_capabilities_snapshot_json",
             "parallel_progress": "parallel_progress_json",
+            "protocol_blueprint": "protocol_blueprint_json",
+            "protocol_trace": "protocol_trace_json",
+            "protocol_shadow_validation": "protocol_shadow_validation_json",
         }
         assignments: list[str] = []
         values: list[object] = []
@@ -1282,6 +1632,42 @@ class SessionStore:
                 }
                 for row in rows
             ]
+
+    def list_recent_protocol_summaries(self, limit: int = 50) -> list[dict]:
+        bounded_limit = max(1, min(limit, 200))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, task, protocol_blueprint_json
+                FROM runs
+                WHERE parallel_parent_id IS NULL
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (bounded_limit,),
+            ).fetchall()
+            return [
+                {
+                    "id": row["id"],
+                    "task": row["task"],
+                    "protocol_blueprint": self._decode(row["protocol_blueprint_json"], {}),
+                }
+                for row in rows
+            ]
+
+    def session_tree_ids(self, sid: str) -> list[str]:
+        with self._lock, self._connect() as conn:
+            seen: set[str] = set()
+            self._collect_session_tree_ids_conn(conn, sid, seen)
+            return list(seen)
+
+    def delete_session_tree(self, sid: str) -> list[str]:
+        with self._lock, self._connect() as conn:
+            seen: set[str] = set()
+            self._collect_session_tree_ids_conn(conn, sid, seen)
+            session_ids = list(seen)
+            self._delete_session_ids_conn(conn, session_ids)
+            return session_ids
 
     def list_parallel_children(self, parent_id: str) -> list[dict]:
         with self._lock, self._connect() as conn:

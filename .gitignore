@@ -1,5 +1,7 @@
 __pycache__/
 *.pyc
+.venv/
+.uv-cache/
 .superpowers/
 .DS_Store
 .codex_tmp/
