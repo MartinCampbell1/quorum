@@ -249,13 +249,13 @@ def _load_execution_brief_model():
     return ExecutionBrief
 
 
-def _generate_session_execution_brief(session: dict, provider: str | None = None):
+def generate_session_execution_brief(session: dict, provider: str | None = None):
     from orchestrator.execution_brief import generate_session_execution_brief
 
     return generate_session_execution_brief(session, provider)
 
 
-def _generate_session_tournament_preparation(session: dict, provider: str | None = None):
+def generate_session_tournament_preparation(session: dict, provider: str | None = None):
     from orchestrator.execution_brief import generate_session_tournament_preparation
 
     return generate_session_tournament_preparation(session, provider)
@@ -1253,7 +1253,7 @@ async def ep_execution_brief(session_id: str, req: ExecutionBriefExportRequest |
         raise HTTPException(404, f"Session not found: {session_id}")
     try:
         brief = await asyncio.to_thread(
-            _generate_session_execution_brief,
+            generate_session_execution_brief,
             session,
             req.provider if req else None,
         )
@@ -1269,7 +1269,7 @@ async def ep_tournament_preparation(session_id: str, req: TournamentPreparationR
         raise HTTPException(404, f"Session not found: {session_id}")
     try:
         preparation = await asyncio.to_thread(
-            _generate_session_tournament_preparation,
+            generate_session_tournament_preparation,
             session,
             req.provider if req else None,
         )
@@ -1284,7 +1284,7 @@ async def ep_send_to_autopilot(session_id: str, req: SendExecutionBriefRequest):
     if not session:
         raise HTTPException(404, f"Session not found: {session_id}")
     try:
-        brief = await asyncio.to_thread(_generate_session_execution_brief, session, req.provider)
+        brief = await asyncio.to_thread(generate_session_execution_brief, session, req.provider)
     except ValueError as exc:
         raise HTTPException(502, str(exc)) from exc
     autopilot = await _send_brief_to_autopilot(brief, req, discovery_store=_discovery_store())
