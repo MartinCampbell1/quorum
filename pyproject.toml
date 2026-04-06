@@ -38,6 +38,15 @@ dev = [
     "pytest-asyncio>=0.21",
 ]
 
+[tool.hatch.build.targets.wheel]
+packages = [
+    "orchestrator",
+    "mcp_servers",
+]
+include = [
+    "*.py",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

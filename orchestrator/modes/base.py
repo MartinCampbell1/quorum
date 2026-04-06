@@ -5,6 +5,7 @@ import os
 import re
 import time
 import threading
+from pathlib import Path
 from typing import Optional
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -27,6 +28,8 @@ except ImportError:
 
 from orchestrator.models import store
 from orchestrator.tools.router import route_tool_visibility
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 FALLBACK_PROVIDER_ORDER = {
