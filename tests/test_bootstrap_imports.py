@@ -2,7 +2,10 @@
 
 import importlib
 import os
+import subprocess
 import sys
+import textwrap
+from pathlib import Path
 
 from orchestrator.shared_contracts import (
     Confidence,
@@ -87,6 +90,60 @@ def test_bootstrap_modules_import_cleanly():
         sys.argv = original_argv
         if original_payload is not None:
             os.environ["CONFIGURED_TOOLS_PAYLOAD"] = original_payload
+
+
+def test_orchestrator_api_routes_import_without_langgraph_stack():
+    repo_root = Path(__file__).resolve().parents[1]
+    workspace_root = repo_root.parent
+    script = textwrap.dedent(
+        """
+        import importlib.abc
+        import os
+        import sys
+
+        blocked_prefixes = ("langchain_core", "langchain_openai", "langgraph")
+
+        class BlockingFinder(importlib.abc.MetaPathFinder):
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname.startswith(blocked_prefixes):
+                    raise ModuleNotFoundError(f"blocked import: {fullname}")
+                return None
+
+        original_payload = os.environ.pop("CONFIGURED_TOOLS_PAYLOAD", None)
+        sys.meta_path.insert(0, BlockingFinder())
+        for module_name in list(sys.modules):
+            if module_name.startswith(blocked_prefixes):
+                sys.modules.pop(module_name, None)
+
+        try:
+            from fastapi import FastAPI
+            from orchestrator.api import router
+
+            app = FastAPI()
+            app.include_router(router)
+            print("ok")
+        finally:
+            if original_payload is not None:
+                os.environ["CONFIGURED_TOOLS_PAYLOAD"] = original_payload
+        """
+    )
+    env = os.environ.copy()
+    pythonpath_entries = [str(repo_root), str(workspace_root)]
+    existing_pythonpath = env.get("PYTHONPATH")
+    if existing_pythonpath:
+        pythonpath_entries.append(existing_pythonpath)
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=workspace_root,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert result.stdout.strip().endswith("ok")
 
 
 def test_shared_contracts_round_trip_through_jsonable_payload():
