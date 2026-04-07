@@ -1,6 +1,6 @@
 "use client";
 
-import { RefreshCcw } from "lucide-react";
+import { Loader2, RefreshCcw, Trash2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { useLocale } from "@/lib/locale";
@@ -11,6 +11,9 @@ interface SessionItemProps {
   session: SessionSummary;
   isActive: boolean;
   onClick: () => void;
+  onDelete?: () => void;
+  isDeleting?: boolean;
+  canDelete?: boolean;
 }
 
 function timeAgo(timestamp: number, localeCopy: ReturnType<typeof useLocale>["copy"]): string {
@@ -21,20 +24,25 @@ function timeAgo(timestamp: number, localeCopy: ReturnType<typeof useLocale>["co
   return `${Math.floor(diff / 86400)} ${localeCopy.shell.time.days}`;
 }
 
-export function SessionItem({ session, isActive, onClick }: SessionItemProps) {
+export function SessionItem({
+  session,
+  isActive,
+  onClick,
+  onDelete,
+  isDeleting = false,
+  canDelete = false,
+}: SessionItemProps) {
   const { copy } = useLocale();
   return (
-    <button
-      type="button"
-      onClick={onClick}
+    <div
       className={cn(
-        "mb-3 w-full rounded-[16px] border bg-white px-4 py-3 text-left transition-all dark:bg-slate-950/60",
+        "mb-3 flex w-full items-start gap-2 rounded-[16px] border bg-white px-3 py-3 text-left transition-all dark:bg-slate-950/60",
         isActive
           ? "border-[#09090b] shadow-none dark:border-slate-400"
           : "border-[#e2e6ef] hover:border-[#cfd5e2] dark:border-slate-800 dark:hover:border-slate-700"
       )}
     >
-      <div className="flex items-start gap-3">
+      <button type="button" onClick={onClick} className="flex min-w-0 flex-1 items-start gap-3 text-left">
         <RefreshCcw className="mt-0.5 h-4 w-4 shrink-0 text-[#475569] dark:text-slate-400" />
         <div className="min-w-0 flex-1">
           <div className="truncate text-[13px] font-medium text-[#09090b] dark:text-slate-100">
@@ -58,7 +66,19 @@ export function SessionItem({ session, isActive, onClick }: SessionItemProps) {
             ) : null}
           </div>
         </div>
-      </div>
-    </button>
+      </button>
+      {canDelete ? (
+        <button
+          type="button"
+          aria-label={copy.shell.deleteSession}
+          title={copy.shell.deleteSession}
+          onClick={onDelete}
+          disabled={isDeleting}
+          className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[#e2e6ef] text-[#7b8190] transition-colors hover:border-[#cbd5e1] hover:bg-[#f8fafc] hover:text-[#111111] disabled:cursor-not-allowed dark:border-slate-800 dark:text-slate-400 dark:hover:border-slate-700 dark:hover:bg-slate-900"
+        >
+          {isDeleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+        </button>
+      ) : null}
+    </div>
   );
 }

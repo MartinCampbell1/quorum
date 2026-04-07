@@ -12,6 +12,8 @@ import orchestrator.modes.base as mode_base
 import orchestrator.modes.creator_critic as creator_critic
 import orchestrator.modes.democracy as democracy
 import orchestrator.modes.debate as debate
+import orchestrator.modes.tournament as tournament
+import orchestrator.generation.moa as moa_mode
 from orchestrator.engine import (
     SessionRunner,
     CHECKPOINT_SAVERS,
@@ -79,6 +81,91 @@ def test_creator_critic_supports_pause_resume_and_instruction_injection(monkeypa
         assert any(event["type"] == "agent_message" for event in completed["events"])
         assert any(event["type"] == "run_completed" for event in completed["events"])
         assert "Pay extra attention to recent Bitcoin news and volatility." in prompts[-1][1]
+
+    asyncio.run(scenario())
+
+
+def test_creator_critic_persists_protocol_blueprint_and_trace(monkeypatch):
+    def fake_call_agent_cfg(agent: dict, prompt: str) -> str:
+        if agent["role"] == "creator":
+            return "Draft analysis"
+        return "APPROVED"
+
+    monkeypatch.setattr(creator_critic, "call_agent_cfg", fake_call_agent_cfg)
+
+    async def scenario() -> None:
+        session_id = await run(
+            mode="creator_critic",
+            task="Refine the execution brief handoff.",
+            agents=[
+                AgentConfig(role="creator", provider="claude", tools=[]),
+                AgentConfig(role="critic", provider="claude", tools=[]),
+            ],
+            config={"max_iterations": 2},
+        )
+
+        completed = await _wait_for_status(session_id, "completed")
+
+        assert completed["protocol_blueprint"]["entry_node_id"] == "creator_produces"
+        assert completed["protocol_shadow_validation"]["validated_transitions"] >= 2
+        assert completed["protocol_shadow_validation"]["invalid_transitions"] == 0
+        assert any(step["from_node_id"] == "creator_produces" for step in completed["protocol_trace"])
+        assert completed["protocol_trace"][-1]["to_node_id"] == "__end__"
+        assert completed["config"]["topology_state"]["selected_template"]
+        assert completed["protocol_blueprint"]["planner_hints"]["topology"]["selected_template"]
+        assert any(event["type"] == "topology_optimized" for event in completed["events"])
+        assert any(event["type"] == "topology_runtime_plan" for event in completed["events"])
+
+    asyncio.run(scenario())
+
+
+def test_moa_persists_generation_trace_and_protocol_trace(monkeypatch):
+    def fake_call_agent_cfg(agent: dict, prompt: str) -> str:
+        role = agent["role"]
+        if "judge pack" in prompt.lower():
+            return (
+                '{"winner_candidate_id":"aggregate_1","summary":"aggregate_1 wins",'
+                '"scores":['
+                '{"candidate_id":"aggregate_1","overall_score":8.8,"criteria":{"buildability":9},"rationale":"stronger"},'
+                '{"candidate_id":"aggregate_2","overall_score":6.9,"criteria":{"buildability":7},"rationale":"weaker"}'
+                "]}"
+            )
+        if role.startswith("proposer"):
+            return f"{role} proposal"
+        if role.startswith("aggregator"):
+            return f"{role} aggregate"
+        if role == "final_synthesizer":
+            return "Final MoA synthesis"
+        raise AssertionError(f"Unexpected agent call: {role}")
+
+    monkeypatch.setattr(moa_mode, "call_agent_cfg", fake_call_agent_cfg)
+
+    async def scenario() -> None:
+        session_id = await run(
+            mode="moa",
+            task="Generate founder-fit startup directions before debate.",
+            agents=[
+                AgentConfig(role="proposer_market", provider="claude", tools=[]),
+                AgentConfig(role="proposer_builder", provider="codex", tools=[]),
+                AgentConfig(role="aggregator_operator", provider="gemini", tools=[]),
+                AgentConfig(role="aggregator_editor", provider="claude", tools=[]),
+                AgentConfig(role="final_synthesizer", provider="codex", tools=[]),
+            ],
+            config={"aggregator_count": 2},
+        )
+
+        completed = await _wait_for_status(session_id, "completed")
+        generation_trace = completed["config"]["generation_trace"]
+
+        assert completed["protocol_blueprint"]["entry_node_id"] == "generate_layer_one"
+        assert completed["protocol_shadow_validation"]["validated_transitions"] >= 4
+        assert completed["protocol_shadow_validation"]["invalid_transitions"] == 0
+        assert completed["protocol_trace"][-1]["to_node_id"] == "__end__"
+        assert generation_trace["selected_candidate_id"] == "aggregate_1"
+        assert len(generation_trace["layer2_outputs"]) == 2
+        assert generation_trace["final_artifact"]["layer"] == "final"
+        assert any(event["type"] == "generation_candidate_created" for event in completed["events"])
+        assert any(event["type"] == "generation_candidate_scored" for event in completed["events"])
 
     asyncio.run(scenario())
 
@@ -167,6 +254,105 @@ def test_fork_from_checkpoint_works_after_in_memory_saver_is_evicted(monkeypatch
         branched = await _wait_for_status(new_session_id, "completed")
         assert branched["forked_from"] == session_id
         assert any("Branch from disk-backed checkpoint state." in prompt for _, prompt in prompts)
+
+    asyncio.run(scenario())
+
+
+def test_fork_from_terminal_checkpoint_uses_latest_resumable_checkpoint(monkeypatch):
+    prompts: list[tuple[str, str]] = []
+
+    def fake_call_agent_cfg(agent: dict, prompt: str) -> str:
+        prompts.append((agent["role"], prompt))
+        if agent["role"] == "creator":
+            return "Draft analysis"
+        return "APPROVED"
+
+    monkeypatch.setattr(creator_critic, "call_agent_cfg", fake_call_agent_cfg)
+
+    async def scenario() -> None:
+        session_id = await run(
+            mode="creator_critic",
+            task="Continue the completed discussion",
+            agents=[
+                AgentConfig(role="creator", provider="claude", tools=[]),
+                AgentConfig(role="critic", provider="claude", tools=[]),
+            ],
+            config={"max_iterations": 2},
+        )
+
+        completed = await _wait_for_status(session_id, "completed")
+        assert len(completed["checkpoints"]) >= 2
+        terminal_checkpoint = completed["current_checkpoint_id"]
+        resumable_checkpoint = completed["checkpoints"][-2]["id"]
+
+        new_session_id = fork_from_checkpoint(
+            session_id,
+            checkpoint_id=terminal_checkpoint,
+            content="Continue and focus on operational risk.",
+        )
+
+        assert new_session_id
+        branched = await _wait_for_status(new_session_id, "completed")
+        assert branched["forked_from"] == session_id
+        assert branched["forked_checkpoint_id"] == resumable_checkpoint
+        assert any("Continue and focus on operational risk." in prompt for _, prompt in prompts)
+
+    asyncio.run(scenario())
+
+
+def test_fork_from_tournament_checkpoint_retargets_session_state(monkeypatch):
+    captured_states: list[dict] = []
+
+    async def fake_run_parallel_stage(state: dict) -> dict:
+        captured_states.append(
+            {
+                "session_id": state.get("session_id"),
+                "agent_session_ids": [agent.get("session_id") for agent in state.get("agents", [])],
+                "submission_session_ids": [entry.get("session_id") for entry in state.get("submissions", [])],
+            }
+        )
+        winner = dict((state.get("submissions") or [state["agents"][0]])[0])
+        return {
+            "winners": [winner],
+            "match_history": [],
+            "parallel_stage_children": [],
+            "parallel_stage_group_id": "pg_test",
+            "advance_target": "crown_champion",
+            "result": "Parallel stage finished",
+        }
+
+    monkeypatch.setattr(tournament, "run_parallel_stage", fake_run_parallel_stage)
+
+    async def scenario() -> None:
+        session_id = await run(
+            mode="tournament",
+            task="Pick the best project to prioritize first.",
+            agents=[
+                AgentConfig(role="contestant_1", provider="claude", tools=[]),
+                AgentConfig(role="contestant_2", provider="codex", tools=[]),
+                AgentConfig(role="judge", provider="gemini", tools=[]),
+            ],
+            config={"execution_mode": "parallel", "max_rounds": 1},
+        )
+
+        completed = await _wait_for_status(session_id, "completed")
+        assert len(completed["checkpoints"]) >= 3
+        parallel_checkpoint = next(
+            checkpoint["id"]
+            for checkpoint in completed["checkpoints"]
+            if checkpoint.get("next_node") == "run_parallel_stage"
+        )
+
+        new_session_id = fork_from_checkpoint(session_id, checkpoint_id=parallel_checkpoint)
+        assert new_session_id
+
+        branched = await _wait_for_status(new_session_id, "completed")
+        assert branched["forked_from"] == session_id
+        assert len(captured_states) >= 2
+        assert captured_states[0]["session_id"] == session_id
+        assert captured_states[-1]["session_id"] == new_session_id
+        assert set(captured_states[-1]["agent_session_ids"]) == {new_session_id}
+        assert set(captured_states[-1]["submission_session_ids"]) == {new_session_id}
 
     asyncio.run(scenario())
 

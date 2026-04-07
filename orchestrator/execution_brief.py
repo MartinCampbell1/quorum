@@ -7,11 +7,16 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from orchestrator.handoff_models import (
+    DEFAULT_AUTOPILOT_API_BASE,
+    AutopilotLaunchPreset,
+    AutopilotLaunchProfile,
+    ExecutionBriefExportRequest,
+    SendExecutionBriefRequest,
+)
 from orchestrator.modes.base import call_agent, strip_markdown_fence
 from orchestrator.models import AgentConfig
 from orchestrator.scenarios import get_scenario
-
-DEFAULT_AUTOPILOT_API_BASE = "http://127.0.0.1:8420/api"
 
 
 class FounderContext(BaseModel):
@@ -72,33 +77,6 @@ class ExecutionBrief(BaseModel):
     monetization: MonetizationContext = Field(default_factory=MonetizationContext)
     evaluation: EvaluationContext = Field(default_factory=EvaluationContext)
     provenance: ProvenanceContext = Field(default_factory=ProvenanceContext)
-
-
-class ExecutionBriefExportRequest(BaseModel):
-    provider: str | None = None
-
-
-class AutopilotLaunchProfile(BaseModel):
-    preset: str = "fast"
-    story_execution_mode: str | None = None
-    project_concurrency_mode: str | None = None
-    max_parallel_stories: int | None = None
-
-
-class AutopilotLaunchPreset(BaseModel):
-    id: str
-    label: str
-    description: str = ""
-    launch_profile: AutopilotLaunchProfile
-
-
-class SendExecutionBriefRequest(ExecutionBriefExportRequest):
-    autopilot_url: str = DEFAULT_AUTOPILOT_API_BASE
-    project_name: str | None = None
-    project_path: str | None = None
-    priority: str = "normal"
-    launch: bool = False
-    launch_profile: AutopilotLaunchProfile | None = None
 
 
 class TournamentCandidate(BaseModel):
@@ -225,6 +203,13 @@ def _brief_prompt(context: str, scenario_id: str = "") -> str:
             "- Preserve the core product unless the session explicitly concluded that a deeper pivot is required.\n"
             "- MVP scope should focus on the first strengthening wedge: monetization fix, packaging, growth loop, onboarding, pricing, or execution bottleneck removal.\n"
             "- existing_repos should prioritize the concrete repo roots discussed in the strengthening session.\n"
+        )
+    elif normalized_scenario == "project_monetization_lab":
+        strengthening_rules = (
+            "- Treat the strongest recommendation as the first practical route to money for the project, not as a broad product vision.\n"
+            "- A light pivot in packaging, ICP, channel, or offer is allowed when the session supports it.\n"
+            "- MVP scope should focus on the first monetization wedge: offer packaging, lead magnet, sample artifacts, landing page, outreach assets, or delivery workflow.\n"
+            "- existing_repos should prioritize the concrete repo roots discussed in the monetization session.\n"
         )
     return (
         "Convert this orchestration session into an execution-ready brief for an autonomous build system.\n\n"

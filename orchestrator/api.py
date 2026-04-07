@@ -9,11 +9,88 @@ from pathlib import Path
 import httpx
 
 from fastapi import APIRouter, HTTPException, Request
-from mcp.client.session import ClientSession
-from mcp.client.stdio import StdioServerParameters, stdio_client
-from mcp.client.streamable_http import streamable_http_client
-from sse_starlette.sse import EventSourceResponse
+from fastapi.responses import PlainTextResponse
+try:
+    from mcp.client.session import ClientSession
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+    from mcp.client.streamable_http import streamable_http_client
+except ImportError:
+    ClientSession = None  # type: ignore[assignment,misc]
+    StdioServerParameters = None  # type: ignore[assignment,misc]
+    stdio_client = None  # type: ignore[assignment]
+    streamable_http_client = None  # type: ignore[assignment]
 
+try:
+    from sse_starlette.sse import EventSourceResponse
+except ImportError:
+    EventSourceResponse = None  # type: ignore[assignment,misc]
+
+from pydantic import BaseModel, TypeAdapter
+
+from orchestrator.discovery_models import (
+    DiscoveryDaemonControlRequest,
+    ExecutionBriefApprovalUpdateRequest,
+    DiscoveryInboxActionRequest,
+    DiscoveryInboxResolveRequest,
+    DossierTimelineEventCreateRequest,
+    EvidenceBundleUpsertRequest,
+    ExecutionFeedbackIngestRequest,
+    ExecutionBriefCandidateUpsertRequest,
+    IdeaArchiveRequest,
+    IdeaCreateRequest,
+    IdeaDecisionCreateRequest,
+    IdeaSwipeRequest,
+    IdeaUpdateRequest,
+    IdeaValidationReportCreateRequest,
+    MarketSimulationRunRequest,
+    MarketSimulationRunResponse,
+    MemoryQueryRequest,
+    SimulationRunRequest,
+    SimulationRunResponse,
+    SourceObservationCreateRequest,
+)
+from orchestrator.daemon import get_discovery_daemon_service
+from orchestrator.discovery_store import get_discovery_store
+from orchestrator.guardrails import (
+    guardrail_audit_store,
+    policy_catalog_payload,
+    record_guardrail_event,
+    scan_tool_config,
+)
+from orchestrator.guardrails.policies import GuardrailScanReport
+from orchestrator.handoff import DiscoveryHandoffExportRequest, get_handoff_service
+from orchestrator.handoff_bridge import _send_brief_to_autopilot
+from orchestrator.handoff_models import (
+    AutopilotLaunchPreset,
+    DEFAULT_AUTOPILOT_API_BASE,
+    ExecutionBriefExportRequest,
+    SendExecutionBriefRequest,
+)
+from orchestrator.improvement import (
+    ImprovementEvolutionRequest,
+    ImprovementSelfPlayRequest,
+    ImprovementSessionReflectRequest,
+    get_improvement_lab,
+)
+from orchestrator.idea_graph import get_idea_graph_service
+from orchestrator.memory_graph import get_memory_graph_service
+from orchestrator.observability.debate_replay import DebateReplayService
+from orchestrator.observability.dossier_explainability import DossierExplainabilityService
+from orchestrator.observability.evals import DiscoveryEvaluationService
+from orchestrator.observability.scoreboards import DiscoveryScoreboardService
+from orchestrator.observability.traces import DiscoveryTraceService
+from orchestrator.preference_model import PreferenceModelService
+from orchestrator.research.exports import export_daily_queue_markdown, export_observations_jsonl
+from orchestrator.research.pipeline import ResearchPipeline
+from orchestrator.research.search_index import get_research_index
+from orchestrator.research.source_models import ScanRequest
+from orchestrator.repodna import get_repo_dna_service
+from orchestrator.repo_graph import get_repo_graph_service
+from orchestrator.ranking import (
+    FinalVoteRequest,
+    PairwiseComparisonRequest,
+    get_ranking_service,
+)
 from orchestrator.models import (
     WorkspacePreset,
     MODE_AGENT_REQUIREMENTS,
@@ -23,36 +100,24 @@ from orchestrator.models import (
     build_provider_capabilities_snapshot,
     store,
     ControlRequest,
+    RepoDigestAnalyzeRequest,
+    RepoGraphAnalyzeRequest,
     RunRequest,
     MessageRequest,
     normalize_agent_configs,
     resolve_workspace_paths,
     validate_agents_for_mode,
 )
-from orchestrator.engine import (
-    fork_from_checkpoint,
-    has_checkpoint_runtime,
-    has_live_runtime,
-    inject_instruction,
-    request_cancel,
-    request_pause,
-    request_resume,
-    run,
-    AVAILABLE_MODES,
-    DEFAULT_AGENTS,
-)
-from orchestrator.execution_brief import (
-    AutopilotLaunchPreset,
-    DEFAULT_AUTOPILOT_API_BASE,
-    ExecutionBrief,
-    ExecutionBriefExportRequest,
-    SendExecutionBriefRequest,
-    TournamentPreparation,
-    TournamentPreparationRequest,
-    generate_session_execution_brief,
-    generate_session_tournament_preparation,
-)
+from orchestrator.brief_v2_adapter import shared_brief_to_v2
+from orchestrator.execution_feedback import get_execution_feedback_service
 from orchestrator.scenarios import get_scenario, list_scenarios
+from orchestrator.shared_contracts import (
+    ExecutionBrief as SharedExecutionBrief,
+    ExecutionOutcomeBundle as SharedExecutionOutcomeBundle,
+    from_jsonable,
+)
+from orchestrator.simulation.mvp import FocusGroupRunner
+from orchestrator.simulation.lab import MarketLabRunner
 from orchestrator.tool_configs import (
     PROMPT_TEMPLATES,
     TOOL_TYPES,
@@ -61,6 +126,7 @@ from orchestrator.tool_configs import (
     normalize_tool_id,
     tool_config_store,
 )
+from orchestrator.models_bootstrap import FounderBootstrapRequest
 
 router = APIRouter(prefix="/orchestrate", tags=["orchestrate"])
 
@@ -72,12 +138,269 @@ INSTRUCTIONABLE_STATUSES = {"running", "pause_requested", "paused"}
 CANCELLABLE_STATUSES = {"running", "pause_requested", "paused", "cancel_requested"}
 BRANCHABLE_STATUSES = {"paused", "completed", "failed", "cancelled"}
 CONTINUABLE_STATUSES = {"completed", "failed", "cancelled"}
+DELETABLE_STATUSES = {"completed", "failed", "cancelled"}
 LEGACY_CUSTOM_TOOL_TYPES = {"http_api", "ssh", "shell_command"}
 PARALLEL_EXECUTION_MODES = {"sequential", "parallel"}
 
 
+class TournamentPreparationRequest(BaseModel):
+    provider: str | None = None
+
+
+async def _run_sync(func, /, *args, **kwargs):
+    return await asyncio.to_thread(func, *args, **kwargs)
+
+
 def _workspace_preset_to_dict(preset: WorkspacePreset) -> dict:
     return preset.model_dump()
+
+
+def _discovery_store():
+    return get_discovery_store(str(store._db_path))
+
+
+def _handoff_service():
+    return get_handoff_service(str(store._db_path), _discovery_store())
+
+
+def _execution_feedback_service():
+    return get_execution_feedback_service(str(store._db_path), _discovery_store())
+
+
+def _research_index():
+    db_path = str(Path(store._db_path).with_name("research.db"))
+    return get_research_index(db_path)
+
+
+def _research_pipeline():
+    return ResearchPipeline(_research_index())
+
+
+def _preference_model():
+    return PreferenceModelService(_discovery_store())
+
+
+def _repo_dna_service():
+    db_path = str(Path(store._db_path).with_name("repo_dna.db"))
+    return get_repo_dna_service(db_path)
+
+
+def _repo_graph_service():
+    db_path = str(Path(store._db_path).with_name("repo_graph.db"))
+    return get_repo_graph_service(db_path)
+
+
+def _idea_graph_service():
+    db_path = str(Path(store._db_path).with_name("idea_graph.db"))
+    return get_idea_graph_service(db_path, _discovery_store())
+
+
+def _memory_graph_service():
+    db_path = str(Path(store._db_path).with_name("memory_graph.db"))
+    return get_memory_graph_service(db_path, _discovery_store())
+
+
+def _improvement_lab():
+    db_path = str(Path(store._db_path).with_name("improvement.db"))
+    return get_improvement_lab(db_path)
+
+
+def _daemon_service():
+    db_path = str(Path(store._db_path).with_name("discovery_daemon.db"))
+    return get_discovery_daemon_service(db_path, _discovery_store(), store)
+
+
+def _ranking_service():
+    db_path = str(Path(store._db_path).with_name("ranking.db"))
+    return get_ranking_service(db_path, _discovery_store())
+
+
+def _focus_group_runner():
+    return FocusGroupRunner()
+
+
+def _market_lab_runner():
+    return MarketLabRunner()
+
+
+def _observability_eval_service():
+    return DiscoveryEvaluationService(_discovery_store())
+
+
+def _observability_trace_service():
+    return DiscoveryTraceService(_discovery_store(), store)
+
+
+def _observability_scoreboard_service():
+    return DiscoveryScoreboardService(_discovery_store(), store, _observability_eval_service())
+
+
+def _debate_replay_service():
+    return DebateReplayService(store)
+
+
+def _dossier_explainability_service():
+    return DossierExplainabilityService(_discovery_store(), store, _observability_eval_service())
+
+
+def _load_execution_brief_model():
+    from orchestrator.execution_brief import ExecutionBrief
+
+    return ExecutionBrief
+
+
+def _generate_session_execution_brief(session: dict, provider: str | None = None):
+    from orchestrator.execution_brief import generate_session_execution_brief
+
+    return generate_session_execution_brief(session, provider)
+
+
+def _generate_session_tournament_preparation(session: dict, provider: str | None = None):
+    from orchestrator.execution_brief import generate_session_tournament_preparation
+
+    return generate_session_tournament_preparation(session, provider)
+
+
+def _engine_module():
+    # Keep route-level imports hermetic: the LangGraph stack is only required
+    # for execution surfaces, not for discovery/bootstrap/handoff routes.
+    from orchestrator import engine as engine_module
+
+    return engine_module
+
+
+def has_checkpoint_runtime(session_id: str):
+    return _engine_module().has_checkpoint_runtime(session_id)
+
+
+def has_live_runtime(session_id: str):
+    return _engine_module().has_live_runtime(session_id)
+
+
+def inject_instruction(session_id: str, instruction: str):
+    return _engine_module().inject_instruction(session_id, instruction)
+
+
+def request_cancel(session_id: str):
+    return _engine_module().request_cancel(session_id)
+
+
+def request_pause(session_id: str):
+    return _engine_module().request_pause(session_id)
+
+
+def request_resume(session_id: str, content: str | None = None):
+    return _engine_module().request_resume(session_id, content)
+
+
+def fork_from_checkpoint(session_id: str, checkpoint_id: str, content: str | None = None):
+    return _engine_module().fork_from_checkpoint(session_id, checkpoint_id, content)
+
+
+async def run(*args, **kwargs):
+    return await _engine_module().run(*args, **kwargs)
+
+
+def _available_modes() -> dict[str, str]:
+    return _engine_module().AVAILABLE_MODES
+
+
+def _default_agents():
+    return _engine_module().DEFAULT_AGENTS
+
+
+async def _sync_existing_autopilot_brief_if_present(idea_id: str) -> dict[str, object] | None:
+    dossier = _discovery_store().get_dossier(idea_id)
+    if dossier is None or dossier.execution_brief_candidate is None:
+        return None
+
+    provenance = dict(dossier.idea.provenance or {})
+    autopilot_meta = dict(provenance.get("autopilot") or {})
+    brief_id = str(
+        autopilot_meta.get("brief_id") or dossier.execution_brief_candidate.brief_id or ""
+    ).strip()
+    project_id = str(autopilot_meta.get("project_id") or "").strip()
+    if not brief_id or not project_id:
+        return None
+
+    handoff = _handoff_service().build_packet(idea_id, persist_candidate=False)
+    shared_brief = from_jsonable(SharedExecutionBrief, handoff.brief)
+    candidate = dossier.execution_brief_candidate
+    v2 = shared_brief_to_v2(
+        shared_brief,
+        initiative_id=shared_brief.idea_id,
+        revision_id=candidate.revision_id,
+        option_id=None,
+        decision_id=None,
+        founder_approval_required=candidate.founder_approval_required,
+        brief_approval_status=candidate.brief_approval_status,
+        approved_at=candidate.approved_at,
+        approved_by=candidate.approved_by,
+    )
+
+    base = str(autopilot_meta.get("autopilot_api_base") or DEFAULT_AUTOPILOT_API_BASE).rstrip("/")
+    url = f"{base}/projects/briefs/{v2.brief_id}/sync-v2"
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(url, json={"brief": v2.model_dump(mode="json")})
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"Failed to reach Autopilot sync bridge: {exc}") from exc
+
+    try:
+        data = response.json()
+    except ValueError:
+        data = {"detail": response.text}
+
+    if response.status_code >= 400:
+        detail = data.get("detail") if isinstance(data, dict) else data
+        if response.status_code in {400, 404, 409, 422, 503}:
+            raise HTTPException(response.status_code, detail)
+        raise HTTPException(502, f"Autopilot sync rejected execution brief: {detail}")
+
+    return data if isinstance(data, dict) else {"detail": data}
+
+
+async def _update_execution_brief_candidate_approval(
+    idea_id: str,
+    body: ExecutionBriefApprovalUpdateRequest,
+    *,
+    decision_type: str | None = None,
+    rationale: str | None = None,
+):
+    try:
+        _handoff_service().build_packet(idea_id, persist_candidate=True)
+        brief = _discovery_store().update_execution_brief_candidate_approval(idea_id, body)
+    except KeyError:
+        raise HTTPException(404, f"Execution brief candidate not found for idea: {idea_id}") from None
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+    _discovery_store().add_decision(
+        idea_id,
+        IdeaDecisionCreateRequest(
+            decision_type=decision_type or f"execution_brief_{body.status}",
+            rationale=rationale or body.note or f"{body.actor} set the execution brief to {body.status}.",
+            actor=body.actor,
+            metadata={
+                "brief_id": brief.brief_id,
+                "revision_id": brief.revision_id,
+                "status": body.status,
+            },
+        ),
+    )
+    try:
+        sync_result = await _sync_existing_autopilot_brief_if_present(idea_id)
+    except HTTPException as exc:
+        return brief, {
+            "status": "pending_retry",
+            "status_code": exc.status_code,
+            "error": exc.detail,
+        }
+
+    if sync_result is None:
+        return brief, {"status": "not_linked"}
+    return brief, {"status": "ok", "result": sync_result}
 
 
 def _tool_transport(tool: ToolConfig) -> str:
@@ -96,6 +419,40 @@ def _tool_payload(tool: ToolConfig) -> dict:
         for provider in SETTINGS_PROVIDERS
     }
     return payload
+
+
+def _scan_tool_guardrails(tool: ToolConfig) -> GuardrailScanReport:
+    return scan_tool_config(tool)
+
+
+def _apply_guardrails(tool: ToolConfig) -> tuple[ToolConfig, GuardrailScanReport]:
+    report = _scan_tool_guardrails(tool)
+    guarded = tool.model_copy(
+        update={
+            "guardrail_status": report.status,
+            "last_guardrail_report": report.model_dump(),
+            "wrapper_mode": report.wrapper_mode,
+            "trust_level": report.trust_level,
+        }
+    )
+    return guarded, report
+
+
+def _guardrail_block_detail(report: GuardrailScanReport, *, message: str | None = None) -> dict:
+    return _error_detail(
+        message or "Tool configuration blocked by guardrails.",
+        reason=_reason("guardrail_block", report.summary),
+        guardrail_report=report.model_dump(),
+    )
+
+
+def _guardrail_validation_result(tool: ToolConfig, report: GuardrailScanReport) -> dict:
+    return {
+        "ok": False,
+        "transport": _tool_transport(tool),
+        "log": ["> Guardrails blocked validation", f"> {report.summary}"],
+        "error": report.summary,
+    }
 
 
 def _reason(code: str, message: str) -> dict:
@@ -283,6 +640,18 @@ def _has_checkpoint_history(session: dict) -> bool:
     return bool(session.get("current_checkpoint_id"))
 
 
+def _has_branchable_checkpoint(session: dict) -> bool:
+    checkpoints = session.get("checkpoints")
+    if not isinstance(checkpoints, list):
+        return False
+    return any(
+        bool(checkpoint.get("graph_checkpoint_id"))
+        and checkpoint.get("status") != "terminal"
+        and bool(checkpoint.get("next_node"))
+        for checkpoint in checkpoints
+    )
+
+
 def _live_runtime_reason(status: str, live_runtime_available: bool) -> dict | None:
     if live_runtime_available:
         return None
@@ -301,7 +670,13 @@ def _checkpoint_runtime_reason(
     status: str,
     has_checkpoints: bool,
     checkpoint_runtime_available: bool,
+    has_branchable_checkpoints: bool,
 ) -> dict | None:
+    if has_checkpoints and not has_branchable_checkpoints:
+        return _reason(
+            "checkpoint_terminal_only",
+            "Session only has terminal checkpoints. Go back to an earlier parent session or resume from a non-terminal checkpoint.",
+        )
     if checkpoint_runtime_available:
         return None
     if not has_checkpoints:
@@ -326,6 +701,7 @@ def _action_reason(
     live_runtime_available: bool,
     checkpoint_runtime_available: bool,
     has_checkpoints: bool,
+    has_branchable_checkpoints: bool,
 ) -> dict | None:
     if action == "pause":
         if status not in PAUSEABLE_STATUSES:
@@ -362,6 +738,11 @@ def _action_reason(
             return _reason("status_not_continuable", f"Session status '{status}' cannot continue the conversation.")
         if not has_checkpoints:
             return _reason("checkpoint_history_missing", "Session has no checkpoints to continue from.")
+        if not has_branchable_checkpoints:
+            return _reason(
+                "checkpoint_terminal_only",
+                "This session only has terminal checkpoints, so it cannot meaningfully continue the discussion.",
+            )
         if not checkpoint_runtime_available:
             return _reason("checkpoint_runtime_unavailable", "Checkpoint runtime snapshot is unavailable.")
         return None
@@ -369,6 +750,11 @@ def _action_reason(
         return _reason("status_not_branchable", f"Session status '{status}' cannot branch from a checkpoint.")
     if not has_checkpoints:
         return _reason("checkpoint_history_missing", "Session has no checkpoints to branch from.")
+    if not has_branchable_checkpoints:
+        return _reason(
+            "checkpoint_terminal_only",
+            "This session only has terminal checkpoints. Branch from an earlier parent session instead.",
+        )
     if not checkpoint_runtime_available:
         return _reason("checkpoint_runtime_unavailable", "Checkpoint runtime snapshot is unavailable.")
     return None
@@ -390,22 +776,36 @@ def _session_runtime_state(session: dict) -> dict:
     live_runtime_available = bool(session_id) and has_live_runtime(session_id)
     checkpoint_runtime_available = bool(session_id) and has_checkpoint_runtime(session_id)
     has_checkpoints = _has_checkpoint_history(session)
+    has_branchable_checkpoints = _has_branchable_checkpoint(session)
     child_reason = _parallel_child_reason(session, "runtime")
     reasons = {
         "live_runtime": _live_runtime_reason(status, live_runtime_available),
-        "checkpoint_runtime": _checkpoint_runtime_reason(status, has_checkpoints, checkpoint_runtime_available),
-        "pause": child_reason or _action_reason("pause", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints),
-        "resume": child_reason or _action_reason("resume", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints),
-        "send_message": child_reason or _action_reason("send_message", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints),
-        "inject_instruction": child_reason or _action_reason("inject_instruction", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints),
-        "cancel": child_reason or _action_reason("cancel", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints),
-        "continue_conversation": child_reason or _action_reason("continue_conversation", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints),
-        "branch_from_checkpoint": child_reason or _action_reason("branch_from_checkpoint", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints),
+        "checkpoint_runtime": _checkpoint_runtime_reason(
+            status,
+            has_checkpoints,
+            checkpoint_runtime_available,
+            has_branchable_checkpoints,
+        ),
+        "pause": child_reason
+        or _action_reason("pause", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints, has_branchable_checkpoints),
+        "resume": child_reason
+        or _action_reason("resume", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints, has_branchable_checkpoints),
+        "send_message": child_reason
+        or _action_reason("send_message", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints, has_branchable_checkpoints),
+        "inject_instruction": child_reason
+        or _action_reason("inject_instruction", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints, has_branchable_checkpoints),
+        "cancel": child_reason
+        or _action_reason("cancel", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints, has_branchable_checkpoints),
+        "continue_conversation": child_reason
+        or _action_reason("continue_conversation", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints, has_branchable_checkpoints),
+        "branch_from_checkpoint": child_reason
+        or _action_reason("branch_from_checkpoint", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints, has_branchable_checkpoints),
     }
     return {
         "live_runtime_available": live_runtime_available,
         "checkpoint_runtime_available": checkpoint_runtime_available,
         "has_checkpoints": has_checkpoints,
+        "has_branchable_checkpoints": has_branchable_checkpoints,
         "can_pause": reasons["pause"] is None,
         "can_resume": reasons["resume"] is None,
         "can_send_message": reasons["send_message"] is None,
@@ -420,6 +820,12 @@ def _session_runtime_state(session: dict) -> dict:
 def _session_payload(session: dict) -> dict:
     payload = dict(session)
     payload["runtime_state"] = _session_runtime_state(session)
+    topology_state = dict(payload.get("config") or {}).get("topology_state")
+    if isinstance(topology_state, dict) and topology_state:
+        payload["topology_state"] = topology_state
+    generation_trace = dict(payload.get("config") or {}).get("generation_trace")
+    if isinstance(generation_trace, dict) and generation_trace:
+        payload["generation_trace"] = generation_trace
     return payload
 
 
@@ -452,33 +858,6 @@ def _validate_workspace_paths_exist(paths: list[str]) -> list[str]:
         elif not path.is_dir():
             errors.append(f"Workspace path is not a directory: {path}")
     return errors
-
-
-async def _send_brief_to_autopilot(brief: ExecutionBrief, request: SendExecutionBriefRequest) -> dict:
-    payload = {
-        "brief": brief.model_dump(),
-        "project_name": request.project_name,
-        "project_path": request.project_path,
-        "priority": request.priority,
-        "launch": request.launch,
-        "launch_profile": request.launch_profile.model_dump() if request.launch_profile else None,
-    }
-    base = str(request.autopilot_url or DEFAULT_AUTOPILOT_API_BASE).rstrip("/")
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(f"{base}/projects/from-execution-brief", json=payload)
-    except httpx.HTTPError as exc:
-        raise HTTPException(502, f"Failed to reach Autopilot bridge: {exc}") from exc
-
-    try:
-        data = response.json()
-    except ValueError:
-        data = {"detail": response.text}
-
-    if response.status_code >= 400:
-        detail = data.get("detail") if isinstance(data, dict) else data
-        raise HTTPException(502, f"Autopilot rejected execution brief: {detail}")
-    return data
 
 
 async def _fetch_autopilot_launch_presets(base_url: str = DEFAULT_AUTOPILOT_API_BASE) -> list[AutopilotLaunchPreset]:
@@ -554,6 +933,8 @@ async def _post_autopilot_project_action(
 
     if response.status_code >= 400:
         detail = data.get("detail") if isinstance(data, dict) else data
+        if response.status_code in {400, 409, 422, 503}:
+            raise HTTPException(response.status_code, detail)
         raise HTTPException(502, f"Autopilot project action '{action}' failed: {detail}")
     if not isinstance(data, dict):
         raise HTTPException(502, f"Autopilot project action '{action}' returned malformed payload.")
@@ -695,7 +1076,7 @@ async def _validate_tool_profile(tool: ToolConfig) -> dict:
             "log": ["> Configuration looks valid.", f"> Base URL: {base_url}"],
         }
 
-    if tool.tool_type in {"brave_search", "perplexity"}:
+    if tool.tool_type in {"brave_search", "perplexity", "bright_data_serp"}:
         return {
             "ok": True,
             "transport": "bridge",
@@ -711,7 +1092,7 @@ def _resolve_agents(req: RunRequest):
     scenario = get_scenario(req.scenario_id) if req.scenario_id else None
     if scenario:
         return scenario["default_agents"]
-    return DEFAULT_AGENTS.get(req.mode, [])
+    return _default_agents().get(req.mode, [])
 
 
 @router.post("/run")
@@ -724,11 +1105,14 @@ async def ep_run(req: RunRequest):
             422,
             f"Scenario '{req.scenario_id}' is bound to mode '{scenario['mode']}', not '{req.mode}'.",
         )
-    if req.mode not in AVAILABLE_MODES:
-        raise HTTPException(400, f"Unknown mode: {req.mode}. Available: {list(AVAILABLE_MODES.keys())}")
+    available_modes = _available_modes()
+    if req.mode not in available_modes:
+        raise HTTPException(400, f"Unknown mode: {req.mode}. Available: {list(available_modes.keys())}")
     agents = normalize_agent_configs(_resolve_agents(req))
     run_config = dict(scenario.get("default_config", {})) if scenario else {}
     run_config.update(req.config)
+    for key, value in _improvement_lab().runtime_profile(req.mode).items():
+        run_config.setdefault(key, value)
     execution_mode = str(run_config.get("execution_mode", "sequential") or "sequential").strip().lower()
     if execution_mode not in PARALLEL_EXECUTION_MODES:
         raise HTTPException(422, f"Invalid execution_mode: {execution_mode}. Expected one of {sorted(PARALLEL_EXECUTION_MODES)}")
@@ -790,9 +1174,54 @@ async def ep_session(session_id: str):
     return _session_payload(session)
 
 
+@router.delete("/session/{session_id}")
+async def ep_delete_session(session_id: str):
+    session = store.get(session_id)
+    if not session:
+        raise HTTPException(404, f"Session not found: {session_id}")
+
+    tree_ids = store.session_tree_ids(session_id)
+    active_sessions: list[dict[str, str]] = []
+    for related_id in tree_ids:
+        related = store.get(related_id)
+        if not related:
+            continue
+        status = str(related.get("status") or "").strip().lower()
+        if status not in DELETABLE_STATUSES:
+            active_sessions.append({"id": related_id, "status": status or "unknown"})
+
+    if active_sessions:
+        raise HTTPException(
+            409,
+            _error_detail(
+                "Only completed, failed, or cancelled sessions can be deleted. Stop active runs first.",
+                reason=_reason(
+                    "session_not_deletable",
+                    "Only completed, failed, or cancelled sessions can be deleted. Stop active runs first.",
+                ),
+                session_status=session.get("status"),
+                action="delete_session",
+                active_sessions=active_sessions,
+            ),
+        )
+
+    deleted_session_ids = store.delete_session_tree(session_id)
+    return {"status": "deleted", "deleted_session_ids": deleted_session_ids}
+
+
 @router.get("/execution-brief/schema")
 async def ep_execution_brief_schema():
-    return ExecutionBrief.model_json_schema()
+    return _load_execution_brief_model().model_json_schema()
+
+
+@router.get("/discovery/handoff/schema")
+async def ep_discovery_handoff_schema():
+    return TypeAdapter(SharedExecutionBrief).json_schema()
+
+
+@router.get("/discovery/execution-feedback/schema")
+async def ep_discovery_execution_feedback_schema():
+    return TypeAdapter(SharedExecutionOutcomeBundle).json_schema()
 
 
 @router.get("/autopilot/launch-presets")
@@ -824,7 +1253,7 @@ async def ep_execution_brief(session_id: str, req: ExecutionBriefExportRequest |
         raise HTTPException(404, f"Session not found: {session_id}")
     try:
         brief = await asyncio.to_thread(
-            generate_session_execution_brief,
+            _generate_session_execution_brief,
             session,
             req.provider if req else None,
         )
@@ -840,7 +1269,7 @@ async def ep_tournament_preparation(session_id: str, req: TournamentPreparationR
         raise HTTPException(404, f"Session not found: {session_id}")
     try:
         preparation = await asyncio.to_thread(
-            generate_session_tournament_preparation,
+            _generate_session_tournament_preparation,
             session,
             req.provider if req else None,
         )
@@ -855,11 +1284,89 @@ async def ep_send_to_autopilot(session_id: str, req: SendExecutionBriefRequest):
     if not session:
         raise HTTPException(404, f"Session not found: {session_id}")
     try:
-        brief = await asyncio.to_thread(generate_session_execution_brief, session, req.provider)
+        brief = await asyncio.to_thread(_generate_session_execution_brief, session, req.provider)
     except ValueError as exc:
         raise HTTPException(502, str(exc)) from exc
-    autopilot = await _send_brief_to_autopilot(brief, req)
+    autopilot = await _send_brief_to_autopilot(brief, req, discovery_store=_discovery_store())
     return {"status": "ok", "brief": brief.model_dump(), "autopilot": autopilot}
+
+
+@router.post("/discovery/ideas/{idea_id}/handoff/export")
+async def ep_export_discovery_handoff(idea_id: str, req: DiscoveryHandoffExportRequest | None = None):
+    try:
+        handoff = _handoff_service().build_packet(
+            idea_id,
+            persist_candidate=req.persist_candidate if req else True,
+        )
+    except KeyError:
+        raise HTTPException(404, f"Unknown idea id: {idea_id}") from None
+    return {"status": "ok", "handoff": handoff.model_dump(mode="json")}
+
+
+@router.post("/discovery/ideas/{idea_id}/handoff/send-to-autopilot")
+async def ep_send_discovery_handoff_to_autopilot(idea_id: str, req: SendExecutionBriefRequest):
+    try:
+        handoff = _handoff_service().build_packet(idea_id, persist_candidate=True)
+    except KeyError:
+        raise HTTPException(404, f"Unknown idea id: {idea_id}") from None
+    effective_request = req
+    if not req.project_name:
+        effective_request = req.model_copy(update={"project_name": handoff.brief.get("title")})
+    autopilot = await _send_brief_to_autopilot(
+        handoff.brief,
+        effective_request,
+        discovery_store=_discovery_store(),
+    )
+    autopilot_payload = dict(autopilot if isinstance(autopilot, dict) else {"detail": autopilot})
+    autopilot_payload["autopilot_api_base"] = str(
+        effective_request.autopilot_url or DEFAULT_AUTOPILOT_API_BASE
+    ).rstrip("/")
+    _handoff_service().mark_sent_to_autopilot(
+        idea_id,
+        project_name=effective_request.project_name,
+        autopilot_payload=autopilot_payload,
+    )
+    return {"status": "ok", "handoff": handoff.model_dump(mode="json"), "autopilot": autopilot}
+
+
+@router.get("/discovery/ideas/{idea_id}/execution-feedback")
+async def ep_list_discovery_execution_feedback(idea_id: str, limit: int = 20):
+    idea = _discovery_store().get_idea(idea_id)
+    if not idea:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
+    return {"items": [item.model_dump(mode="json") for item in _execution_feedback_service().list_outcomes(idea_id, limit=limit)]}
+
+
+@router.post("/discovery/ideas/{idea_id}/execution-feedback")
+async def ep_ingest_discovery_execution_feedback(idea_id: str, body: ExecutionFeedbackIngestRequest):
+    try:
+        outcome = from_jsonable(SharedExecutionOutcomeBundle, body.outcome)
+    except Exception as exc:
+        raise HTTPException(422, f"Malformed execution outcome bundle: {exc}") from exc
+
+    try:
+        result = _execution_feedback_service().ingest_outcome_bundle(
+            idea_id,
+            outcome,
+            actor=body.actor,
+            autopilot_project_id=body.autopilot_project_id,
+            autopilot_project_name=body.autopilot_project_name,
+            approvals_count=body.approvals_count,
+            shipped_experiment_count=body.shipped_experiment_count,
+            autopilot_payload=body.autopilot_payload,
+        )
+    except KeyError:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}") from None
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+    return {
+        "status": "ok",
+        "outcome": result.outcome.model_dump(mode="json"),
+        "idea": result.idea.model_dump(mode="json"),
+        "preference_profile": result.preference_profile.model_dump(mode="json"),
+        "learning_summary": result.learning_summary,
+    }
 
 
 @router.get("/session/{session_id}/events")
@@ -898,6 +1405,597 @@ async def ep_session_events(
 @router.get("/sessions")
 async def ep_sessions():
     return [_session_payload(session) for session in store.list_recent()]
+
+
+@router.get("/discovery/ideas")
+async def ep_discovery_ideas(limit: int = 100):
+    bounded_limit = max(1, min(int(limit or 100), 500))
+    ideas = await _run_sync(_discovery_store().list_ideas, limit=bounded_limit)
+    return {"ideas": ideas}
+
+
+@router.get("/discovery/dossiers")
+async def ep_discovery_dossiers(limit: int = 100, include_archived: bool = True):
+    bounded_limit = max(1, min(int(limit or 100), 500))
+    dossiers = await _run_sync(
+        _discovery_store().list_dossiers,
+        limit=bounded_limit,
+        include_archived=include_archived,
+    )
+    return {"dossiers": dossiers}
+
+
+@router.post("/discovery/ideas")
+async def ep_create_discovery_idea(body: IdeaCreateRequest):
+    return _discovery_store().create_idea(body)
+
+
+@router.get("/discovery/ideas/{idea_id}")
+async def ep_get_discovery_idea(idea_id: str):
+    idea = await _run_sync(_discovery_store().get_idea, idea_id)
+    if not idea:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
+    return idea
+
+
+@router.patch("/discovery/ideas/{idea_id}")
+async def ep_update_discovery_idea(idea_id: str, body: IdeaUpdateRequest):
+    try:
+        return _discovery_store().update_idea(idea_id, body)
+    except KeyError:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}") from None
+
+
+@router.post("/discovery/ideas/{idea_id}/observations")
+async def ep_add_discovery_observation(idea_id: str, body: SourceObservationCreateRequest):
+    try:
+        return _discovery_store().add_observation(idea_id, body)
+    except KeyError:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}") from None
+
+
+@router.post("/discovery/ideas/{idea_id}/validation-reports")
+async def ep_add_discovery_validation_report(idea_id: str, body: IdeaValidationReportCreateRequest):
+    try:
+        return _discovery_store().add_validation_report(idea_id, body)
+    except KeyError:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}") from None
+
+
+@router.post("/discovery/ideas/{idea_id}/decisions")
+async def ep_add_discovery_decision(idea_id: str, body: IdeaDecisionCreateRequest):
+    try:
+        return _discovery_store().add_decision(idea_id, body)
+    except KeyError:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}") from None
+
+
+@router.post("/discovery/ideas/{idea_id}/archive")
+async def ep_archive_discovery_idea(idea_id: str, body: IdeaArchiveRequest):
+    try:
+        return _discovery_store().archive_idea(idea_id, body)
+    except KeyError:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}") from None
+
+
+@router.post("/discovery/ideas/{idea_id}/timeline")
+async def ep_add_discovery_timeline_event(idea_id: str, body: DossierTimelineEventCreateRequest):
+    try:
+        return _discovery_store().add_timeline_event(idea_id, body)
+    except KeyError:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}") from None
+
+
+@router.put("/discovery/ideas/{idea_id}/evidence-bundle")
+async def ep_upsert_discovery_evidence_bundle(idea_id: str, body: EvidenceBundleUpsertRequest):
+    try:
+        return _discovery_store().upsert_evidence_bundle(idea_id, body)
+    except KeyError:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}") from None
+
+
+@router.put("/discovery/ideas/{idea_id}/execution-brief-candidate")
+async def ep_upsert_discovery_execution_brief_candidate(
+    idea_id: str,
+    body: ExecutionBriefCandidateUpsertRequest,
+):
+    try:
+        return _discovery_store().upsert_execution_brief_candidate(idea_id, body)
+    except KeyError:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}") from None
+
+
+@router.post("/discovery/ideas/{idea_id}/execution-brief-candidate/approval")
+async def ep_update_discovery_execution_brief_approval(
+    idea_id: str,
+    body: ExecutionBriefApprovalUpdateRequest,
+):
+    brief, autopilot_sync = await _update_execution_brief_candidate_approval(idea_id, body)
+    return {
+        **brief.model_dump(mode="json"),
+        "autopilot_sync": autopilot_sync,
+    }
+
+
+@router.get("/discovery/ideas/{idea_id}/dossier")
+async def ep_get_discovery_dossier(idea_id: str):
+    def build_dossier() -> object:
+        dossier = _discovery_store().get_dossier(idea_id)
+        if dossier is None:
+            return None
+        dossier.idea_graph_context = _idea_graph_service().get_idea_context(idea_id)
+        dossier.memory_context = _memory_graph_service().get_idea_context(idea_id)
+        dossier.explainability_context = _dossier_explainability_service().build(idea_id)
+        return dossier
+
+    dossier = await _run_sync(build_dossier)
+    if not dossier:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
+    return dossier
+
+
+@router.get("/discovery/ideas/{idea_id}/explainability")
+async def ep_get_discovery_explainability(idea_id: str):
+    idea = await _run_sync(_discovery_store().get_idea, idea_id)
+    if not idea:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
+    explainability = await _run_sync(_dossier_explainability_service().build, idea_id)
+    if explainability is None:
+        raise HTTPException(404, f"No explainability context for idea: {idea_id}")
+    return explainability
+
+
+@router.get("/discovery/ideas/{idea_id}/simulation")
+async def ep_get_discovery_simulation(idea_id: str):
+    idea = _discovery_store().get_idea(idea_id)
+    if not idea:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
+    report = _discovery_store().get_simulation_report(idea_id)
+    if not report:
+        raise HTTPException(404, f"No simulation report for idea: {idea_id}")
+    return report
+
+
+@router.post("/discovery/ideas/{idea_id}/simulation")
+async def ep_run_discovery_simulation(idea_id: str, body: SimulationRunRequest):
+    discovery = _discovery_store()
+    idea = discovery.get_idea(idea_id)
+    if not idea:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
+
+    existing = discovery.get_simulation_report(idea_id)
+    if existing and not body.force_refresh:
+        return SimulationRunResponse(idea=idea, report=existing, cached=True)
+
+    discovery.update_idea(idea_id, IdeaUpdateRequest(simulation_state="running"))
+    dossier = discovery.get_dossier(idea_id)
+    if not dossier:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
+
+    report = _focus_group_runner().run(dossier, body)
+    stored = discovery.upsert_simulation_report(idea_id, report)
+    updated_idea = discovery.get_idea(idea_id)
+    if not updated_idea:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
+    return SimulationRunResponse(idea=updated_idea, report=stored, cached=False)
+
+
+@router.get("/discovery/ideas/{idea_id}/simulation/lab")
+async def ep_get_discovery_market_simulation(idea_id: str):
+    idea = _discovery_store().get_idea(idea_id)
+    if not idea:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
+    report = _discovery_store().get_market_simulation_report(idea_id)
+    if not report:
+        raise HTTPException(404, f"No market simulation report for idea: {idea_id}")
+    return report
+
+
+@router.post("/discovery/ideas/{idea_id}/simulation/lab")
+async def ep_run_discovery_market_simulation(idea_id: str, body: MarketSimulationRunRequest):
+    discovery = _discovery_store()
+    idea = discovery.get_idea(idea_id)
+    if not idea:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
+
+    existing = discovery.get_market_simulation_report(idea_id)
+    if existing and not body.force_refresh:
+        return MarketSimulationRunResponse(idea=idea, report=existing, cached=True)
+
+    discovery.update_idea(idea_id, IdeaUpdateRequest(simulation_state="running"))
+    dossier = discovery.get_dossier(idea_id)
+    if not dossier:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
+
+    report = _market_lab_runner().run(dossier, body)
+    stored = discovery.upsert_market_simulation_report(idea_id, report)
+    updated_idea = discovery.get_idea(idea_id)
+    if not updated_idea:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
+    return MarketSimulationRunResponse(idea=updated_idea, report=stored, cached=False)
+
+
+@router.post("/discovery/idea-graph/rebuild")
+async def ep_rebuild_discovery_idea_graph(refresh: bool = False):
+    return await _idea_graph_service().rebuild(refresh=refresh)
+
+
+@router.get("/discovery/idea-graph/snapshots")
+async def ep_list_discovery_idea_graph_snapshots(limit: int = 20):
+    return {"items": _idea_graph_service().list_snapshots(limit=limit)}
+
+
+@router.get("/discovery/idea-graph/snapshots/{graph_id}")
+async def ep_get_discovery_idea_graph_snapshot(graph_id: str):
+    snapshot = _idea_graph_service().get_snapshot(graph_id)
+    if snapshot is None:
+        raise HTTPException(404, f"Unknown idea graph snapshot: {graph_id}")
+    return snapshot
+
+
+@router.get("/discovery/ideas/{idea_id}/idea-graph")
+async def ep_get_discovery_idea_graph_context(idea_id: str):
+    idea = await _run_sync(_discovery_store().get_idea, idea_id)
+    if not idea:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
+    context = await _run_sync(_idea_graph_service().get_idea_context, idea_id)
+    if context is None:
+        raise HTTPException(404, f"No idea graph context for idea: {idea_id}")
+    return context
+
+
+@router.post("/discovery/memory/rebuild")
+async def ep_rebuild_discovery_memory(refresh: bool = False):
+    return await _memory_graph_service().rebuild(refresh=refresh)
+
+
+@router.get("/discovery/memory/snapshots")
+async def ep_list_discovery_memory_snapshots(limit: int = 20):
+    return {"items": _memory_graph_service().list_snapshots(limit=limit)}
+
+
+@router.get("/discovery/memory/snapshots/{snapshot_id}")
+async def ep_get_discovery_memory_snapshot(snapshot_id: str):
+    snapshot = _memory_graph_service().get_snapshot(snapshot_id)
+    if snapshot is None:
+        raise HTTPException(404, f"Unknown discovery memory snapshot: {snapshot_id}")
+    return snapshot
+
+
+@router.get("/discovery/ideas/{idea_id}/memory")
+async def ep_get_discovery_memory_context(idea_id: str):
+    idea = await _run_sync(_discovery_store().get_idea, idea_id)
+    if not idea:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
+    context = await _run_sync(_memory_graph_service().get_idea_context, idea_id)
+    if context is None:
+        raise HTTPException(404, f"No institutional memory context for idea: {idea_id}")
+    return context
+
+
+@router.post("/discovery/memory/query")
+async def ep_query_discovery_memory(body: MemoryQueryRequest):
+    return await _run_sync(_memory_graph_service().query, body)
+
+
+@router.get("/discovery/daemon/status")
+async def ep_get_discovery_daemon_status():
+    return await _run_sync(_daemon_service().get_status)
+
+
+@router.post("/discovery/daemon/control")
+async def ep_control_discovery_daemon(body: DiscoveryDaemonControlRequest):
+    service = _daemon_service()
+    if body.action == "start":
+        return service.start()
+    if body.action == "pause":
+        return service.pause()
+    if body.action == "resume":
+        return service.resume()
+    if body.action == "stop":
+        return service.stop()
+    if body.action == "tick":
+        return service.tick()
+    if not body.routine_kind:
+        raise HTTPException(422, "routine_kind is required when action=run_routine")
+    try:
+        return service.run_routine(body.routine_kind)
+    except KeyError:
+        raise HTTPException(404, f"Unknown daemon routine: {body.routine_kind}") from None
+
+
+@router.get("/discovery/daemon/digests")
+async def ep_get_discovery_daemon_digests(limit: int = 14):
+    bounded_limit = max(1, min(int(limit or 14), 90))
+    items = await _run_sync(_daemon_service().list_digests, limit=bounded_limit)
+    return {"items": items}
+
+
+@router.get("/discovery/daemon/runs")
+async def ep_get_discovery_daemon_runs(limit: int = 20):
+    bounded_limit = max(1, min(int(limit or 20), 200))
+    items = await _run_sync(_daemon_service().list_runs, limit=bounded_limit)
+    return {"items": items}
+
+
+@router.get("/discovery/inbox")
+async def ep_get_discovery_inbox(limit: int = 50, status: str | None = "open"):
+    bounded_limit = max(1, min(int(limit or 50), 500))
+    normalized_status = (status or "").strip().lower() or None
+    if normalized_status not in {None, "open", "resolved"}:
+        raise HTTPException(422, "status must be one of: open, resolved")
+    return await _run_sync(
+        _daemon_service().get_inbox_feed,
+        limit=bounded_limit,
+        status=normalized_status,
+    )
+
+
+@router.get("/discovery/inbox/{item_id}")
+async def ep_get_discovery_inbox_item(item_id: str):
+    item = await _run_sync(_daemon_service().get_inbox_item, item_id)
+    if item is None:
+        raise HTTPException(404, f"Unknown discovery inbox item: {item_id}")
+    return item
+
+
+@router.get("/improvement/prompt-profiles")
+async def ep_get_improvement_prompt_profiles(limit: int = 20):
+    bounded_limit = max(1, min(int(limit or 20), 200))
+    return {"items": [item.model_dump(mode="json") for item in _improvement_lab().list_profiles(limit=bounded_limit)]}
+
+
+@router.get("/improvement/prompt-profiles/{profile_id}")
+async def ep_get_improvement_prompt_profile(profile_id: str):
+    profile = _improvement_lab().get_profile(profile_id)
+    if profile is None:
+        raise HTTPException(404, f"Unknown improvement prompt profile: {profile_id}")
+    return profile.model_dump(mode="json")
+
+
+@router.get("/improvement/reflections")
+async def ep_get_improvement_reflections(limit: int = 20):
+    bounded_limit = max(1, min(int(limit or 20), 200))
+    return {"items": [item.model_dump(mode="json") for item in _improvement_lab().list_reflections(limit=bounded_limit)]}
+
+
+@router.get("/improvement/self-play/matches")
+async def ep_get_improvement_self_play_matches(limit: int = 20):
+    bounded_limit = max(1, min(int(limit or 20), 200))
+    return {"items": [item.model_dump(mode="json") for item in _improvement_lab().list_matches(limit=bounded_limit)]}
+
+
+@router.post("/improvement/reflect")
+async def ep_run_improvement_reflection(body: ImprovementSessionReflectRequest):
+    try:
+        report = _improvement_lab().reflect(body, session_lookup=store.get)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {"status": "ok", "reflection": report.model_dump(mode="json")}
+
+
+@router.post("/improvement/self-play")
+async def ep_run_improvement_self_play(body: ImprovementSelfPlayRequest):
+    try:
+        match = _improvement_lab().run_self_play(body)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {"status": "ok", "match": match.model_dump(mode="json")}
+
+
+@router.post("/improvement/evolve")
+async def ep_run_improvement_evolution(body: ImprovementEvolutionRequest):
+    try:
+        result = _improvement_lab().evolve(body)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {"status": "ok", "result": result.model_dump(mode="json")}
+
+
+@router.post("/discovery/inbox/{item_id}/act")
+async def ep_act_on_discovery_inbox_item(item_id: str, body: DiscoveryInboxActionRequest):
+    item = _daemon_service().act_on_inbox_item(item_id, body)
+    if item is None:
+        raise HTTPException(404, f"Unknown discovery inbox item: {item_id}")
+    return item
+
+
+@router.post("/discovery/inbox/{item_id}/resolve")
+async def ep_resolve_discovery_inbox_item(item_id: str, body: DiscoveryInboxResolveRequest | None = None):
+    item = _daemon_service().resolve_inbox_item(item_id, body)
+    if item is None:
+        raise HTTPException(404, f"Unknown discovery inbox item: {item_id}")
+    return item
+
+
+@router.get("/observability/evals/discovery")
+async def ep_get_observability_discovery_evals(limit: int = 100):
+    bounded_limit = max(1, min(int(limit or 100), 500))
+    return await _run_sync(_observability_eval_service().build_pack, limit=bounded_limit)
+
+
+@router.get("/observability/traces/discovery")
+async def ep_get_observability_discovery_traces(limit: int = 25):
+    bounded_limit = max(1, min(int(limit or 25), 250))
+    return await _run_sync(_observability_trace_service().build_snapshot, limit=bounded_limit)
+
+
+@router.get("/observability/traces/discovery/{idea_id}")
+async def ep_get_observability_discovery_trace(idea_id: str):
+    idea = await _run_sync(_discovery_store().get_idea, idea_id)
+    if not idea:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
+    trace_bundle = await _run_sync(_observability_trace_service().get_idea_trace, idea_id)
+    if trace_bundle is None:
+        raise HTTPException(404, f"No trace bundle for idea: {idea_id}")
+    return trace_bundle
+
+
+@router.get("/observability/scoreboards/discovery")
+async def ep_get_observability_discovery_scoreboard():
+    return await _run_sync(_observability_scoreboard_service().build_scoreboard)
+
+
+@router.get("/observability/debate-replay/sessions/{session_id}")
+async def ep_get_observability_debate_replay(session_id: str):
+    replay = await _run_sync(_debate_replay_service().build_replay, session_id)
+    if replay is None:
+        raise HTTPException(404, f"Unknown session: {session_id}")
+    return replay
+
+
+@router.post("/discovery/ideas/{idea_id}/swipe")
+async def ep_swipe_discovery_idea(idea_id: str, body: IdeaSwipeRequest):
+    try:
+        return _preference_model().swipe_idea(idea_id, body)
+    except KeyError:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}") from None
+
+
+@router.get("/discovery/swipe-queue")
+async def ep_get_discovery_swipe_queue(limit: int = 20):
+    bounded_limit = max(1, min(int(limit or 20), 100))
+    return await _run_sync(_preference_model().get_swipe_queue, limit=bounded_limit)
+
+
+@router.get("/discovery/maybe-queue")
+async def ep_get_discovery_maybe_queue(limit: int = 20):
+    bounded_limit = max(1, min(int(limit or 20), 100))
+    return await _run_sync(_preference_model().get_maybe_queue, limit=bounded_limit)
+
+
+@router.get("/discovery/preferences")
+async def ep_get_discovery_preferences():
+    return await _run_sync(_preference_model().get_preference_profile)
+
+
+@router.get("/discovery/ideas/{idea_id}/changes")
+async def ep_get_discovery_idea_changes(idea_id: str):
+    try:
+        return await _run_sync(_preference_model().get_idea_changes, idea_id)
+    except KeyError:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}") from None
+
+
+@router.get("/ranking/leaderboard")
+async def ep_get_ranking_leaderboard(limit: int = 50):
+    bounded_limit = max(1, min(int(limit or 50), 200))
+    return await _run_sync(_ranking_service().get_leaderboard, limit=bounded_limit)
+
+
+@router.get("/ranking/next-pair")
+async def ep_get_ranking_next_pair():
+    pair = await _run_sync(_ranking_service().get_next_pair)
+    return {"pair": pair}
+
+
+@router.get("/ranking/archive")
+async def ep_get_ranking_archive(limit_cells: int = 24):
+    bounded_limit = max(1, min(int(limit_cells or 24), 64))
+    return await _run_sync(_ranking_service().get_archive_view, limit_cells=bounded_limit)
+
+
+@router.post("/ranking/compare")
+async def ep_record_ranking_comparison(body: PairwiseComparisonRequest):
+    try:
+        return _ranking_service().record_comparison(body)
+    except KeyError:
+        raise HTTPException(404, "Unknown idea id for pairwise comparison") from None
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.post("/ranking/finals/resolve")
+async def ep_resolve_ranking_finals(body: FinalVoteRequest):
+    return _ranking_service().resolve_finals(body)
+
+
+@router.post("/research/scan")
+async def ep_run_research_scan(body: ScanRequest):
+    return await _research_pipeline().run_scan(body)
+
+
+@router.get("/research/observations")
+async def ep_list_research_observations(limit: int = 100, source: str | None = None, include_stale: bool = False):
+    return {
+        "items": _research_index().list_observations(limit=limit, source=source, include_stale=include_stale)
+    }
+
+
+@router.get("/research/search")
+async def ep_search_research_observations(q: str, limit: int = 50):
+    return _research_index().search(q, limit=limit)
+
+
+@router.get("/research/queue/daily")
+async def ep_research_daily_queue(limit: int = 25):
+    return {"items": _research_pipeline().daily_queue(limit=limit)}
+
+
+@router.get("/research/runs")
+async def ep_research_runs(limit: int = 50):
+    return {"items": _research_index().list_runs(limit=limit)}
+
+
+@router.get("/research/exports/jsonl", response_class=PlainTextResponse)
+async def ep_export_research_jsonl(limit: int = 200):
+    observations = _research_index().list_observations(limit=limit, include_stale=True)
+    return export_observations_jsonl(observations)
+
+
+@router.get("/research/exports/daily-queue.md", response_class=PlainTextResponse)
+async def ep_export_research_daily_queue(limit: int = 25):
+    return export_daily_queue_markdown(_research_pipeline().daily_queue(limit=limit))
+
+
+@router.post("/repo-digest/analyze")
+async def ep_analyze_repo_digest(body: RepoDigestAnalyzeRequest):
+    try:
+        return await _repo_dna_service().analyze(body)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/repo-digest/profiles")
+async def ep_list_repo_dna_profiles(limit: int = 50):
+    return {"items": _repo_dna_service().list_profiles(limit=limit)}
+
+
+@router.get("/repo-digest/profiles/{profile_id}")
+async def ep_get_repo_dna_profile(profile_id: str):
+    profile = _repo_dna_service().get_profile(profile_id)
+    if profile is None:
+        raise HTTPException(404, f"Unknown RepoDNA profile: {profile_id}")
+    return profile
+
+
+@router.get("/repo-digest/results/{profile_id}")
+async def ep_get_repo_digest_result(profile_id: str):
+    result = _repo_dna_service().get_result(profile_id)
+    if result is None:
+        raise HTTPException(404, f"Unknown RepoDNA profile: {profile_id}")
+    return result
+
+
+@router.post("/repo-graph/analyze")
+async def ep_analyze_repo_graph(body: RepoGraphAnalyzeRequest):
+    try:
+        return await _repo_graph_service().analyze(body)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/repo-graph/results")
+async def ep_list_repo_graph_results(limit: int = 50):
+    return {"items": _repo_graph_service().list_results(limit=limit)}
+
+
+@router.get("/repo-graph/results/{graph_id}")
+async def ep_get_repo_graph_result(graph_id: str):
+    result = _repo_graph_service().get_result(graph_id)
+    if result is None:
+        raise HTTPException(404, f"Unknown repo graph: {graph_id}")
+    return result
 
 
 @router.get("/scenarios")
@@ -1162,10 +2260,10 @@ async def ep_modes():
     return {
         mode: {
             "description": desc,
-            "default_agents": [a.model_dump() for a in DEFAULT_AGENTS.get(mode, [])],
+            "default_agents": [a.model_dump() for a in _default_agents().get(mode, [])],
             "requirements": MODE_AGENT_REQUIREMENTS.get(mode, {}),
         }
-        for mode, desc in AVAILABLE_MODES.items()
+        for mode, desc in _available_modes().items()
     }
 
 
@@ -1289,8 +2387,30 @@ async def ep_add_tool(tool: ToolConfig):
         raise HTTPException(422, f"Unknown tool type: {tool.tool_type}")
     if is_builtin_tool_instance(tool.id):
         raise HTTPException(409, f"Built-in tool '{tool.id}' cannot be replaced via the settings API.")
+    guarded, report = _apply_guardrails(tool)
+    if guarded.enabled and report.recommended_action == "block":
+        record_guardrail_event(
+            source="settings_api",
+            action="block",
+            phase="config",
+            tool_id=guarded.id,
+            tool_name=guarded.name,
+            detail=report.summary,
+            report=report,
+        )
+        raise HTTPException(409, _guardrail_block_detail(report, message="Tool blocked by guardrails and was not added."))
+    if report.recommended_action in {"warn", "log"}:
+        record_guardrail_event(
+            source="settings_api",
+            action="warn",
+            phase="config",
+            tool_id=guarded.id,
+            tool_name=guarded.name,
+            detail=report.summary,
+            report=report,
+        )
     try:
-        return _tool_payload(tool_config_store.add(tool))
+        return _tool_payload(tool_config_store.add(guarded))
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
 
@@ -1300,12 +2420,35 @@ async def ep_update_tool(tool_id: str, updates: dict):
     """Update a configured tool."""
     if is_builtin_tool_instance(tool_id):
         raise HTTPException(409, f"Built-in tool '{tool_id}' cannot be edited via the settings API.")
+    existing = tool_config_store.get(tool_id)
+    if not existing:
+        raise HTTPException(404, f"Tool not found: {tool_id}")
+    guarded, report = _apply_guardrails(existing.model_copy(update=updates))
+    if guarded.enabled and report.recommended_action == "block":
+        record_guardrail_event(
+            source="settings_api",
+            action="block",
+            phase="config",
+            tool_id=guarded.id,
+            tool_name=guarded.name,
+            detail=report.summary,
+            report=report,
+        )
+        raise HTTPException(409, _guardrail_block_detail(report, message="Tool update blocked by guardrails."))
+    if report.recommended_action in {"warn", "log"}:
+        record_guardrail_event(
+            source="settings_api",
+            action="warn",
+            phase="config",
+            tool_id=guarded.id,
+            tool_name=guarded.name,
+            detail=report.summary,
+            report=report,
+        )
     try:
-        result = tool_config_store.update(tool_id, updates)
+        result = tool_config_store.update(tool_id, guarded.model_dump())
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
-    if not result:
-        raise HTTPException(404, f"Tool not found: {tool_id}")
     return _tool_payload(result)
 
 
@@ -1321,24 +2464,82 @@ async def ep_validate_tool(tool_id: str):
     tool = tool_config_store.get(tool_id)
     if not tool:
         raise HTTPException(404, f"Tool not found: {tool_id}")
-    try:
-        result = await _validate_tool_profile(tool)
-    except Exception as exc:
-        result = {
-            "ok": False,
-            "transport": _tool_transport(tool),
-            "log": ["> Validation failed unexpectedly", f"> {type(exc).__name__}: {exc}"],
-            "error": f"{type(exc).__name__}: {exc}",
-        }
-    status = "valid" if result.get("ok") else "invalid"
+    guarded, report = _apply_guardrails(tool)
+    if report.recommended_action == "block":
+        result = _guardrail_validation_result(guarded, report)
+        status = "invalid"
+        record_guardrail_event(
+            source="settings_api",
+            action="block",
+            phase="validation",
+            tool_id=guarded.id,
+            tool_name=guarded.name,
+            detail=report.summary,
+            report=report,
+        )
+    else:
+        if report.recommended_action in {"warn", "log"}:
+            record_guardrail_event(
+                source="settings_api",
+                action="warn",
+                phase="validation",
+                tool_id=guarded.id,
+                tool_name=guarded.name,
+                detail=report.summary,
+                report=report,
+            )
+        try:
+            result = await _validate_tool_profile(guarded)
+        except Exception as exc:
+            result = {
+                "ok": False,
+                "transport": _tool_transport(guarded),
+                "log": ["> Validation failed unexpectedly", f"> {type(exc).__name__}: {exc}"],
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        status = "valid" if result.get("ok") else "invalid"
     updated = tool_config_store.update(
         tool_id,
         {
             "validation_status": status,
             "last_validation_result": result,
+            "guardrail_status": report.status,
+            "last_guardrail_report": report.model_dump(),
+            "wrapper_mode": report.wrapper_mode,
+            "trust_level": report.trust_level,
         },
     )
-    return _tool_payload(updated or tool)
+    return _tool_payload(updated or guarded)
+
+
+@router.get("/settings/tools/{tool_id}/guardrails")
+async def ep_tool_guardrails(tool_id: str):
+    tool = tool_config_store.get(tool_id)
+    if not tool:
+        raise HTTPException(404, f"Tool not found: {tool_id}")
+    guarded, report = _apply_guardrails(tool)
+    if report.model_dump() != (tool.last_guardrail_report or {}):
+        tool_config_store.update(
+            tool_id,
+            {
+                "guardrail_status": report.status,
+                "last_guardrail_report": report.model_dump(),
+                "wrapper_mode": report.wrapper_mode,
+                "trust_level": report.trust_level,
+            },
+        )
+    return report.model_dump()
+
+
+@router.get("/guardrails/policies")
+async def ep_guardrail_policies():
+    return policy_catalog_payload()
+
+
+@router.get("/guardrails/audit")
+async def ep_guardrail_audit(limit: int = 100, tool_id: str | None = None):
+    events = guardrail_audit_store.list_recent(limit=max(1, min(limit, 500)), tool_id=tool_id)
+    return [event.model_dump() for event in events]
 
 
 @router.get("/settings/workspaces")
@@ -1381,3 +2582,135 @@ async def ep_delete_workspace(workspace_id: str):
 async def ep_prompt_templates():
     """List available prompt templates."""
     return PROMPT_TEMPLATES
+
+
+@router.post("/founder/bootstrap/github")
+async def ep_founder_bootstrap_github(request: FounderBootstrapRequest):
+    """Bootstrap a founder profile from their GitHub portfolio.
+
+    Enumerates repos, clusters interests, generates opportunity hypotheses,
+    and seeds the discovery queue.
+
+    Returns 503 if GITHUB_TOKEN is not configured.
+    """
+    from orchestrator.founder_bootstrap import (
+        FounderBootstrapPipeline,
+        get_github_portfolio_client_or_none,
+    )
+
+    github_client = get_github_portfolio_client_or_none()
+    if github_client is None:
+        raise HTTPException(
+            503,
+            "Founder GitHub bootstrap is not configured. "
+            "Set GITHUB_TOKEN environment variable to enable portfolio analysis.",
+        )
+
+    # Best-effort repo_digest injection — deep scan skipped if unavailable
+    repo_digest_instance = None
+    try:
+        from orchestrator.repo_digest import RepoDigestAnalyzer
+        repo_digest_instance = RepoDigestAnalyzer()
+    except Exception:
+        pass
+
+    pipeline = FounderBootstrapPipeline()
+    result = await pipeline.run(
+        request,
+        github_client=github_client,
+        repo_digest=repo_digest_instance,
+        discovery_store=_discovery_store(),
+    )
+    return result.model_dump()
+
+
+# ---------------------------------------------------------------------------
+# Founder approval workflow — convenience aliases around discovery_store
+# ---------------------------------------------------------------------------
+
+
+@router.get("/founder/approval/pending")
+async def ep_list_pending_approvals():
+    """List all execution briefs awaiting founder approval.
+
+    Reads from discovery_store — the single source of truth for brief state.
+    """
+    ds = _discovery_store()
+    # Iterate dossiers and collect briefs with pending approval status
+    pending = []
+    for idea in ds.list_ideas(limit=500):
+        dossier = ds.get_dossier(idea.idea_id)
+        if dossier is None:
+            continue
+        brief = dossier.execution_brief_candidate
+        if brief is None:
+            continue
+        if getattr(brief, "brief_approval_status", "") == "pending":
+            pending.append({
+                "idea_id": idea.idea_id,
+                "idea_title": idea.title,
+                "brief": brief.model_dump(mode="json"),
+            })
+    return {"items": pending}
+
+
+class _ApproveBriefRequest(BaseModel):
+    actor: str = "founder"
+    note: str = ""
+    expected_brief_id: str | None = None
+    expected_revision_id: str | None = None
+
+
+@router.post("/founder/approval/{idea_id}/approve")
+async def ep_approve_brief(idea_id: str, body: _ApproveBriefRequest | None = None):
+    """Approve a pending execution brief for launch."""
+    payload = body or _ApproveBriefRequest()
+    brief, autopilot_sync = await _update_execution_brief_candidate_approval(
+        idea_id,
+        ExecutionBriefApprovalUpdateRequest(
+            status="approved",
+            actor=payload.actor,
+            note=payload.note,
+            expected_brief_id=payload.expected_brief_id,
+            expected_revision_id=payload.expected_revision_id,
+        ),
+        decision_type="execution_brief_approved",
+        rationale="Founder approved the execution brief.",
+    )
+    return {
+        "status": "ok",
+        "idea_id": idea_id,
+        "brief": brief.model_dump(mode="json"),
+        "autopilot_sync": autopilot_sync,
+    }
+
+
+class _RejectBriefRequest(BaseModel):
+    actor: str = "founder"
+    reason: str = ""
+    expected_brief_id: str | None = None
+    expected_revision_id: str | None = None
+
+
+@router.post("/founder/approval/{idea_id}/reject")
+async def ep_reject_brief(idea_id: str, body: _RejectBriefRequest | None = None):
+    """Reject a pending execution brief."""
+    payload = body or _RejectBriefRequest()
+    brief, autopilot_sync = await _update_execution_brief_candidate_approval(
+        idea_id,
+        ExecutionBriefApprovalUpdateRequest(
+            status="rejected",
+            actor=payload.actor,
+            note=payload.reason,
+            expected_brief_id=payload.expected_brief_id,
+            expected_revision_id=payload.expected_revision_id,
+        ),
+        decision_type="execution_brief_rejected",
+        rationale=payload.reason or "Founder rejected the execution brief.",
+    )
+    return {
+        "status": "ok",
+        "idea_id": idea_id,
+        "brief": brief.model_dump(mode="json"),
+        "autopilot_sync": autopilot_sync,
+    }

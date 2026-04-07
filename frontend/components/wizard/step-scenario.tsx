@@ -37,6 +37,10 @@ const DISPLAY_MODES = [
     description: "Разделение задачи по блокам и сведение результатов в единый вывод.",
   },
   {
+    mode: "moa",
+    description: "Layered generation: proposers дают ширину, aggregators собирают сильные варианты, judge-pack помогает выбрать финальный synthesis.",
+  },
+  {
     mode: "creator_critic",
     description: "Дуэт автора и критика с несколькими итерациями и прозрачной обратной связью.",
   },

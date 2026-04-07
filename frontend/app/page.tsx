@@ -85,6 +85,17 @@ function HomeShell() {
     openFreshWizard();
   }
 
+  function handleDeleteSession(id: string) {
+    if (activeSessionId !== id) {
+      return;
+    }
+    clearWizardDraft();
+    setResumeWizardDraft(false);
+    setActiveSessionId(null);
+    setShowWizard(false);
+    setView("chat");
+  }
+
   const isMonitorView = view === "chat" && !showWizard && !!activeSessionId;
   const shellView: View = view;
 
@@ -149,6 +160,7 @@ function HomeShell() {
           activeSessionId={activeSessionId}
           onSelectSession={handleSelectSession}
           onNewSession={handleNewSession}
+          onDeleteSession={handleDeleteSession}
           collapsed={isSessionListCollapsed}
         />
         <main className="min-w-0 flex-1 overflow-hidden bg-[#f6f7fb] dark:bg-[#05070c]">

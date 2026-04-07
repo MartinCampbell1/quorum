@@ -20,6 +20,7 @@ const MODE_COLORS: Record<string, { bg: string; fg: string; ring: string }> = {
   democracy:     { bg: "bg-emerald-50 dark:bg-emerald-950/30",fg: "text-emerald-700", ring: "ring-emerald-200 dark:ring-emerald-800" },
   debate:        { bg: "bg-orange-50 dark:bg-orange-950/30",  fg: "text-orange-700",  ring: "ring-orange-200 dark:ring-orange-800" },
   map_reduce:    { bg: "bg-sky-50 dark:bg-sky-950/30",        fg: "text-sky-700",     ring: "ring-sky-200 dark:ring-sky-800" },
+  moa:           { bg: "bg-teal-50 dark:bg-teal-950/30",      fg: "text-teal-700",    ring: "ring-teal-200 dark:ring-teal-800" },
   creator_critic:{ bg: "bg-pink-50 dark:bg-pink-950/30",      fg: "text-pink-700",    ring: "ring-pink-200 dark:ring-pink-800" },
   tournament:    { bg: "bg-amber-50 dark:bg-amber-950/30",    fg: "text-amber-700",   ring: "ring-amber-200 dark:ring-amber-800" },
 };
@@ -30,6 +31,7 @@ const MODE_TAGLINES: Record<string, string> = {
   democracy: "Команда голосует, а система считает итог честно",
   debate: "Две позиции спорят, третий агент выносит вердикт",
   map_reduce: "Большая задача делится на куски и собирается обратно",
+  moa: "Несколько слоёв агентов сначала расширяют поле идей, потом выбирают лучший synthesis",
   creator_critic: "Один создаёт, второй жёстко улучшает",
   tournament: "Несколько решений соревнуются за лучший финал",
 };
@@ -40,6 +42,7 @@ const MODE_BEST_FOR: Record<string, string> = {
   democracy: "Когда ты хочешь прозрачное голосование без скрытого арбитра",
   debate: "Когда нужно столкнуть две противоположные позиции",
   map_reduce: "Когда задача большая и её удобно делить на части",
+  moa: "Когда нужен breadth-first generation до дебатов, ranking или dossier review",
   creator_critic: "Когда нужен быстрый черновик с жёсткой критикой",
   tournament: "Когда хочется столкнуть несколько вариантов и выбрать чемпиона",
 };
@@ -50,6 +53,7 @@ const MODE_DIFFICULTY: Record<string, string> = {
   democracy: "Средний",
   debate: "Лёгкий старт",
   map_reduce: "Продвинутый",
+  moa: "Продвинутый",
   creator_critic: "Лёгкий старт",
   tournament: "Продвинутый",
 };

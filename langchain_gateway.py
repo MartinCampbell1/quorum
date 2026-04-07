@@ -65,6 +65,7 @@ class GatewayInvocationError(RuntimeError):
         profile_used: str | None,
         retries: int,
         gateway_error: str,
+        process_log_path: str | None = None,
     ) -> None:
         role_label = agent_role or "agent"
         profile_label = profile_used or "default"
@@ -77,6 +78,7 @@ class GatewayInvocationError(RuntimeError):
         self.profile_used = profile_used
         self.retries = retries
         self.gateway_error = gateway_error
+        self.process_log_path = process_log_path
 
 
 def _extract_http_error_detail(exc: httpx.HTTPError) -> str:
@@ -128,6 +130,7 @@ def _raise_gateway_transport_error(agent: str, agent_role: str | None, exc: Exce
             profile_used=None,
             retries=0,
             gateway_error=_extract_http_error_detail(exc),
+            process_log_path=None,
         ) from exc
     raise exc
 
@@ -146,6 +149,7 @@ def _coerce_gateway_output(agent: str, agent_role: str | None, data: dict[str, A
             profile_used=profile_used,
             retries=retries,
             gateway_error=str(data.get("error") or "Gateway reported an unsuccessful agent invocation."),
+            process_log_path=data.get("process_log_path"),
         )
     if not usable:
         raise GatewayInvocationError(
@@ -154,12 +158,14 @@ def _coerce_gateway_output(agent: str, agent_role: str | None, data: dict[str, A
             profile_used=profile_used,
             retries=retries,
             gateway_error=str(data.get("error") or "Agent returned no usable text output."),
+            process_log_path=data.get("process_log_path"),
         )
 
     metadata = {
         "profile_used": profile_used,
         "elapsed_sec": data.get("elapsed_sec"),
         "retries": retries,
+        "process_log_path": data.get("process_log_path"),
     }
     return output, metadata
 
@@ -180,6 +186,7 @@ class GatewayChatModel(BaseChatModel):
     workspace_paths: Optional[list[str]] = None
     model_override: Optional[str] = None
     timeout: Optional[int] = DEFAULT_GATEWAY_TIMEOUT
+    stall_timeout: Optional[int] = None
     mcp_tools: Optional[list[str]] = None
     session_id: Optional[str] = None
     agent_role: Optional[str] = None
@@ -221,6 +228,7 @@ class GatewayChatModel(BaseChatModel):
                         "workdir": self.workdir,
                         "model": self.model_override,
                         "timeout": request_timeout,
+                        "stall_timeout": self.stall_timeout,
                         "mcp_tools": self.mcp_tools,
                         "workspace_paths": self.workspace_paths,
                         "session_id": self.session_id,
@@ -273,6 +281,7 @@ class GatewayChatModel(BaseChatModel):
                         "workdir": self.workdir,
                         "model": self.model_override,
                         "timeout": request_timeout,
+                        "stall_timeout": self.stall_timeout,
                         "mcp_tools": self.mcp_tools,
                         "workspace_paths": self.workspace_paths,
                         "session_id": self.session_id,

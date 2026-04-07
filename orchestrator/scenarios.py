@@ -64,7 +64,7 @@ SCENARIOS = {
         "tags": ["founderos", "portfolio", "pivots"],
         "default_config": {"max_rounds": 3},
         "default_agents": [
-            AgentConfig(role="portfolio_strategist", provider="claude", tools=["web_search", "perplexity"]),
+            AgentConfig(role="portfolio_strategist", provider="codex", tools=["web_search", "code_exec", "shell_exec"]),
             AgentConfig(role="market_scout", provider="gemini", tools=["web_search", "perplexity", "http_request"]),
             AgentConfig(role="pivot_critic", provider="codex", tools=["web_search", "code_exec", "shell_exec"]),
         ],
@@ -80,9 +80,40 @@ SCENARIOS = {
         "tags": ["founderos", "strengthening", "growth"],
         "default_config": {"max_rounds": 3},
         "default_agents": [
-            AgentConfig(role="product_strengthener", provider="claude", tools=["web_search", "perplexity"]),
+            AgentConfig(role="product_strengthener", provider="codex", tools=["web_search", "code_exec", "shell_exec"]),
             AgentConfig(role="growth_operator", provider="gemini", tools=["web_search", "perplexity", "http_request"]),
             AgentConfig(role="execution_critic", provider="codex", tools=["web_search", "code_exec", "shell_exec"]),
+        ],
+    },
+    "project_monetization_lab": {
+        "id": "project_monetization_lab",
+        "name": "Project Monetization Lab",
+        "mode": "debate",
+        "headline": "Два агента жёстко спорят о том, как превратить один проект в деньги, а судья собирает практический план.",
+        "description": "Подходит для одного сильного проекта, когда нужен не общий brainstorm, а реальная монетизационная полемика: упаковка, каналы, пивот в подаче, первый оффер, distribution и ближайший план запуска.",
+        "recommended_for": "Когда проект уже выбран, и нужно не сравнивать его с другими, а выбить из команды конкретный путь к первым деньгам и понятную упаковку.",
+        "task_placeholder": "Например: возьмите мой GraphRAG Affiliate, свободно предложите лучшие пути монетизации и упаковки, спорьте по делу, допускайте лёгкий pivot, если он усиливает путь к деньгам, и в финале дайте чёткий 14-дневный план запуска.",
+        "tags": ["founderos", "monetization", "debate"],
+        "default_config": {"max_rounds": 4},
+        "default_agents": [
+            AgentConfig(
+                role="proponent",
+                provider="gemini",
+                system_prompt="You are the monetization architect. Generate bold but concrete routes to money for the attached project. You may suggest packaging pivots, channel shifts, or ICP changes if they materially improve time-to-money. Do not stay trapped in the current form factor.",
+                tools=["web_search", "perplexity", "http_request"],
+            ),
+            AgentConfig(
+                role="opponent",
+                provider="codex",
+                system_prompt="You are the ruthless monetization critic. Attack vague strategy, force specificity on ICP, positioning, distribution, pricing, and proof loops. Push the discussion toward concrete mechanisms and action, not abstract startup talk.",
+                tools=["web_search", "code_exec", "shell_exec"],
+            ),
+            AgentConfig(
+                role="judge",
+                provider="claude",
+                system_prompt="You are the founder-side judge. Your job is not to split the difference but to choose the strongest path to money, allowing moderate pivot in packaging or channel when justified. End with a concrete decision, a practical 14-day plan, and what to build or test next.",
+                tools=["web_search", "perplexity", "http_request"],
+            ),
         ],
     },
     "consensus_vote": {
@@ -130,6 +161,24 @@ SCENARIOS = {
         "default_agents": [
             AgentConfig(role="strategist", provider="claude", tools=["web_search", "perplexity"]),
             AgentConfig(role="risk_critic", provider="codex", tools=["code_exec", "web_search", "shell_exec"]),
+        ],
+    },
+    "layered_idea_lab": {
+        "id": "layered_idea_lab",
+        "name": "Layered Idea Lab",
+        "mode": "moa",
+        "headline": "Сначала генерирует ширину через proposer/aggregator layers, потом собирает финальный synthesis под scorecard judge-pack.",
+        "description": "Подходит для ранней генерации и переработки направлений до дебатов: несколько proposer-агентов дают разные заходы, aggregator-слой собирает более сильные варианты, judge-pack их оценивает, а финальный synthesizer выпускает лучший кандидат.",
+        "recommended_for": "Когда нужен не спор, а controlled breadth generation перед ranking, dossier review или последующим debate/simulation этапом.",
+        "task_placeholder": "Например: возьмите мои локальные AI и automation репозитории, сгенерируйте несколько сильных startup-направлений, затем соберите лучшие варианты с ICP, distribution wedge, build scope и тем, что стоит отправить в debate дальше.",
+        "tags": ["generation", "moa", "breadth"],
+        "default_config": {"aggregator_count": 2},
+        "default_agents": [
+            AgentConfig(role="proposer_market", provider="claude", tools=["web_search", "perplexity"]),
+            AgentConfig(role="proposer_builder", provider="codex", tools=["code_exec", "shell_exec", "web_search"]),
+            AgentConfig(role="aggregator_operator", provider="gemini", tools=["web_search", "perplexity", "http_request"]),
+            AgentConfig(role="aggregator_editor", provider="claude", tools=["web_search", "perplexity"]),
+            AgentConfig(role="final_synthesizer", provider="codex", tools=["web_search", "code_exec"]),
         ],
     },
     "project_tournament": {

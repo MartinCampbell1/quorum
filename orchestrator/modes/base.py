@@ -5,23 +5,27 @@ import os
 import re
 import time
 import threading
-from pathlib import Path
 from typing import Optional
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
-import sys
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-from langchain_gateway import (
-    GatewayClaude,
-    GatewayCodex,
-    GatewayGemini,
-    GatewayInvocationError,
-    GatewayMiniMax,
-)
+try:
+    from langchain_gateway import (
+        GatewayClaude,
+        GatewayCodex,
+        GatewayGemini,
+        GatewayInvocationError,
+        GatewayMiniMax,
+    )
+except ImportError:
+    GatewayClaude = None  # type: ignore[assignment,misc]
+    GatewayCodex = None  # type: ignore[assignment,misc]
+    GatewayGemini = None  # type: ignore[assignment,misc]
+    GatewayInvocationError = None  # type: ignore[assignment,misc]
+    GatewayMiniMax = None  # type: ignore[assignment,misc]
+
+from orchestrator.models import store
 from orchestrator.tools.router import route_tool_visibility
 
 
@@ -110,6 +114,8 @@ def make_llm(
     mcp_tools: list[str] | None = None,
     workdir: str | None = None,
     workspace_paths: list[str] | None = None,
+    timeout: int | None = None,
+    stall_timeout: int | None = None,
     session_id: str | None = None,
     agent_role: str | None = None,
 ) -> BaseChatModel:
@@ -118,6 +124,8 @@ def make_llm(
         "mcp_tools": mcp_tools,
         "workdir": workdir or str(PROJECT_ROOT),
         "workspace_paths": workspace_paths or [],
+        "timeout": timeout,
+        "stall_timeout": stall_timeout,
         "session_id": session_id,
         "agent_role": agent_role,
     }
@@ -140,6 +148,8 @@ def call_agent(
     tools: list[str] | None = None,
     workdir: str | None = None,
     workspace_paths: list[str] | None = None,
+    timeout: int | None = None,
+    stall_timeout: int | None = None,
     session_id: str | None = None,
     agent_role: str | None = None,
 ) -> str:
@@ -149,6 +159,8 @@ def call_agent(
         mcp_tools=tools,
         workdir=workdir,
         workspace_paths=workspace_paths,
+        timeout=timeout,
+        stall_timeout=stall_timeout,
         session_id=session_id,
         agent_role=agent_role,
     )
@@ -220,20 +232,43 @@ def call_agent_cfg(agent: dict, prompt: str) -> str:
     )
     last_error: GatewayInvocationError | None = None
 
-    for provider in providers:
+    for attempt_index, provider in enumerate(providers):
+        call_kwargs = {
+            "tools": tools,
+            "workdir": agent_default_workdir(agent),
+            "workspace_paths": agent_workspace_paths(agent),
+            "session_id": agent.get("session_id"),
+            "agent_role": role,
+        }
+        if agent.get("timeout") is not None:
+            call_kwargs["timeout"] = agent.get("timeout")
+        if agent.get("stall_timeout") is not None:
+            call_kwargs["stall_timeout"] = agent.get("stall_timeout")
         try:
             return call_agent(
                 provider,
                 prompt,
                 agent.get("system_prompt", ""),
-                tools=tools,
-                workdir=agent_default_workdir(agent),
-                workspace_paths=agent_workspace_paths(agent),
-                session_id=agent.get("session_id"),
-                agent_role=role,
+                **call_kwargs,
             )
         except GatewayInvocationError as exc:
             last_error = exc
+            next_provider = providers[attempt_index + 1] if attempt_index + 1 < len(providers) else None
+            session_id = str(agent.get("session_id") or "").strip()
+            if session_id and next_provider:
+                detail = f"{provider} failed for {role or 'agent'}: {exc.gateway_error}"
+                if exc.process_log_path:
+                    detail += f" Log: {exc.process_log_path}"
+                store.append_event(
+                    session_id,
+                    "provider_fallback",
+                    "Provider fallback",
+                    detail,
+                    agent_id=role,
+                    provider=provider,
+                    next_provider=next_provider,
+                    process_log_path=exc.process_log_path,
+                )
             if provider == providers[-1]:
                 raise
 

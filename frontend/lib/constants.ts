@@ -4,6 +4,7 @@ import {
   Vote,
   Swords,
   LayoutGrid,
+  Layers3,
   RefreshCw,
   Trophy,
   type LucideIcon,
@@ -25,6 +26,7 @@ export const MODE_ICONS: Record<string, LucideIcon> = {
   debate: Swords,
   tournament_match: Swords,
   map_reduce: LayoutGrid,
+  moa: Layers3,
   creator_critic: RefreshCw,
   tournament: Trophy,
 };
@@ -36,6 +38,7 @@ export const MODE_LABELS: Record<string, string> = {
   debate: "Дебаты",
   tournament_match: "Матч турнира",
   map_reduce: "Map-Reduce",
+  moa: "MoA",
   creator_critic: "Создатель-Критик",
   tournament: "Турнир",
 };
@@ -85,6 +88,11 @@ const BASE_ROLE_DISPLAY_LABELS: Record<string, string> = {
   critic: "Критик",
   director: "Директор",
   chair: "Председатель",
+  proposer_market: "Пропозер рынка",
+  proposer_builder: "Пропозер билда",
+  aggregator_operator: "Оператор агрегации",
+  aggregator_editor: "Редактор агрегации",
+  final_synthesizer: "Финальный синтезатор",
 };
 
 const MODE_ROLE_DISPLAY_LABELS: Record<string, Record<string, string>> = {
@@ -101,6 +109,11 @@ const MODE_ROLE_DISPLAY_LABELS: Record<string, Record<string, string>> = {
 
 const SCENARIO_ROLE_DISPLAY_LABELS: Record<string, Record<string, string>> = {
   structured_debate: MODE_ROLE_DISPLAY_LABELS.debate,
+  project_monetization_lab: {
+    proponent: "Архитектор монетизации",
+    opponent: "Критик монетизации",
+    judge: "Судья-модератор",
+  },
 };
 
 function humanizeIdentifier(value: string): string {

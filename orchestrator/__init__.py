@@ -1,1 +1,1 @@
-"""Multi-agent orchestration engine with 7 modes."""
+"""Multi-agent orchestration engine with layered generation and debate modes."""
