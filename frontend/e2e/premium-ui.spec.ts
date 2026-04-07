@@ -45,7 +45,7 @@ const workspacePresets = [
     id: "trading_stack",
     name: "Trading Stack",
     description: "Repo + logs + docs",
-    paths: ["/Users/example/Desktop/solana-smart-money-graph", "/Users/example/trading/logs"],
+    paths: ["/path/to/project", "/path/to/logs"],
     created_at: 1_700_000_000,
   },
 ];
@@ -141,7 +141,7 @@ const sessionDetail = {
   pending_instructions: 0,
   active_node: "finalize",
   workspace_preset_ids: ["trading_stack"],
-  workspace_paths: ["/Users/example/Desktop/solana-smart-money-graph", "/Users/example/trading/logs"],
+  workspace_paths: ["/path/to/project", "/path/to/logs"],
   attached_tool_ids: ["local_filesystem", "postgresql", "web_search"],
   provider_capabilities_snapshot: {
     orchestrator: { provider: "gemini", tools: { optimization_mcp: { capability: "native", tool_type: "mcp_server", name: "Optimization MCP" } } },

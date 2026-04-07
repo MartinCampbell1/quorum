@@ -439,6 +439,24 @@ def test_session_events_endpoint_streams_backlog_once():
     assert [payload["type"] for payload in payloads] == ["run_started", "checkpoint_created"]
 
 
+def test_session_events_endpoint_reports_missing_sse_dependency(monkeypatch):
+    session_id = store.create(
+        "dictator",
+        "Draft a plan",
+        [
+            AgentConfig(role="director", provider="claude", tools=[]),
+            AgentConfig(role="worker", provider="codex", tools=[]),
+        ],
+        {},
+    )
+    monkeypatch.setattr(orchestrator_api, "EventSourceResponse", None)
+
+    response = client.get(f"/orchestrate/session/{session_id}/events?once=true")
+
+    assert response.status_code == 503
+    assert "sse-starlette" in response.json()["detail"]
+
+
 def test_checkpoint_restart_requires_non_running_session():
     session_id = store.create(
         "dictator",
@@ -820,7 +838,7 @@ def test_execution_brief_endpoint_exports_brief_from_session():
         status="completed",
         result="Champion: graphrag-affiliate",
         messages=[{"agent_id": "judge", "phase": "verdict", "content": "GraphRAG should win and be productized next."}],
-        workspace_paths=["/Users/example/Desktop/Projects/graphrag-affiliate"],
+        workspace_paths=["/workspace/graphrag-affiliate"],
     )
 
     exported = ExecutionBrief(
@@ -866,7 +884,7 @@ def test_send_to_autopilot_endpoint_forwards_brief():
         response = client.post(
             f"/orchestrate/session/{session_id}/send-to-autopilot",
             json={
-                "project_path": "/Users/example/Desktop/autopilot/projects/autopilot-child",
+                "project_path": "/workspace/autopilot/projects/autopilot-child",
                 "priority": "high",
                 "launch": False,
             },
@@ -898,8 +916,8 @@ def test_tournament_preparation_endpoint_returns_wizard_ready_payload():
         status="completed",
         result="Shortlist prepared.",
         workspace_paths=[
-            "/Users/example/Desktop/Projects/graphrag-affiliate",
-            "/Users/example/Desktop/autopilot",
+            "/workspace/graphrag-affiliate",
+            "/workspace/autopilot",
         ],
     )
 
@@ -911,23 +929,23 @@ def test_tournament_preparation_endpoint_returns_wizard_ready_payload():
                 label="GraphRAG Affiliate -> paid intelligence terminal",
                 thesis="Sell the graph-backed corpus as a subscription tool.",
                 rationale="Fastest path to first money.",
-                source_workspace_path="/Users/example/Desktop/Projects/graphrag-affiliate",
+                source_workspace_path="/workspace/graphrag-affiliate",
             ),
             TournamentCandidate(
                 label="Autopilot -> execution OS for solo founders",
                 thesis="Package Autopilot as a high-value execution engine.",
                 rationale="Strongest AI-edge.",
-                source_workspace_path="/Users/example/Desktop/autopilot",
+                source_workspace_path="/workspace/autopilot",
             ),
         ],
         agents=[
-            AgentConfig(role="contestant_1", provider="claude", tools=["web_search"], workspace_paths=["/Users/example/Desktop/Projects/graphrag-affiliate"]),
-            AgentConfig(role="contestant_2", provider="codex", tools=["code_exec"], workspace_paths=["/Users/example/Desktop/autopilot"]),
+            AgentConfig(role="contestant_1", provider="claude", tools=["web_search"], workspace_paths=["/workspace/graphrag-affiliate"]),
+            AgentConfig(role="contestant_2", provider="codex", tools=["code_exec"], workspace_paths=["/workspace/autopilot"]),
             AgentConfig(role="judge", provider="gemini", tools=["perplexity"]),
         ],
         workspace_paths=[
-            "/Users/example/Desktop/Projects/graphrag-affiliate",
-            "/Users/example/Desktop/autopilot",
+            "/workspace/graphrag-affiliate",
+            "/workspace/autopilot",
         ],
     )
 
@@ -977,7 +995,7 @@ def test_autopilot_projects_route_proxies_project_list():
                 {
                     "id": "proj_123",
                     "name": "Autopilot Winner",
-                    "path": "/Users/example/.autopilot/projects/autopilot-winner",
+                    "path": "/workspace/.autopilot/projects/autopilot-winner",
                     "priority": "high",
                     "archived": False,
                     "status": "paused",

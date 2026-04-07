@@ -171,6 +171,53 @@ def test_improvement_evolution_generates_mutants_and_can_activate_best():
     assert any(profile["metadata"].get("active") for profile in profiles)
 
 
+def test_improvement_prompt_profile_activate_switches_runtime_profile():
+    response = client.post(
+        "/orchestrate/improvement/prompt-profiles/improv_evidence_hardliner/activate"
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["profile"]
+    assert payload["profile_id"] == "improv_evidence_hardliner"
+    assert payload["metadata"]["active"] is True
+
+    profiles = client.get("/orchestrate/improvement/prompt-profiles").json()["items"]
+    active_profiles = [
+        profile["profile_id"]
+        for profile in profiles
+        if profile["metadata"].get("active")
+    ]
+    assert active_profiles == ["improv_evidence_hardliner"]
+
+    with patch("orchestrator.api.run", new=AsyncMock(return_value="sess_activated")) as mock_run:
+        response = client.post(
+            "/orchestrate/run",
+            json={
+                "mode": "moa",
+                "task": "Generate founder-calibrated startup directions.",
+                "agents": [
+                    {"role": "proposer_market", "provider": "claude", "system_prompt": "", "tools": [], "workspace_paths": []},
+                    {"role": "proposer_builder", "provider": "codex", "system_prompt": "", "tools": [], "workspace_paths": []},
+                    {"role": "aggregator_operator", "provider": "gemini", "system_prompt": "", "tools": [], "workspace_paths": []},
+                    {"role": "aggregator_editor", "provider": "claude", "system_prompt": "", "tools": [], "workspace_paths": []},
+                    {"role": "final_synthesizer", "provider": "codex", "system_prompt": "", "tools": [], "workspace_paths": []},
+                ],
+                "config": {},
+            },
+        )
+
+    assert response.status_code == 200
+    run_config = mock_run.await_args.kwargs["config"]
+    assert run_config["prompt_profile_id"] == "improv_evidence_hardliner"
+    assert run_config["prompt_profile_label"] == "Evidence hardliner"
+
+
+def test_improvement_prompt_profile_activate_returns_404_for_unknown_profile():
+    response = client.post("/orchestrate/improvement/prompt-profiles/does-not-exist/activate")
+
+    assert response.status_code == 404
+
+
 def test_run_injects_active_improvement_profile_into_moa_sessions():
     with patch("orchestrator.api.run", new=AsyncMock(return_value="sess_improve")) as mock_run:
         response = client.post(

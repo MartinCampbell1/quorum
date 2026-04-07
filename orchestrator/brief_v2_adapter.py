@@ -13,7 +13,6 @@ from founderos_contracts.brief_v2 import (
     RiskItem,
     StoryDecompositionSeed,
 )
-from founderos_contracts.citations import Citation
 
 from .shared_contracts import Confidence
 from .shared_contracts import ExecutionBrief

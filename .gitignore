@@ -4,10 +4,15 @@ __pycache__/
 .uv-cache/
 .pytest_cache/
 .superpowers/
+.claude/
 .DS_Store
 ._*
 .codex_tmp/
 .omc/state/
+.tool_logs/
 frontend/.omc/state/
 frontend/test-results/
 orchestrator.db
+docs/analysis/
+docs/plans/
+docs/specs/

@@ -82,10 +82,10 @@ def _tokenize(value: str) -> set[str]:
     return {match.group(0).lower() for match in _TOKEN_PATTERN.finditer(value or "")}
 
 
-def _as_naive_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value
-    return value.astimezone(UTC).replace(tzinfo=None)
+def _normalize_utc_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _overlap_score(query_tokens: set[str], texts: list[str], base_strength: float) -> float:
@@ -205,7 +205,13 @@ class MemoryGraphBuilder:
             ],
             "swipe_events": [
                 event.model_dump(mode="json")
-                for event in sorted(swipe_events, key=lambda item: (item.idea_id, item.created_at))
+                for event in sorted(
+                    swipe_events,
+                    key=lambda item: (
+                        item.idea_id,
+                        _normalize_utc_datetime(item.created_at),
+                    ),
+                )
             ],
             "preference_profile": preference_profile.model_dump(mode="json"),
         }
@@ -260,7 +266,7 @@ class MemoryGraphBuilder:
                         ),
                         source_ref=observation.observation_id,
                         weight=min(1.0, 0.55 + observation.pain_score * 0.25 + observation.trend_score * 0.15),
-                        created_at=_as_naive_utc(observation.captured_at),
+                        created_at=_normalize_utc_datetime(observation.captured_at),
                         metadata={"url": observation.url, "source": observation.source},
                     )
                 )
@@ -277,7 +283,7 @@ class MemoryGraphBuilder:
                         ),
                         source_ref=report.report_id,
                         weight=0.72 if report.verdict.value == "pass" else 0.68,
-                        created_at=_as_naive_utc(report.created_at),
+                        created_at=_normalize_utc_datetime(report.created_at),
                         metadata={"verdict": report.verdict.value},
                     )
                 )
@@ -294,7 +300,7 @@ class MemoryGraphBuilder:
                         ),
                         source_ref=decision.decision_id,
                         weight=0.7,
-                        created_at=_as_naive_utc(decision.created_at),
+                        created_at=_normalize_utc_datetime(decision.created_at),
                         metadata={"actor": decision.actor},
                     )
                 )
@@ -312,7 +318,7 @@ class MemoryGraphBuilder:
                         ),
                         source_ref=brief.brief_id,
                         weight=0.84,
-                        created_at=_as_naive_utc(brief.updated_at),
+                        created_at=_normalize_utc_datetime(brief.updated_at),
                         metadata={"confidence": brief.confidence.value, "effort": brief.effort.value},
                     )
                 )
@@ -330,7 +336,7 @@ class MemoryGraphBuilder:
                         ),
                         source_ref=report.report_id,
                         weight=0.75,
-                        created_at=_as_naive_utc(report.created_at),
+                        created_at=_normalize_utc_datetime(report.created_at),
                         metadata={"support_ratio": report.support_ratio},
                     )
                 )
@@ -354,7 +360,7 @@ class MemoryGraphBuilder:
                         ),
                         source_ref=report.report_id,
                         weight=min(1.0, 0.76 + report.build_priority_score * 0.2),
-                        created_at=_as_naive_utc(report.created_at),
+                        created_at=_normalize_utc_datetime(report.created_at),
                         metadata={"build_priority_score": report.build_priority_score},
                     )
                 )
@@ -372,7 +378,7 @@ class MemoryGraphBuilder:
                         categories=_dedupe_keep_order(["archive", "failure", *idea_categories, archive.reason], limit=6),
                         source_ref=archive.archive_id,
                         weight=0.68,
-                        created_at=_as_naive_utc(archive.created_at),
+                        created_at=_normalize_utc_datetime(archive.created_at),
                         metadata={"superseded_by": archive.superseded_by_idea_id},
                     )
                 )
@@ -386,11 +392,17 @@ class MemoryGraphBuilder:
                     categories=_dedupe_keep_order(["swipe", event.action], limit=3),
                     source_ref=event.event_id,
                     weight=0.63,
-                    created_at=_as_naive_utc(event.created_at),
+                    created_at=_normalize_utc_datetime(event.created_at),
                     metadata={"actor": event.actor},
                 )
             )
-        episodes.sort(key=lambda item: (_as_naive_utc(item.created_at), item.idea_id, item.kind))
+        episodes.sort(
+            key=lambda item: (
+                _normalize_utc_datetime(item.created_at),
+                item.idea_id,
+                item.kind,
+            )
+        )
         return episodes
 
     def _consolidate_semantic(self, episodes: list[MemoryEpisode]) -> list[SemanticMemoryRecord]:
@@ -405,12 +417,15 @@ class MemoryGraphBuilder:
                 grouped[key].append(episode)
                 labels.setdefault(key, label)
 
-        now = datetime.now(UTC).replace(tzinfo=None)
+        now = datetime.now(UTC)
         records: list[SemanticMemoryRecord] = []
         for key, grouped_episodes in grouped.items():
             idea_ids = _dedupe_keep_order([item.idea_id for item in grouped_episodes], limit=12)
             episode_ids = [item.episode_id for item in grouped_episodes[:12]]
-            latest = max(_as_naive_utc(item.created_at) for item in grouped_episodes)
+            latest = max(
+                _normalize_utc_datetime(item.created_at)
+                for item in grouped_episodes
+            )
             age_days = max((now - latest).total_seconds(), 0.0) / 86_400
             recency_score = round(max(0.15, 1.0 / (1.0 + age_days)), 4)
             base_strength = sum(item.weight for item in grouped_episodes) / max(len(grouped_episodes), 1)
@@ -615,7 +630,7 @@ class MemoryGraphBuilder:
             ),
             source_ref=outcome.outcome_id,
             weight=weight,
-            created_at=_as_naive_utc(outcome.created_at),
+            created_at=_normalize_utc_datetime(outcome.created_at),
             metadata={
                 "project_id": outcome.autopilot_project_id,
                 "approvals_count": outcome.approvals_count,

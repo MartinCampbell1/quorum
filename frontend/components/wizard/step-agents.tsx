@@ -355,7 +355,7 @@ export function StepAgents({
                         <input
                           value={workspaceDrafts[agent.role] ?? ""}
                           onChange={(e) => updateWorkspaceDraft(agent.role, e.target.value)}
-                          placeholder="/Users/example/projects/my-repo"
+                          placeholder="/path/to/project"
                           className="flex-1 rounded-lg border border-border bg-white px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring/25 dark:border-slate-800 dark:bg-slate-950/70"
                         />
                         <Button type="button" variant="outline" size="sm" onClick={() => addWorkspacePath(i)}>

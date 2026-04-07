@@ -48,10 +48,8 @@ from pydantic import BaseModel
 from orchestrator.models import capability_for_tool
 from orchestrator.tools.security import tool_requires_guarded_wrapper, tool_runtime_allowed
 from orchestrator.tool_configs import (
-    ToolConfig,
     codex_native_http_mcp_bearer_token,
     is_builtin_tool_instance,
-    mcp_server_http_headers,
     normalize_tool_id,
     tool_config_store,
 )
@@ -1830,17 +1828,68 @@ async def call_agent(
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     discover_profiles()
-    recovered_sessions = reconcile_orphaned_sessions()
     print(f"\nProfiles directory: {PROFILES_DIR}")
     for provider, pool in pools.items():
         names = [p.name for p in pool.profiles]
         print(f"  {provider}: {names}")
     if not pools:
         print("  No profiles found - using default accounts")
+    print()
+
+    startup_task = asyncio.create_task(_recover_orphaned_sessions_background())
+    yield
+    startup_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await startup_task
+
+
+async def _recover_orphaned_sessions_background() -> None:
+    recovered_sessions = await asyncio.to_thread(_reconcile_orphaned_sessions)
     if recovered_sessions:
         print(f"  Recovered orphaned sessions: {recovered_sessions}")
-    print()
-    yield
+
+
+def _reconcile_orphaned_sessions() -> int:
+    from orchestrator.engine import reconcile_orphaned_sessions as _engine_reconcile_orphaned_sessions
+
+    return _engine_reconcile_orphaned_sessions()
+
+
+def _build_orchestrate_app() -> FastAPI:
+    orchestrate_app = FastAPI(
+        title="Quorum Orchestrator",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
+    from orchestrator.api import router as orchestrate_router
+
+    orchestrate_app.include_router(orchestrate_router)
+    return orchestrate_app
+
+
+class LazyOrchestrateMiddleware:
+    def __init__(self, app):
+        self.app = app
+        self._orchestrate_app = None
+        self._lock = asyncio.Lock()
+
+    async def _get_orchestrate_app(self):
+        if self._orchestrate_app is None:
+            async with self._lock:
+                if self._orchestrate_app is None:
+                    self._orchestrate_app = _build_orchestrate_app()
+        return self._orchestrate_app
+
+    async def __call__(self, scope, receive, send):
+        path = scope.get("path", "")
+        if scope["type"] in {"http", "websocket"} and (
+            path == "/orchestrate" or path.startswith("/orchestrate/")
+        ):
+            orchestrate_app = await self._get_orchestrate_app()
+            await orchestrate_app(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
 
 
 app = FastAPI(
@@ -1850,6 +1899,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(LazyOrchestrateMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=DEFAULT_CORS_ORIGINS,
@@ -2220,30 +2270,18 @@ async def ep_pool_reload():
 async def ep_health():
     checks = {}
     for name, binary in [("claude", CLAUDE_BIN), ("gemini", GEMINI_BIN), ("codex", CODEX_BIN)]:
-        proc = await asyncio.create_subprocess_exec(
-            "which", binary,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await proc.communicate()
+        binary_path = shutil.which(binary)
         pool = pools.get(name)
         checks[name] = {
             "binary": binary,
-            "installed": proc.returncode == 0,
-            "path": stdout.decode().strip() if proc.returncode == 0 else None,
+            "installed": binary_path is not None,
+            "path": binary_path,
             "profiles": len(pool.profiles) if pool else 0,
             "profiles_available": sum(
                 1 for s in pool.status() if s["available"]
             ) if pool else 0,
         }
     return checks
-
-
-# Mount orchestrator
-from orchestrator.api import router as orchestrate_router
-from orchestrator.engine import reconcile_orphaned_sessions
-app.include_router(orchestrate_router)
-
 
 # =========================================================================
 #  RUN

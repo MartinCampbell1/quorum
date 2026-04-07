@@ -1100,12 +1100,6 @@ class DiscoveryStore:
             )
             for key, value in patch.items():
                 setattr(brief, key, value)
-            approval_fields = {
-                "founder_approval_required",
-                "brief_approval_status",
-                "approved_at",
-                "approved_by",
-            }
             if material_changed:
                 brief.revision_id = f"brief_rev_{uuid4().hex[:12]}"
             if material_changed and brief.brief_approval_status == "approved":

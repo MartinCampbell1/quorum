@@ -211,3 +211,52 @@ def test_material_brief_candidate_edit_resets_approval_and_bumps_revision():
     assert edited_payload["approved_by"] is None
     assert edited_payload["approved_at"] is None
     assert edited_payload["revision_id"] != created["revision_id"]
+
+
+def test_discovery_dossiers_summary_mode_returns_compact_authoring_payload():
+    idea = client.post(
+        "/orchestrate/discovery/ideas",
+        json={"title": "Compact dossier summary"},
+    ).json()
+    idea_id = idea["idea_id"]
+
+    observation = client.post(
+        f"/orchestrate/discovery/ideas/{idea_id}/observations",
+        json={
+            "source": "github",
+            "entity": "repo",
+            "url": "https://example.com/repo",
+            "raw_text": "Very long raw observation body that should not be shipped in dossier summary mode.",
+            "topic_tags": ["summary"],
+            "evidence_confidence": "high",
+        },
+    )
+    assert observation.status_code == 200
+
+    evidence = client.put(
+        f"/orchestrate/discovery/ideas/{idea_id}/evidence-bundle",
+        json={
+            "items": [
+                {
+                    "kind": "source_observation",
+                    "summary": "Evidence item for compact payload checks.",
+                    "raw_content": "Verbose evidence payload should stay out of the summary response.",
+                    "confidence": "high",
+                }
+            ],
+            "overall_confidence": "high",
+        },
+    )
+    assert evidence.status_code == 200
+
+    summary_response = client.get("/orchestrate/discovery/dossiers?summary=true")
+
+    assert summary_response.status_code == 200
+    dossier = next(
+        item for item in summary_response.json()["dossiers"] if item["idea"]["idea_id"] == idea_id
+    )
+    assert dossier["authoring_summary"]["observation_count"] == 1
+    assert dossier["authoring_summary"]["evidence_item_count"] == 1
+    assert dossier["authoring_summary"]["overall_confidence"] == "high"
+    assert "observations" not in dossier
+    assert "evidence_bundle" not in dossier

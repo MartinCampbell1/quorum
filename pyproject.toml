@@ -7,13 +7,23 @@ name = "quorum"
 version = "0.1.0"
 description = "FounderOS multi-agent discovery and orchestration engine"
 requires-python = ">=3.11"
+license = "MIT"
+authors = [
+    { name = "Martin Campbell" },
+]
 
 dependencies = [
     "fastapi>=0.100",
     "uvicorn>=0.20",
     "httpx>=0.24",
     "pydantic>=2.0",
+    "sse-starlette>=1.6",
 ]
+
+[project.urls]
+Homepage = "https://github.com/MartinCampbell1/quorum"
+Repository = "https://github.com/MartinCampbell1/quorum"
+Issues = "https://github.com/MartinCampbell1/quorum/issues"
 
 [project.optional-dependencies]
 clickhouse = [

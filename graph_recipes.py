@@ -22,11 +22,7 @@ import time
 from typing import Optional
 
 from neo4j import GraphDatabase
-
-try:
-    import clickhouse_connect
-except ModuleNotFoundError:  # pragma: no cover - exercised via bootstrap import smoke
-    clickhouse_connect = None
+import clickhouse_connect
 
 
 # =====================================================================
@@ -388,10 +384,6 @@ def neo4j_query(cypher: str, params: dict = None) -> list[dict]:
 
 def _get_ch():
     global _ch_client
-    if clickhouse_connect is None:
-        raise RuntimeError(
-            "clickhouse-connect is not installed. Install the Quorum clickhouse extra before using ClickHouse recipes."
-        )
     if not _ch_client:
         _ch_client = clickhouse_connect.get_client(
             host=os.getenv("CH_HOST", "75.119.159.43"),

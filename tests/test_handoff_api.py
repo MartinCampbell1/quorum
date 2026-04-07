@@ -155,7 +155,7 @@ def test_discovery_handoff_send_to_autopilot_records_decision_and_timeline():
         response = client.post(
             f"/orchestrate/discovery/ideas/{idea_id}/handoff/send-to-autopilot",
             json={
-                "project_path": "/Users/example/Desktop/autopilot/projects/repo-signal-monitor",
+                "project_path": "/workspace/autopilot/projects/repo-signal-monitor",
                 "priority": "high",
                 "launch": False,
             },

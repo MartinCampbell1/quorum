@@ -274,6 +274,12 @@ class PromptImprovementLab:
             return profile
         return self._decode_profile(row)
 
+    def activate_profile(self, profile_id: str) -> PromptEvolutionProfile:
+        profile = self.get_profile(profile_id)
+        if profile is None:
+            raise KeyError(f"Unknown improvement profile: {profile_id}")
+        return self._save_profile(profile, active=True)
+
     def _save_profile(self, profile: PromptEvolutionProfile, *, active: bool | None = None) -> PromptEvolutionProfile:
         now = _utcnow()
         profile.last_updated = now

@@ -2116,7 +2116,7 @@ export function SettingsView() {
                     <textarea
                       value={workspacePathsDraft}
                       onChange={(e) => setWorkspacePathsDraft(e.target.value)}
-                      placeholder={"/Users/example/project\n/Users/example/logs"}
+                      placeholder={"/path/to/project\n/path/to/logs"}
                       rows={5}
                       className={`${INPUT_CLASS} min-h-28 resize-y leading-relaxed`}
                     />
