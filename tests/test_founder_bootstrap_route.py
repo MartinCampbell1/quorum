@@ -60,10 +60,10 @@ def isolated_discovery_store(tmp_path, monkeypatch):
     clear_discovery_store_cache()
 
 
-def test_founder_bootstrap_route_returns_503_without_github_client(monkeypatch):
+def test_founder_bootstrap_route_runs_without_github_token(monkeypatch):
     monkeypatch.setattr(
-        "orchestrator.founder_bootstrap.get_github_portfolio_client_or_none",
-        lambda: None,
+        "orchestrator.founder_bootstrap.get_github_portfolio_client",
+        lambda: FakeGitHubClient(),
     )
 
     response = client.post(
@@ -71,13 +71,12 @@ def test_founder_bootstrap_route_returns_503_without_github_client(monkeypatch):
         json={"github_username": "martin"},
     )
 
-    assert response.status_code == 503
-    assert "github_token" in response.json()["detail"].lower()
+    assert response.status_code == 200, response.text
 
 
 def test_founder_bootstrap_route_runs_pipeline_and_seeds_discovery(monkeypatch):
     monkeypatch.setattr(
-        "orchestrator.founder_bootstrap.get_github_portfolio_client_or_none",
+        "orchestrator.founder_bootstrap.get_github_portfolio_client",
         lambda: FakeGitHubClient(),
     )
 
@@ -90,6 +89,10 @@ def test_founder_bootstrap_route_runs_pipeline_and_seeds_discovery(monkeypatch):
     payload = response.json()
     assert payload["github_username"] == "martin"
     assert payload["repos_scanned"] == 2
+    assert payload["hypotheses_count"] == len(payload["hypotheses"])
+    assert payload["discovery_seed_attempted"] is True
+    assert payload["discovery_seeded_count"] > 0
+    assert payload["warnings"] == []
     assert len(payload["clusters"]) > 0
     assert len(payload["hypotheses"]) > 0
 

@@ -6,6 +6,7 @@ hypotheses — without requiring the founder to answer any intake questions.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import uuid
@@ -87,12 +88,10 @@ class GitHubPortfolioClient:
         return repos
 
 
-def get_github_portfolio_client_or_none() -> GitHubPortfolioClient | None:
-    """Return a GitHubPortfolioClient if GITHUB_TOKEN is set, else None."""
+def get_github_portfolio_client() -> GitHubPortfolioClient:
+    """Return a GitHubPortfolioClient with an optional token for public GitHub access."""
     token = os.environ.get("GITHUB_TOKEN", "").strip()
-    if not token:
-        return None
-    return GitHubPortfolioClient(token=token)
+    return GitHubPortfolioClient(token=token or None)
 
 
 # ---------------------------------------------------------------------------
@@ -397,7 +396,7 @@ class FounderBootstrapPipeline:
         if github_client is None:
             raise ValueError(
                 "github_client is required for the bootstrap pipeline. "
-                "Ensure GITHUB_TOKEN is configured."
+                "Ensure a GitHub portfolio client is provided."
             )
 
         # ------------------------------------------------------------------
@@ -450,12 +449,16 @@ class FounderBootstrapPipeline:
         # ------------------------------------------------------------------
         # 8. Seed discovery store (optional)
         # ------------------------------------------------------------------
+        discovery_seed_attempted = discovery_store is not None
+        discovery_seeded_count = 0
+        discovery_seed_errors: list[str] = []
         if discovery_store is not None:
             for hypothesis in hypotheses[:3]:
                 try:
                     from orchestrator.discovery_models import IdeaCreateRequest
 
-                    await discovery_store.create_idea(
+                    await asyncio.to_thread(
+                        discovery_store.create_idea,
                         IdeaCreateRequest(
                             title=hypothesis.title,
                             description=hypothesis.description,
@@ -463,8 +466,13 @@ class FounderBootstrapPipeline:
                             portfolio_id=request.portfolio_id,
                         )
                     )
+                    discovery_seeded_count += 1
                 except Exception as exc:
+                    message = f"{hypothesis.title}: {exc}"
+                    discovery_seed_errors.append(message)
                     logger.warning("Discovery seeding failed for '%s': %s", hypothesis.title, exc)
+
+        warnings = list(discovery_seed_errors)
 
         # ------------------------------------------------------------------
         # 9. Assemble and return response
@@ -473,6 +481,11 @@ class FounderBootstrapPipeline:
             github_username=request.github_username,
             repos_scanned=len(inventory),
             repos_deep_scanned=repos_deep_scanned,
+            hypotheses_count=len(hypotheses),
+            discovery_seed_attempted=discovery_seed_attempted,
+            discovery_seeded_count=discovery_seeded_count,
+            discovery_seed_errors=discovery_seed_errors,
+            warnings=warnings,
             profile=profile,
             clusters=clusters,
             hypotheses=hypotheses,

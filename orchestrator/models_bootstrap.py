@@ -46,6 +46,11 @@ class FounderBootstrapResponse(BaseModel):
     github_username: str
     repos_scanned: int = 0
     repos_deep_scanned: int = 0
+    hypotheses_count: int = 0
+    discovery_seed_attempted: bool = False
+    discovery_seeded_count: int = 0
+    discovery_seed_errors: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
     profile: FounderProfileSynthesis = Field(default_factory=FounderProfileSynthesis)
-    clusters: list[InterestCluster] = []
-    hypotheses: list[OpportunityHypothesis] = []
+    clusters: list[InterestCluster] = Field(default_factory=list)
+    hypotheses: list[OpportunityHypothesis] = Field(default_factory=list)

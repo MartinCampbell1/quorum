@@ -2723,20 +2723,13 @@ async def ep_founder_bootstrap_github(request: FounderBootstrapRequest):
     Enumerates repos, clusters interests, generates opportunity hypotheses,
     and seeds the discovery queue.
 
-    Returns 503 if GITHUB_TOKEN is not configured.
     """
     from orchestrator.founder_bootstrap import (
         FounderBootstrapPipeline,
-        get_github_portfolio_client_or_none,
+        get_github_portfolio_client,
     )
 
-    github_client = get_github_portfolio_client_or_none()
-    if github_client is None:
-        raise HTTPException(
-            503,
-            "Founder GitHub bootstrap is not configured. "
-            "Set GITHUB_TOKEN environment variable to enable portfolio analysis.",
-        )
+    github_client = get_github_portfolio_client()
 
     # Best-effort repo_digest injection — deep scan skipped if unavailable
     repo_digest_instance = None

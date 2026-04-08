@@ -11,6 +11,7 @@ from orchestrator.models_bootstrap import (
     OpportunityHypothesis,
 )
 from orchestrator.founder_bootstrap import FounderBootstrapPipeline
+from orchestrator.discovery_store import DiscoveryStore
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +62,9 @@ def test_bootstrap_response_contains_all_sections():
         github_username="alice",
         repos_scanned=10,
         repos_deep_scanned=3,
+        hypotheses_count=1,
+        discovery_seed_attempted=True,
+        discovery_seeded_count=1,
         profile=FounderProfileSynthesis(interests=["cli", "devtools"]),
         clusters=[
             InterestCluster(
@@ -79,6 +83,9 @@ def test_bootstrap_response_contains_all_sections():
     )
     assert response.repos_scanned == 10
     assert response.repos_deep_scanned == 3
+    assert response.hypotheses_count == 1
+    assert response.discovery_seed_attempted is True
+    assert response.discovery_seeded_count == 1
     assert len(response.clusters) == 1
     assert len(response.hypotheses) == 1
     assert response.profile.interests == ["cli", "devtools"]
@@ -156,3 +163,50 @@ async def test_bootstrap_pipeline_run_no_client():
     request = FounderBootstrapRequest(github_username="ghost")
     with pytest.raises(ValueError, match="github_client is required"):
         await pipeline.run(request)
+
+
+class FakeGitHubClient:
+    async def list_repos(self, username, *, max_repos=100, include_forks=False, include_archived=False):
+        return [
+            {
+                "name": "cli-tool-a",
+                "full_name": f"{username}/cli-tool-a",
+                "html_url": f"https://github.com/{username}/cli-tool-a",
+                "description": "A CLI tool for developer workflows",
+                "topics": ["cli", "developer-tools", "automation"],
+                "language": "Python",
+                "stargazers_count": 42,
+                "fork": False,
+                "archived": False,
+            },
+            {
+                "name": "web-dashboard",
+                "full_name": f"{username}/web-dashboard",
+                "html_url": f"https://github.com/{username}/web-dashboard",
+                "description": "Dashboard for monitoring",
+                "topics": ["dashboard", "monitoring", "react"],
+                "language": "TypeScript",
+                "stargazers_count": 25,
+                "fork": False,
+                "archived": False,
+            },
+        ]
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_pipeline_seeds_real_discovery_store(tmp_path):
+    store = DiscoveryStore(db_path=str(tmp_path / "discovery.db"))
+    pipeline = FounderBootstrapPipeline()
+
+    result = await pipeline.run(
+        FounderBootstrapRequest(github_username="martin"),
+        github_client=FakeGitHubClient(),
+        discovery_store=store,
+    )
+
+    ideas = store.list_ideas()
+    assert result.hypotheses_count == len(result.hypotheses)
+    assert result.discovery_seed_attempted is True
+    assert result.discovery_seeded_count > 0
+    assert result.discovery_seed_errors == []
+    assert len(ideas) > 0
