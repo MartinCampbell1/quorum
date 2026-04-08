@@ -399,7 +399,7 @@ def test_founder_approval_alias_syncs_existing_autopilot_project():
     assert payload["brief"]["revision_id"] == candidate["revision_id"]
 
 
-def test_founder_approval_alias_preserves_local_approval_when_autopilot_sync_fails():
+def test_founder_approval_alias_rolls_back_local_approval_when_autopilot_sync_fails():
     seeded = _seed_discovery_idea(with_simulation=False)
     idea_id = seeded["idea_id"]
 
@@ -434,13 +434,17 @@ def test_founder_approval_alias_preserves_local_approval_when_autopilot_sync_fai
             },
         )
 
-    assert approve.status_code == 200, approve.text
+    assert approve.status_code == 502, approve.text
     payload = approve.json()
-    assert payload["brief"]["brief_approval_status"] == "approved"
-    assert payload["autopilot_sync"]["status"] == "pending_retry"
-    assert payload["autopilot_sync"]["status_code"] == 502
-    assert "Autopilot sync bridge" in payload["autopilot_sync"]["error"]
+    assert "rolled back" in payload["detail"]
+    assert "Autopilot sync bridge" in payload["detail"]
 
     refreshed = client.get(f"/orchestrate/discovery/ideas/{idea_id}/dossier").json()
-    assert refreshed["execution_brief_candidate"]["brief_approval_status"] == "approved"
-    assert refreshed["execution_brief_candidate"]["approved_by"] == "founder"
+    assert refreshed["execution_brief_candidate"]["brief_approval_status"] == "pending"
+    assert refreshed["execution_brief_candidate"]["approved_by"] is None
+    assert not any(
+        decision["decision_type"] == "execution_brief_approved"
+        for decision in refreshed["decisions"]
+    )
+    assert any(event["title"] == "Execution brief approval rolled back" for event in refreshed["timeline"])
+    assert not any(event["title"] == "Execution brief approved" for event in refreshed["timeline"])

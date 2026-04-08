@@ -402,23 +402,18 @@ async def _update_execution_brief_candidate_approval(
     decision_type: str | None = None,
     rationale: str | None = None,
 ):
+    prior_dossier = await _run_sync(_discovery_store().get_dossier, idea_id)
+    if prior_dossier is None or prior_dossier.execution_brief_candidate is None:
+        raise HTTPException(404, f"Execution brief candidate not found for idea: {idea_id}")
+    prior_candidate = prior_dossier.execution_brief_candidate.model_copy(deep=True)
+
     def apply_approval_update():
         _handoff_service().build_packet(idea_id, persist_candidate=True)
-        brief = _discovery_store().update_execution_brief_candidate_approval(idea_id, body)
-        _discovery_store().add_decision(
+        return _discovery_store().update_execution_brief_candidate_approval(
             idea_id,
-            IdeaDecisionCreateRequest(
-                decision_type=decision_type or f"execution_brief_{body.status}",
-                rationale=rationale or body.note or f"{body.actor} set the execution brief to {body.status}.",
-                actor=body.actor,
-                metadata={
-                    "brief_id": brief.brief_id,
-                    "revision_id": brief.revision_id,
-                    "status": body.status,
-                },
-            ),
+            body,
+            record_timeline=False,
         )
-        return brief
 
     try:
         brief = await _run_sync(apply_approval_update)
@@ -429,11 +424,41 @@ async def _update_execution_brief_candidate_approval(
     try:
         sync_result = await _sync_existing_autopilot_brief_if_present(idea_id)
     except HTTPException as exc:
-        return brief, {
-            "status": "pending_retry",
-            "status_code": exc.status_code,
-            "error": exc.detail,
-        }
+        rollback_note = (
+            "Rolled back execution brief approval update after Autopilot sync failure: "
+            f"{exc.detail}"
+        )
+        await _run_sync(
+            _discovery_store().restore_execution_brief_candidate,
+            idea_id,
+            prior_candidate,
+            note=rollback_note,
+        )
+        raise HTTPException(
+            exc.status_code,
+            f"Autopilot sync failed; local approval update was rolled back: {exc.detail}",
+        ) from exc
+
+    await _run_sync(
+        _discovery_store().append_execution_brief_candidate_approval_timeline_event,
+        idea_id,
+        brief,
+        body,
+    )
+    await _run_sync(
+        _discovery_store().add_decision,
+        idea_id,
+        IdeaDecisionCreateRequest(
+            decision_type=decision_type or f"execution_brief_{body.status}",
+            rationale=rationale or body.note or f"{body.actor} set the execution brief to {body.status}.",
+            actor=body.actor,
+            metadata={
+                "brief_id": brief.brief_id,
+                "revision_id": brief.revision_id,
+                "status": body.status,
+            },
+        ),
+    )
 
     if sync_result is None:
         return brief, {"status": "not_linked"}

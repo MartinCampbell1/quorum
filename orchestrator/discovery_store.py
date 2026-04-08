@@ -345,6 +345,62 @@ class DiscoveryStore:
             )
         return profile
 
+    def _persist_execution_brief_candidate_conn(
+        self,
+        conn: sqlite3.Connection,
+        idea_id: str,
+        brief: ExecutionBriefCandidate,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO discovery_execution_briefs (
+                brief_id, idea_id, updated_at, payload_json
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (
+                brief.brief_id,
+                idea_id,
+                self._timestamp(brief.updated_at),
+                self._encode(brief),
+            ),
+        )
+
+    def _save_execution_brief_candidate_conn(
+        self,
+        conn: sqlite3.Connection,
+        idea: IdeaCandidate,
+        brief: ExecutionBriefCandidate,
+    ) -> None:
+        self._persist_execution_brief_candidate_conn(conn, brief.idea_id, brief)
+        idea.updated_at = brief.updated_at
+        self._save_idea_conn(conn, idea)
+
+    def _build_execution_brief_approval_timeline_request(
+        self,
+        brief: ExecutionBriefCandidate,
+        request: ExecutionBriefApprovalUpdateRequest,
+    ) -> DossierTimelineEventCreateRequest:
+        title_by_status = {
+            "approved": "Execution brief approved",
+            "rejected": "Execution brief rejected",
+            "editing": "Execution brief sent back for revision",
+            "pending": "Execution brief marked pending",
+        }
+        detail = request.note.strip() or (
+            f"{request.actor.strip() or 'founder'} set brief {brief.brief_id} to {request.status}."
+        )
+        return DossierTimelineEventCreateRequest(
+            stage="handed_off",
+            title=title_by_status.get(request.status, "Execution brief approval updated"),
+            detail=detail,
+            metadata={
+                "brief_id": brief.brief_id,
+                "revision_id": brief.revision_id,
+                "status": request.status,
+                "actor": request.actor,
+            },
+        )
+
     def get_preference_profile(self, profile_key: str = "founder_default") -> FounderPreferenceProfile:
         with self._lock, self._connect() as conn:
             row = conn.execute(
@@ -1139,6 +1195,8 @@ class DiscoveryStore:
         self,
         idea_id: str,
         request: ExecutionBriefApprovalUpdateRequest,
+        *,
+        record_timeline: bool = True,
     ) -> ExecutionBriefCandidate:
         with self._lock, self._connect() as conn:
             idea = self._require_idea_conn(conn, idea_id)
@@ -1169,48 +1227,59 @@ class DiscoveryStore:
                 brief.approved_at = None
                 brief.approved_by = None
             brief.updated_at = datetime.now(UTC).replace(tzinfo=None)
-
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO discovery_execution_briefs (
-                    brief_id, idea_id, updated_at, payload_json
-                ) VALUES (?, ?, ?, ?)
-                """,
-                (
-                    brief.brief_id,
+            self._save_execution_brief_candidate_conn(conn, idea, brief)
+            if record_timeline:
+                self._append_timeline_conn(
+                    conn,
                     idea_id,
-                    self._timestamp(brief.updated_at),
-                    self._encode(brief),
-                ),
-            )
-            idea.updated_at = brief.updated_at
-            self._save_idea_conn(conn, idea)
+                    self._build_execution_brief_approval_timeline_request(brief, request),
+                )
+            return brief
 
-            title_by_status = {
-                "approved": "Execution brief approved",
-                "rejected": "Execution brief rejected",
-                "editing": "Execution brief sent back for revision",
-                "pending": "Execution brief marked pending",
-            }
-            detail = request.note.strip() or (
-                f"{request.actor.strip() or 'founder'} set brief {brief.brief_id} to {request.status}."
-            )
-            self._append_timeline_conn(
+    def append_execution_brief_candidate_approval_timeline_event(
+        self,
+        idea_id: str,
+        brief: ExecutionBriefCandidate,
+        request: ExecutionBriefApprovalUpdateRequest,
+    ) -> DossierTimelineEvent:
+        with self._lock, self._connect() as conn:
+            self._require_idea_conn(conn, idea_id)
+            return self._append_timeline_conn(
                 conn,
                 idea_id,
-                DossierTimelineEventCreateRequest(
-                    stage="handed_off",
-                    title=title_by_status.get(request.status, "Execution brief approval updated"),
-                    detail=detail,
-                    metadata={
-                        "brief_id": brief.brief_id,
-                        "revision_id": brief.revision_id,
-                        "status": request.status,
-                        "actor": request.actor,
-                    },
-                ),
+                self._build_execution_brief_approval_timeline_request(brief, request),
             )
-            return brief
+
+    def restore_execution_brief_candidate(
+        self,
+        idea_id: str,
+        brief: ExecutionBriefCandidate,
+        *,
+        note: str = "",
+    ) -> ExecutionBriefCandidate:
+        with self._lock, self._connect() as conn:
+            idea = self._require_idea_conn(conn, idea_id)
+            restored = brief.model_copy(
+                deep=True,
+                update={"updated_at": datetime.now(UTC).replace(tzinfo=None)},
+            )
+            self._save_execution_brief_candidate_conn(conn, idea, restored)
+            if note.strip():
+                self._append_timeline_conn(
+                    conn,
+                    idea_id,
+                    DossierTimelineEventCreateRequest(
+                        stage="handed_off",
+                        title="Execution brief approval rolled back",
+                        detail=note.strip(),
+                        metadata={
+                            "brief_id": restored.brief_id,
+                            "revision_id": restored.revision_id,
+                            "status": restored.brief_approval_status,
+                        },
+                    ),
+                )
+            return restored
 
     def get_simulation_report(self, idea_id: str) -> SimulationFeedbackReport | None:
         with self._lock, self._connect() as conn:
