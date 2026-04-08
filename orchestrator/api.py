@@ -10,20 +10,6 @@ import httpx
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import PlainTextResponse
-try:
-    from mcp.client.session import ClientSession
-    from mcp.client.stdio import StdioServerParameters, stdio_client
-    from mcp.client.streamable_http import streamable_http_client
-except ImportError:
-    ClientSession = None  # type: ignore[assignment,misc]
-    StdioServerParameters = None  # type: ignore[assignment,misc]
-    stdio_client = None  # type: ignore[assignment]
-    streamable_http_client = None  # type: ignore[assignment]
-
-try:
-    from sse_starlette.sse import EventSourceResponse
-except ImportError:
-    EventSourceResponse = None  # type: ignore[assignment,misc]
 
 from pydantic import BaseModel, TypeAdapter
 
@@ -141,6 +127,8 @@ CONTINUABLE_STATUSES = {"completed", "failed", "cancelled"}
 DELETABLE_STATUSES = {"completed", "failed", "cancelled"}
 LEGACY_CUSTOM_TOOL_TYPES = {"http_api", "ssh", "shell_command"}
 PARALLEL_EXECUTION_MODES = {"sequential", "parallel"}
+_EVENT_SOURCE_RESPONSE_UNSET = object()
+EventSourceResponse = _EVENT_SOURCE_RESPONSE_UNSET
 
 
 class TournamentPreparationRequest(BaseModel):
@@ -149,6 +137,38 @@ class TournamentPreparationRequest(BaseModel):
 
 async def _run_sync(func, /, *args, **kwargs):
     return await asyncio.to_thread(func, *args, **kwargs)
+
+
+def _mcp_client_bindings():
+    try:
+        from mcp.client.session import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+        from mcp.client.streamable_http import streamable_http_client
+    except ImportError as exc:  # pragma: no cover - exercised through validate route fallback
+        raise RuntimeError(
+            "MCP validation is unavailable because the MCP client dependency is missing. Install `mcp` and retry."
+        ) from exc
+    return ClientSession, StdioServerParameters, stdio_client, streamable_http_client
+
+
+def _event_source_response_class():
+    global EventSourceResponse
+    if EventSourceResponse is None:
+        raise HTTPException(
+            503,
+            "Session event streaming is unavailable because the SSE transport dependency is missing. Install `sse-starlette` and retry.",
+        )
+    if EventSourceResponse is not _EVENT_SOURCE_RESPONSE_UNSET:
+        return EventSourceResponse
+    try:
+        from sse_starlette.sse import EventSourceResponse as _EventSourceResponse
+    except ImportError as exc:
+        raise HTTPException(
+            503,
+            "Session event streaming is unavailable because the SSE transport dependency is missing. Install `sse-starlette` and retry.",
+        ) from exc
+    EventSourceResponse = _EventSourceResponse
+    return EventSourceResponse
 
 
 def _workspace_preset_to_dict(preset: WorkspacePreset) -> dict:
@@ -249,13 +269,13 @@ def _load_execution_brief_model():
     return ExecutionBrief
 
 
-def _generate_session_execution_brief(session: dict, provider: str | None = None):
+def generate_session_execution_brief(session: dict, provider: str | None = None):
     from orchestrator.execution_brief import generate_session_execution_brief
 
     return generate_session_execution_brief(session, provider)
 
 
-def _generate_session_tournament_preparation(session: dict, provider: str | None = None):
+def generate_session_tournament_preparation(session: dict, provider: str | None = None):
     from orchestrator.execution_brief import generate_session_tournament_preparation
 
     return generate_session_tournament_preparation(session, provider)
@@ -309,8 +329,22 @@ def _default_agents():
     return _engine_module().DEFAULT_AGENTS
 
 
+async def _get_session_or_404(session_id: str) -> dict:
+    session = await _run_sync(store.get, session_id)
+    if not session:
+        raise HTTPException(404, f"Session not found: {session_id}")
+    return session
+
+
+async def _get_discovery_idea_or_404(idea_id: str):
+    idea = await _run_sync(_discovery_store().get_idea, idea_id)
+    if not idea:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
+    return idea
+
+
 async def _sync_existing_autopilot_brief_if_present(idea_id: str) -> dict[str, object] | None:
-    dossier = _discovery_store().get_dossier(idea_id)
+    dossier = await _run_sync(_discovery_store().get_dossier, idea_id)
     if dossier is None or dossier.execution_brief_candidate is None:
         return None
 
@@ -323,7 +357,7 @@ async def _sync_existing_autopilot_brief_if_present(idea_id: str) -> dict[str, o
     if not brief_id or not project_id:
         return None
 
-    handoff = _handoff_service().build_packet(idea_id, persist_candidate=False)
+    handoff = await _run_sync(_handoff_service().build_packet, idea_id, persist_candidate=False)
     shared_brief = from_jsonable(SharedExecutionBrief, handoff.brief)
     candidate = dossier.execution_brief_candidate
     v2 = shared_brief_to_v2(
@@ -368,15 +402,51 @@ async def _update_execution_brief_candidate_approval(
     decision_type: str | None = None,
     rationale: str | None = None,
 ):
-    try:
+    prior_dossier = await _run_sync(_discovery_store().get_dossier, idea_id)
+    if prior_dossier is None or prior_dossier.execution_brief_candidate is None:
+        raise HTTPException(404, f"Execution brief candidate not found for idea: {idea_id}")
+    prior_candidate = prior_dossier.execution_brief_candidate.model_copy(deep=True)
+
+    def apply_approval_update():
         _handoff_service().build_packet(idea_id, persist_candidate=True)
-        brief = _discovery_store().update_execution_brief_candidate_approval(idea_id, body)
+        return _discovery_store().update_execution_brief_candidate_approval(
+            idea_id,
+            body,
+            record_timeline=False,
+        )
+
+    try:
+        brief = await _run_sync(apply_approval_update)
     except KeyError:
         raise HTTPException(404, f"Execution brief candidate not found for idea: {idea_id}") from None
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
+    try:
+        sync_result = await _sync_existing_autopilot_brief_if_present(idea_id)
+    except HTTPException as exc:
+        rollback_note = (
+            "Rolled back execution brief approval update after Autopilot sync failure: "
+            f"{exc.detail}"
+        )
+        await _run_sync(
+            _discovery_store().restore_execution_brief_candidate,
+            idea_id,
+            prior_candidate,
+            note=rollback_note,
+        )
+        raise HTTPException(
+            exc.status_code,
+            f"Autopilot sync failed; local approval update was rolled back: {exc.detail}",
+        ) from exc
 
-    _discovery_store().add_decision(
+    await _run_sync(
+        _discovery_store().append_execution_brief_candidate_approval_timeline_event,
+        idea_id,
+        brief,
+        body,
+    )
+    await _run_sync(
+        _discovery_store().add_decision,
         idea_id,
         IdeaDecisionCreateRequest(
             decision_type=decision_type or f"execution_brief_{body.status}",
@@ -389,14 +459,6 @@ async def _update_execution_brief_candidate_approval(
             },
         ),
     )
-    try:
-        sync_result = await _sync_existing_autopilot_brief_if_present(idea_id)
-    except HTTPException as exc:
-        return brief, {
-            "status": "pending_retry",
-            "status_code": exc.status_code,
-            "error": exc.detail,
-        }
 
     if sync_result is None:
         return brief, {"status": "not_linked"}
@@ -770,7 +832,7 @@ def _parallel_child_reason(session: dict, action: str) -> dict | None:
     )
 
 
-def _session_runtime_state(session: dict) -> dict:
+def _session_runtime_state(session: dict, *, include_reasons: bool = True) -> dict:
     session_id = str(session.get("id", "")).strip()
     status = str(session.get("status", "")).strip().lower()
     live_runtime_available = bool(session_id) and has_live_runtime(session_id)
@@ -801,7 +863,7 @@ def _session_runtime_state(session: dict) -> dict:
         "branch_from_checkpoint": child_reason
         or _action_reason("branch_from_checkpoint", status, live_runtime_available, checkpoint_runtime_available, has_checkpoints, has_branchable_checkpoints),
     }
-    return {
+    runtime_state = {
         "live_runtime_available": live_runtime_available,
         "checkpoint_runtime_available": checkpoint_runtime_available,
         "has_checkpoints": has_checkpoints,
@@ -813,13 +875,18 @@ def _session_runtime_state(session: dict) -> dict:
         "can_cancel": reasons["cancel"] is None,
         "can_continue_conversation": reasons["continue_conversation"] is None,
         "can_branch_from_checkpoint": reasons["branch_from_checkpoint"] is None,
-        "reasons": reasons,
     }
+    if include_reasons:
+        runtime_state["reasons"] = reasons
+    return runtime_state
 
 
-def _session_payload(session: dict) -> dict:
+def _session_payload(session: dict, *, include_runtime_reasons: bool = True) -> dict:
     payload = dict(session)
-    payload["runtime_state"] = _session_runtime_state(session)
+    payload["runtime_state"] = _session_runtime_state(
+        session,
+        include_reasons=include_runtime_reasons,
+    )
     topology_state = dict(payload.get("config") or {}).get("topology_state")
     if isinstance(topology_state, dict) and topology_state:
         payload["topology_state"] = topology_state
@@ -827,6 +894,57 @@ def _session_payload(session: dict) -> dict:
     if isinstance(generation_trace, dict) and generation_trace:
         payload["generation_trace"] = generation_trace
     return payload
+
+
+def _dossier_summary_payload(dossier) -> dict:
+    evidence_bundle = dossier.evidence_bundle
+    observation_timestamps = [item.captured_at.isoformat() for item in dossier.observations]
+    validation_timestamps = [
+        (item.updated_at or item.created_at).isoformat()
+        for item in dossier.validation_reports
+    ]
+    decision_timestamps = [item.created_at.isoformat() for item in dossier.decisions]
+    timeline_timestamps = [item.created_at.isoformat() for item in dossier.timeline]
+    evidence_timestamp = evidence_bundle.updated_at.isoformat() if evidence_bundle else None
+    last_updated_at = max(
+        [
+            timestamp
+            for timestamp in [
+                evidence_timestamp,
+                *observation_timestamps,
+                *validation_timestamps,
+                *decision_timestamps,
+                *timeline_timestamps,
+            ]
+            if timestamp
+        ],
+        default=None,
+    )
+    return {
+        "idea": dossier.idea.model_dump(mode="json"),
+        "authoring_summary": {
+            "observation_count": len(dossier.observations),
+            "evidence_item_count": len(evidence_bundle.items) if evidence_bundle else 0,
+            "validation_count": len(dossier.validation_reports),
+            "decision_count": len(dossier.decisions),
+            "timeline_count": len(dossier.timeline),
+            "overall_confidence": (
+                evidence_bundle.overall_confidence
+                if evidence_bundle
+                else (dossier.validation_reports[0].confidence if dossier.validation_reports else "unknown")
+            ),
+            "last_updated_at": last_updated_at,
+        },
+        "execution_brief_candidate": (
+            dossier.execution_brief_candidate.model_dump(mode="json")
+            if dossier.execution_brief_candidate
+            else None
+        ),
+        "execution_outcomes": [
+            outcome.model_dump(mode="json")
+            for outcome in dossier.execution_outcomes
+        ],
+    }
 
 
 def _raise_session_action_error(
@@ -942,6 +1060,7 @@ async def _post_autopilot_project_action(
 
 
 async def _validate_mcp_stdio(tool: ToolConfig) -> dict:
+    ClientSession, StdioServerParameters, stdio_client, _ = _mcp_client_bindings()
     logs = ["> Connecting to server..."]
     command_text = str(tool.config.get("command", "")).strip()
     if not command_text:
@@ -977,6 +1096,7 @@ async def _validate_mcp_stdio(tool: ToolConfig) -> dict:
 
 
 async def _validate_mcp_http(tool: ToolConfig) -> dict:
+    ClientSession, _, _, streamable_http_client = _mcp_client_bindings()
     logs = ["> Connecting to server..."]
     url = str(tool.config.get("url", "")).strip()
     if not url:
@@ -1168,22 +1288,18 @@ async def ep_run(req: RunRequest):
 
 @router.get("/session/{session_id}")
 async def ep_session(session_id: str):
-    session = store.get(session_id)
-    if not session:
-        raise HTTPException(404, f"Session not found: {session_id}")
+    session = await _get_session_or_404(session_id)
     return _session_payload(session)
 
 
 @router.delete("/session/{session_id}")
 async def ep_delete_session(session_id: str):
-    session = store.get(session_id)
-    if not session:
-        raise HTTPException(404, f"Session not found: {session_id}")
+    session = await _get_session_or_404(session_id)
 
-    tree_ids = store.session_tree_ids(session_id)
+    tree_ids = await _run_sync(store.session_tree_ids, session_id)
     active_sessions: list[dict[str, str]] = []
     for related_id in tree_ids:
-        related = store.get(related_id)
+        related = await _run_sync(store.get, related_id)
         if not related:
             continue
         status = str(related.get("status") or "").strip().lower()
@@ -1205,7 +1321,7 @@ async def ep_delete_session(session_id: str):
             ),
         )
 
-    deleted_session_ids = store.delete_session_tree(session_id)
+    deleted_session_ids = await _run_sync(store.delete_session_tree, session_id)
     return {"status": "deleted", "deleted_session_ids": deleted_session_ids}
 
 
@@ -1248,12 +1364,10 @@ async def ep_autopilot_project_resume(project_id: str):
 
 @router.post("/session/{session_id}/execution-brief")
 async def ep_execution_brief(session_id: str, req: ExecutionBriefExportRequest | None = None):
-    session = store.get(session_id)
-    if not session:
-        raise HTTPException(404, f"Session not found: {session_id}")
+    session = await _get_session_or_404(session_id)
     try:
         brief = await asyncio.to_thread(
-            _generate_session_execution_brief,
+            generate_session_execution_brief,
             session,
             req.provider if req else None,
         )
@@ -1264,12 +1378,10 @@ async def ep_execution_brief(session_id: str, req: ExecutionBriefExportRequest |
 
 @router.post("/session/{session_id}/tournament-preparation")
 async def ep_tournament_preparation(session_id: str, req: TournamentPreparationRequest | None = None):
-    session = store.get(session_id)
-    if not session:
-        raise HTTPException(404, f"Session not found: {session_id}")
+    session = await _get_session_or_404(session_id)
     try:
         preparation = await asyncio.to_thread(
-            _generate_session_tournament_preparation,
+            generate_session_tournament_preparation,
             session,
             req.provider if req else None,
         )
@@ -1280,11 +1392,9 @@ async def ep_tournament_preparation(session_id: str, req: TournamentPreparationR
 
 @router.post("/session/{session_id}/send-to-autopilot")
 async def ep_send_to_autopilot(session_id: str, req: SendExecutionBriefRequest):
-    session = store.get(session_id)
-    if not session:
-        raise HTTPException(404, f"Session not found: {session_id}")
+    session = await _get_session_or_404(session_id)
     try:
-        brief = await asyncio.to_thread(_generate_session_execution_brief, session, req.provider)
+        brief = await asyncio.to_thread(generate_session_execution_brief, session, req.provider)
     except ValueError as exc:
         raise HTTPException(502, str(exc)) from exc
     autopilot = await _send_brief_to_autopilot(brief, req, discovery_store=_discovery_store())
@@ -1294,7 +1404,8 @@ async def ep_send_to_autopilot(session_id: str, req: SendExecutionBriefRequest):
 @router.post("/discovery/ideas/{idea_id}/handoff/export")
 async def ep_export_discovery_handoff(idea_id: str, req: DiscoveryHandoffExportRequest | None = None):
     try:
-        handoff = _handoff_service().build_packet(
+        handoff = await _run_sync(
+            _handoff_service().build_packet,
             idea_id,
             persist_candidate=req.persist_candidate if req else True,
         )
@@ -1306,7 +1417,7 @@ async def ep_export_discovery_handoff(idea_id: str, req: DiscoveryHandoffExportR
 @router.post("/discovery/ideas/{idea_id}/handoff/send-to-autopilot")
 async def ep_send_discovery_handoff_to_autopilot(idea_id: str, req: SendExecutionBriefRequest):
     try:
-        handoff = _handoff_service().build_packet(idea_id, persist_candidate=True)
+        handoff = await _run_sync(_handoff_service().build_packet, idea_id, persist_candidate=True)
     except KeyError:
         raise HTTPException(404, f"Unknown idea id: {idea_id}") from None
     effective_request = req
@@ -1321,7 +1432,8 @@ async def ep_send_discovery_handoff_to_autopilot(idea_id: str, req: SendExecutio
     autopilot_payload["autopilot_api_base"] = str(
         effective_request.autopilot_url or DEFAULT_AUTOPILOT_API_BASE
     ).rstrip("/")
-    _handoff_service().mark_sent_to_autopilot(
+    await _run_sync(
+        _handoff_service().mark_sent_to_autopilot,
         idea_id,
         project_name=effective_request.project_name,
         autopilot_payload=autopilot_payload,
@@ -1331,10 +1443,9 @@ async def ep_send_discovery_handoff_to_autopilot(idea_id: str, req: SendExecutio
 
 @router.get("/discovery/ideas/{idea_id}/execution-feedback")
 async def ep_list_discovery_execution_feedback(idea_id: str, limit: int = 20):
-    idea = _discovery_store().get_idea(idea_id)
-    if not idea:
-        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
-    return {"items": [item.model_dump(mode="json") for item in _execution_feedback_service().list_outcomes(idea_id, limit=limit)]}
+    await _get_discovery_idea_or_404(idea_id)
+    items = await _run_sync(_execution_feedback_service().list_outcomes, idea_id, limit=limit)
+    return {"items": [item.model_dump(mode="json") for item in items]}
 
 
 @router.post("/discovery/ideas/{idea_id}/execution-feedback")
@@ -1345,7 +1456,8 @@ async def ep_ingest_discovery_execution_feedback(idea_id: str, body: ExecutionFe
         raise HTTPException(422, f"Malformed execution outcome bundle: {exc}") from exc
 
     try:
-        result = _execution_feedback_service().ingest_outcome_bundle(
+        result = await _run_sync(
+            _execution_feedback_service().ingest_outcome_bundle,
             idea_id,
             outcome,
             actor=body.actor,
@@ -1376,9 +1488,8 @@ async def ep_session_events(
     since: int = 0,
     once: bool = False,
 ):
-    session = store.get(session_id)
-    if not session:
-        raise HTTPException(404, f"Session not found: {session_id}")
+    await _get_session_or_404(session_id)
+    event_source_response = _event_source_response_class()
 
     async def event_stream():
         cursor = since
@@ -1386,7 +1497,7 @@ async def ep_session_events(
             if await request.is_disconnected():
                 break
 
-            events = store.list_events(session_id, cursor)
+            events = await _run_sync(store.list_events, session_id, cursor)
             for event in events:
                 cursor = int(event.get("id", cursor))
                 yield {
@@ -1399,12 +1510,16 @@ async def ep_session_events(
 
             await asyncio.sleep(0.75)
 
-    return EventSourceResponse(event_stream())
+    return event_source_response(event_stream())
 
 
 @router.get("/sessions")
 async def ep_sessions():
-    return [_session_payload(session) for session in store.list_recent()]
+    sessions = await _run_sync(store.list_recent)
+    return [
+        _session_payload(session, include_runtime_reasons=False)
+        for session in sessions
+    ]
 
 
 @router.get("/discovery/ideas")
@@ -1415,33 +1530,36 @@ async def ep_discovery_ideas(limit: int = 100):
 
 
 @router.get("/discovery/dossiers")
-async def ep_discovery_dossiers(limit: int = 100, include_archived: bool = True):
+async def ep_discovery_dossiers(
+    limit: int = 100,
+    include_archived: bool = True,
+    summary: bool = False,
+):
     bounded_limit = max(1, min(int(limit or 100), 500))
     dossiers = await _run_sync(
         _discovery_store().list_dossiers,
         limit=bounded_limit,
         include_archived=include_archived,
     )
+    if summary:
+        return {"dossiers": [_dossier_summary_payload(dossier) for dossier in dossiers]}
     return {"dossiers": dossiers}
 
 
 @router.post("/discovery/ideas")
 async def ep_create_discovery_idea(body: IdeaCreateRequest):
-    return _discovery_store().create_idea(body)
+    return await _run_sync(_discovery_store().create_idea, body)
 
 
 @router.get("/discovery/ideas/{idea_id}")
 async def ep_get_discovery_idea(idea_id: str):
-    idea = await _run_sync(_discovery_store().get_idea, idea_id)
-    if not idea:
-        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
-    return idea
+    return await _get_discovery_idea_or_404(idea_id)
 
 
 @router.patch("/discovery/ideas/{idea_id}")
 async def ep_update_discovery_idea(idea_id: str, body: IdeaUpdateRequest):
     try:
-        return _discovery_store().update_idea(idea_id, body)
+        return await _run_sync(_discovery_store().update_idea, idea_id, body)
     except KeyError:
         raise HTTPException(404, f"Unknown discovery idea: {idea_id}") from None
 
@@ -1449,7 +1567,7 @@ async def ep_update_discovery_idea(idea_id: str, body: IdeaUpdateRequest):
 @router.post("/discovery/ideas/{idea_id}/observations")
 async def ep_add_discovery_observation(idea_id: str, body: SourceObservationCreateRequest):
     try:
-        return _discovery_store().add_observation(idea_id, body)
+        return await _run_sync(_discovery_store().add_observation, idea_id, body)
     except KeyError:
         raise HTTPException(404, f"Unknown discovery idea: {idea_id}") from None
 
@@ -1457,7 +1575,7 @@ async def ep_add_discovery_observation(idea_id: str, body: SourceObservationCrea
 @router.post("/discovery/ideas/{idea_id}/validation-reports")
 async def ep_add_discovery_validation_report(idea_id: str, body: IdeaValidationReportCreateRequest):
     try:
-        return _discovery_store().add_validation_report(idea_id, body)
+        return await _run_sync(_discovery_store().add_validation_report, idea_id, body)
     except KeyError:
         raise HTTPException(404, f"Unknown discovery idea: {idea_id}") from None
 
@@ -1465,7 +1583,7 @@ async def ep_add_discovery_validation_report(idea_id: str, body: IdeaValidationR
 @router.post("/discovery/ideas/{idea_id}/decisions")
 async def ep_add_discovery_decision(idea_id: str, body: IdeaDecisionCreateRequest):
     try:
-        return _discovery_store().add_decision(idea_id, body)
+        return await _run_sync(_discovery_store().add_decision, idea_id, body)
     except KeyError:
         raise HTTPException(404, f"Unknown discovery idea: {idea_id}") from None
 
@@ -1473,7 +1591,7 @@ async def ep_add_discovery_decision(idea_id: str, body: IdeaDecisionCreateReques
 @router.post("/discovery/ideas/{idea_id}/archive")
 async def ep_archive_discovery_idea(idea_id: str, body: IdeaArchiveRequest):
     try:
-        return _discovery_store().archive_idea(idea_id, body)
+        return await _run_sync(_discovery_store().archive_idea, idea_id, body)
     except KeyError:
         raise HTTPException(404, f"Unknown discovery idea: {idea_id}") from None
 
@@ -1481,7 +1599,7 @@ async def ep_archive_discovery_idea(idea_id: str, body: IdeaArchiveRequest):
 @router.post("/discovery/ideas/{idea_id}/timeline")
 async def ep_add_discovery_timeline_event(idea_id: str, body: DossierTimelineEventCreateRequest):
     try:
-        return _discovery_store().add_timeline_event(idea_id, body)
+        return await _run_sync(_discovery_store().add_timeline_event, idea_id, body)
     except KeyError:
         raise HTTPException(404, f"Unknown discovery idea: {idea_id}") from None
 
@@ -1489,7 +1607,7 @@ async def ep_add_discovery_timeline_event(idea_id: str, body: DossierTimelineEve
 @router.put("/discovery/ideas/{idea_id}/evidence-bundle")
 async def ep_upsert_discovery_evidence_bundle(idea_id: str, body: EvidenceBundleUpsertRequest):
     try:
-        return _discovery_store().upsert_evidence_bundle(idea_id, body)
+        return await _run_sync(_discovery_store().upsert_evidence_bundle, idea_id, body)
     except KeyError:
         raise HTTPException(404, f"Unknown discovery idea: {idea_id}") from None
 
@@ -1500,7 +1618,7 @@ async def ep_upsert_discovery_execution_brief_candidate(
     body: ExecutionBriefCandidateUpsertRequest,
 ):
     try:
-        return _discovery_store().upsert_execution_brief_candidate(idea_id, body)
+        return await _run_sync(_discovery_store().upsert_execution_brief_candidate, idea_id, body)
     except KeyError:
         raise HTTPException(404, f"Unknown discovery idea: {idea_id}") from None
 
@@ -1536,9 +1654,7 @@ async def ep_get_discovery_dossier(idea_id: str):
 
 @router.get("/discovery/ideas/{idea_id}/explainability")
 async def ep_get_discovery_explainability(idea_id: str):
-    idea = await _run_sync(_discovery_store().get_idea, idea_id)
-    if not idea:
-        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
+    await _get_discovery_idea_or_404(idea_id)
     explainability = await _run_sync(_dossier_explainability_service().build, idea_id)
     if explainability is None:
         raise HTTPException(404, f"No explainability context for idea: {idea_id}")
@@ -1547,10 +1663,8 @@ async def ep_get_discovery_explainability(idea_id: str):
 
 @router.get("/discovery/ideas/{idea_id}/simulation")
 async def ep_get_discovery_simulation(idea_id: str):
-    idea = _discovery_store().get_idea(idea_id)
-    if not idea:
-        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
-    report = _discovery_store().get_simulation_report(idea_id)
+    await _get_discovery_idea_or_404(idea_id)
+    report = await _run_sync(_discovery_store().get_simulation_report, idea_id)
     if not report:
         raise HTTPException(404, f"No simulation report for idea: {idea_id}")
     return report
@@ -1558,34 +1672,38 @@ async def ep_get_discovery_simulation(idea_id: str):
 
 @router.post("/discovery/ideas/{idea_id}/simulation")
 async def ep_run_discovery_simulation(idea_id: str, body: SimulationRunRequest):
-    discovery = _discovery_store()
-    idea = discovery.get_idea(idea_id)
-    if not idea:
-        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
+    def run_simulation():
+        discovery = _discovery_store()
+        idea = discovery.get_idea(idea_id)
+        if not idea:
+            raise KeyError(idea_id)
 
-    existing = discovery.get_simulation_report(idea_id)
-    if existing and not body.force_refresh:
-        return SimulationRunResponse(idea=idea, report=existing, cached=True)
+        existing = discovery.get_simulation_report(idea_id)
+        if existing and not body.force_refresh:
+            return SimulationRunResponse(idea=idea, report=existing, cached=True)
 
-    discovery.update_idea(idea_id, IdeaUpdateRequest(simulation_state="running"))
-    dossier = discovery.get_dossier(idea_id)
-    if not dossier:
-        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
+        discovery.update_idea(idea_id, IdeaUpdateRequest(simulation_state="running"))
+        dossier = discovery.get_dossier(idea_id)
+        if not dossier:
+            raise KeyError(idea_id)
 
-    report = _focus_group_runner().run(dossier, body)
-    stored = discovery.upsert_simulation_report(idea_id, report)
-    updated_idea = discovery.get_idea(idea_id)
-    if not updated_idea:
-        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
-    return SimulationRunResponse(idea=updated_idea, report=stored, cached=False)
+        report = _focus_group_runner().run(dossier, body)
+        stored = discovery.upsert_simulation_report(idea_id, report)
+        updated_idea = discovery.get_idea(idea_id)
+        if not updated_idea:
+            raise KeyError(idea_id)
+        return SimulationRunResponse(idea=updated_idea, report=stored, cached=False)
+
+    try:
+        return await _run_sync(run_simulation)
+    except KeyError:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}") from None
 
 
 @router.get("/discovery/ideas/{idea_id}/simulation/lab")
 async def ep_get_discovery_market_simulation(idea_id: str):
-    idea = _discovery_store().get_idea(idea_id)
-    if not idea:
-        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
-    report = _discovery_store().get_market_simulation_report(idea_id)
+    await _get_discovery_idea_or_404(idea_id)
+    report = await _run_sync(_discovery_store().get_market_simulation_report, idea_id)
     if not report:
         raise HTTPException(404, f"No market simulation report for idea: {idea_id}")
     return report
@@ -1593,26 +1711,32 @@ async def ep_get_discovery_market_simulation(idea_id: str):
 
 @router.post("/discovery/ideas/{idea_id}/simulation/lab")
 async def ep_run_discovery_market_simulation(idea_id: str, body: MarketSimulationRunRequest):
-    discovery = _discovery_store()
-    idea = discovery.get_idea(idea_id)
-    if not idea:
-        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
+    def run_market_simulation():
+        discovery = _discovery_store()
+        idea = discovery.get_idea(idea_id)
+        if not idea:
+            raise KeyError(idea_id)
 
-    existing = discovery.get_market_simulation_report(idea_id)
-    if existing and not body.force_refresh:
-        return MarketSimulationRunResponse(idea=idea, report=existing, cached=True)
+        existing = discovery.get_market_simulation_report(idea_id)
+        if existing and not body.force_refresh:
+            return MarketSimulationRunResponse(idea=idea, report=existing, cached=True)
 
-    discovery.update_idea(idea_id, IdeaUpdateRequest(simulation_state="running"))
-    dossier = discovery.get_dossier(idea_id)
-    if not dossier:
-        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
+        discovery.update_idea(idea_id, IdeaUpdateRequest(simulation_state="running"))
+        dossier = discovery.get_dossier(idea_id)
+        if not dossier:
+            raise KeyError(idea_id)
 
-    report = _market_lab_runner().run(dossier, body)
-    stored = discovery.upsert_market_simulation_report(idea_id, report)
-    updated_idea = discovery.get_idea(idea_id)
-    if not updated_idea:
-        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
-    return MarketSimulationRunResponse(idea=updated_idea, report=stored, cached=False)
+        report = _market_lab_runner().run(dossier, body)
+        stored = discovery.upsert_market_simulation_report(idea_id, report)
+        updated_idea = discovery.get_idea(idea_id)
+        if not updated_idea:
+            raise KeyError(idea_id)
+        return MarketSimulationRunResponse(idea=updated_idea, report=stored, cached=False)
+
+    try:
+        return await _run_sync(run_market_simulation)
+    except KeyError:
+        raise HTTPException(404, f"Unknown discovery idea: {idea_id}") from None
 
 
 @router.post("/discovery/idea-graph/rebuild")
@@ -1622,12 +1746,12 @@ async def ep_rebuild_discovery_idea_graph(refresh: bool = False):
 
 @router.get("/discovery/idea-graph/snapshots")
 async def ep_list_discovery_idea_graph_snapshots(limit: int = 20):
-    return {"items": _idea_graph_service().list_snapshots(limit=limit)}
+    return {"items": await _run_sync(_idea_graph_service().list_snapshots, limit=limit)}
 
 
 @router.get("/discovery/idea-graph/snapshots/{graph_id}")
 async def ep_get_discovery_idea_graph_snapshot(graph_id: str):
-    snapshot = _idea_graph_service().get_snapshot(graph_id)
+    snapshot = await _run_sync(_idea_graph_service().get_snapshot, graph_id)
     if snapshot is None:
         raise HTTPException(404, f"Unknown idea graph snapshot: {graph_id}")
     return snapshot
@@ -1635,9 +1759,7 @@ async def ep_get_discovery_idea_graph_snapshot(graph_id: str):
 
 @router.get("/discovery/ideas/{idea_id}/idea-graph")
 async def ep_get_discovery_idea_graph_context(idea_id: str):
-    idea = await _run_sync(_discovery_store().get_idea, idea_id)
-    if not idea:
-        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
+    await _get_discovery_idea_or_404(idea_id)
     context = await _run_sync(_idea_graph_service().get_idea_context, idea_id)
     if context is None:
         raise HTTPException(404, f"No idea graph context for idea: {idea_id}")
@@ -1651,12 +1773,12 @@ async def ep_rebuild_discovery_memory(refresh: bool = False):
 
 @router.get("/discovery/memory/snapshots")
 async def ep_list_discovery_memory_snapshots(limit: int = 20):
-    return {"items": _memory_graph_service().list_snapshots(limit=limit)}
+    return {"items": await _run_sync(_memory_graph_service().list_snapshots, limit=limit)}
 
 
 @router.get("/discovery/memory/snapshots/{snapshot_id}")
 async def ep_get_discovery_memory_snapshot(snapshot_id: str):
-    snapshot = _memory_graph_service().get_snapshot(snapshot_id)
+    snapshot = await _run_sync(_memory_graph_service().get_snapshot, snapshot_id)
     if snapshot is None:
         raise HTTPException(404, f"Unknown discovery memory snapshot: {snapshot_id}")
     return snapshot
@@ -1664,9 +1786,7 @@ async def ep_get_discovery_memory_snapshot(snapshot_id: str):
 
 @router.get("/discovery/ideas/{idea_id}/memory")
 async def ep_get_discovery_memory_context(idea_id: str):
-    idea = await _run_sync(_discovery_store().get_idea, idea_id)
-    if not idea:
-        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
+    await _get_discovery_idea_or_404(idea_id)
     context = await _run_sync(_memory_graph_service().get_idea_context, idea_id)
     if context is None:
         raise HTTPException(404, f"No institutional memory context for idea: {idea_id}")
@@ -1687,19 +1807,19 @@ async def ep_get_discovery_daemon_status():
 async def ep_control_discovery_daemon(body: DiscoveryDaemonControlRequest):
     service = _daemon_service()
     if body.action == "start":
-        return service.start()
+        return await _run_sync(service.start)
     if body.action == "pause":
-        return service.pause()
+        return await _run_sync(service.pause)
     if body.action == "resume":
-        return service.resume()
+        return await _run_sync(service.resume)
     if body.action == "stop":
-        return service.stop()
+        return await _run_sync(service.stop)
     if body.action == "tick":
-        return service.tick()
+        return await _run_sync(service.tick)
     if not body.routine_kind:
         raise HTTPException(422, "routine_kind is required when action=run_routine")
     try:
-        return service.run_routine(body.routine_kind)
+        return await _run_sync(service.run_routine, body.routine_kind)
     except KeyError:
         raise HTTPException(404, f"Unknown daemon routine: {body.routine_kind}") from None
 
@@ -1742,33 +1862,45 @@ async def ep_get_discovery_inbox_item(item_id: str):
 @router.get("/improvement/prompt-profiles")
 async def ep_get_improvement_prompt_profiles(limit: int = 20):
     bounded_limit = max(1, min(int(limit or 20), 200))
-    return {"items": [item.model_dump(mode="json") for item in _improvement_lab().list_profiles(limit=bounded_limit)]}
+    profiles = await _run_sync(_improvement_lab().list_profiles, limit=bounded_limit)
+    return {"items": [item.model_dump(mode="json") for item in profiles]}
 
 
 @router.get("/improvement/prompt-profiles/{profile_id}")
 async def ep_get_improvement_prompt_profile(profile_id: str):
-    profile = _improvement_lab().get_profile(profile_id)
+    profile = await _run_sync(_improvement_lab().get_profile, profile_id)
     if profile is None:
         raise HTTPException(404, f"Unknown improvement prompt profile: {profile_id}")
     return profile.model_dump(mode="json")
 
 
+@router.post("/improvement/prompt-profiles/{profile_id}/activate")
+async def ep_activate_improvement_prompt_profile(profile_id: str):
+    try:
+        profile = await _run_sync(_improvement_lab().activate_profile, profile_id)
+    except KeyError as exc:
+        raise HTTPException(404, f"Unknown improvement prompt profile: {profile_id}") from exc
+    return {"status": "ok", "profile": profile.model_dump(mode="json")}
+
+
 @router.get("/improvement/reflections")
 async def ep_get_improvement_reflections(limit: int = 20):
     bounded_limit = max(1, min(int(limit or 20), 200))
-    return {"items": [item.model_dump(mode="json") for item in _improvement_lab().list_reflections(limit=bounded_limit)]}
+    reflections = await _run_sync(_improvement_lab().list_reflections, limit=bounded_limit)
+    return {"items": [item.model_dump(mode="json") for item in reflections]}
 
 
 @router.get("/improvement/self-play/matches")
 async def ep_get_improvement_self_play_matches(limit: int = 20):
     bounded_limit = max(1, min(int(limit or 20), 200))
-    return {"items": [item.model_dump(mode="json") for item in _improvement_lab().list_matches(limit=bounded_limit)]}
+    matches = await _run_sync(_improvement_lab().list_matches, limit=bounded_limit)
+    return {"items": [item.model_dump(mode="json") for item in matches]}
 
 
 @router.post("/improvement/reflect")
 async def ep_run_improvement_reflection(body: ImprovementSessionReflectRequest):
     try:
-        report = _improvement_lab().reflect(body, session_lookup=store.get)
+        report = await _run_sync(_improvement_lab().reflect, body, session_lookup=store.get)
     except KeyError as exc:
         raise HTTPException(404, str(exc)) from exc
     return {"status": "ok", "reflection": report.model_dump(mode="json")}
@@ -1777,7 +1909,7 @@ async def ep_run_improvement_reflection(body: ImprovementSessionReflectRequest):
 @router.post("/improvement/self-play")
 async def ep_run_improvement_self_play(body: ImprovementSelfPlayRequest):
     try:
-        match = _improvement_lab().run_self_play(body)
+        match = await _run_sync(_improvement_lab().run_self_play, body)
     except KeyError as exc:
         raise HTTPException(404, str(exc)) from exc
     return {"status": "ok", "match": match.model_dump(mode="json")}
@@ -1786,7 +1918,7 @@ async def ep_run_improvement_self_play(body: ImprovementSelfPlayRequest):
 @router.post("/improvement/evolve")
 async def ep_run_improvement_evolution(body: ImprovementEvolutionRequest):
     try:
-        result = _improvement_lab().evolve(body)
+        result = await _run_sync(_improvement_lab().evolve, body)
     except KeyError as exc:
         raise HTTPException(404, str(exc)) from exc
     return {"status": "ok", "result": result.model_dump(mode="json")}
@@ -1794,7 +1926,7 @@ async def ep_run_improvement_evolution(body: ImprovementEvolutionRequest):
 
 @router.post("/discovery/inbox/{item_id}/act")
 async def ep_act_on_discovery_inbox_item(item_id: str, body: DiscoveryInboxActionRequest):
-    item = _daemon_service().act_on_inbox_item(item_id, body)
+    item = await _run_sync(_daemon_service().act_on_inbox_item, item_id, body)
     if item is None:
         raise HTTPException(404, f"Unknown discovery inbox item: {item_id}")
     return item
@@ -1802,7 +1934,7 @@ async def ep_act_on_discovery_inbox_item(item_id: str, body: DiscoveryInboxActio
 
 @router.post("/discovery/inbox/{item_id}/resolve")
 async def ep_resolve_discovery_inbox_item(item_id: str, body: DiscoveryInboxResolveRequest | None = None):
-    item = _daemon_service().resolve_inbox_item(item_id, body)
+    item = await _run_sync(_daemon_service().resolve_inbox_item, item_id, body)
     if item is None:
         raise HTTPException(404, f"Unknown discovery inbox item: {item_id}")
     return item
@@ -1822,9 +1954,7 @@ async def ep_get_observability_discovery_traces(limit: int = 25):
 
 @router.get("/observability/traces/discovery/{idea_id}")
 async def ep_get_observability_discovery_trace(idea_id: str):
-    idea = await _run_sync(_discovery_store().get_idea, idea_id)
-    if not idea:
-        raise HTTPException(404, f"Unknown discovery idea: {idea_id}")
+    await _get_discovery_idea_or_404(idea_id)
     trace_bundle = await _run_sync(_observability_trace_service().get_idea_trace, idea_id)
     if trace_bundle is None:
         raise HTTPException(404, f"No trace bundle for idea: {idea_id}")
@@ -1847,7 +1977,7 @@ async def ep_get_observability_debate_replay(session_id: str):
 @router.post("/discovery/ideas/{idea_id}/swipe")
 async def ep_swipe_discovery_idea(idea_id: str, body: IdeaSwipeRequest):
     try:
-        return _preference_model().swipe_idea(idea_id, body)
+        return await _run_sync(_preference_model().swipe_idea, idea_id, body)
     except KeyError:
         raise HTTPException(404, f"Unknown discovery idea: {idea_id}") from None
 
@@ -1898,7 +2028,7 @@ async def ep_get_ranking_archive(limit_cells: int = 24):
 @router.post("/ranking/compare")
 async def ep_record_ranking_comparison(body: PairwiseComparisonRequest):
     try:
-        return _ranking_service().record_comparison(body)
+        return await _run_sync(_ranking_service().record_comparison, body)
     except KeyError:
         raise HTTPException(404, "Unknown idea id for pairwise comparison") from None
     except ValueError as exc:
@@ -1907,7 +2037,7 @@ async def ep_record_ranking_comparison(body: PairwiseComparisonRequest):
 
 @router.post("/ranking/finals/resolve")
 async def ep_resolve_ranking_finals(body: FinalVoteRequest):
-    return _ranking_service().resolve_finals(body)
+    return await _run_sync(_ranking_service().resolve_finals, body)
 
 
 @router.post("/research/scan")
@@ -1918,34 +2048,40 @@ async def ep_run_research_scan(body: ScanRequest):
 @router.get("/research/observations")
 async def ep_list_research_observations(limit: int = 100, source: str | None = None, include_stale: bool = False):
     return {
-        "items": _research_index().list_observations(limit=limit, source=source, include_stale=include_stale)
+        "items": await _run_sync(
+            _research_index().list_observations,
+            limit=limit,
+            source=source,
+            include_stale=include_stale,
+        )
     }
 
 
 @router.get("/research/search")
 async def ep_search_research_observations(q: str, limit: int = 50):
-    return _research_index().search(q, limit=limit)
+    return await _run_sync(_research_index().search, q, limit=limit)
 
 
 @router.get("/research/queue/daily")
 async def ep_research_daily_queue(limit: int = 25):
-    return {"items": _research_pipeline().daily_queue(limit=limit)}
+    return {"items": await _run_sync(_research_pipeline().daily_queue, limit=limit)}
 
 
 @router.get("/research/runs")
 async def ep_research_runs(limit: int = 50):
-    return {"items": _research_index().list_runs(limit=limit)}
+    return {"items": await _run_sync(_research_index().list_runs, limit=limit)}
 
 
 @router.get("/research/exports/jsonl", response_class=PlainTextResponse)
 async def ep_export_research_jsonl(limit: int = 200):
-    observations = _research_index().list_observations(limit=limit, include_stale=True)
+    observations = await _run_sync(_research_index().list_observations, limit=limit, include_stale=True)
     return export_observations_jsonl(observations)
 
 
 @router.get("/research/exports/daily-queue.md", response_class=PlainTextResponse)
 async def ep_export_research_daily_queue(limit: int = 25):
-    return export_daily_queue_markdown(_research_pipeline().daily_queue(limit=limit))
+    queue = await _run_sync(_research_pipeline().daily_queue, limit=limit)
+    return export_daily_queue_markdown(queue)
 
 
 @router.post("/repo-digest/analyze")
@@ -1958,12 +2094,12 @@ async def ep_analyze_repo_digest(body: RepoDigestAnalyzeRequest):
 
 @router.get("/repo-digest/profiles")
 async def ep_list_repo_dna_profiles(limit: int = 50):
-    return {"items": _repo_dna_service().list_profiles(limit=limit)}
+    return {"items": await _run_sync(_repo_dna_service().list_profiles, limit=limit)}
 
 
 @router.get("/repo-digest/profiles/{profile_id}")
 async def ep_get_repo_dna_profile(profile_id: str):
-    profile = _repo_dna_service().get_profile(profile_id)
+    profile = await _run_sync(_repo_dna_service().get_profile, profile_id)
     if profile is None:
         raise HTTPException(404, f"Unknown RepoDNA profile: {profile_id}")
     return profile
@@ -1971,7 +2107,7 @@ async def ep_get_repo_dna_profile(profile_id: str):
 
 @router.get("/repo-digest/results/{profile_id}")
 async def ep_get_repo_digest_result(profile_id: str):
-    result = _repo_dna_service().get_result(profile_id)
+    result = await _run_sync(_repo_dna_service().get_result, profile_id)
     if result is None:
         raise HTTPException(404, f"Unknown RepoDNA profile: {profile_id}")
     return result
@@ -1987,12 +2123,12 @@ async def ep_analyze_repo_graph(body: RepoGraphAnalyzeRequest):
 
 @router.get("/repo-graph/results")
 async def ep_list_repo_graph_results(limit: int = 50):
-    return {"items": _repo_graph_service().list_results(limit=limit)}
+    return {"items": await _run_sync(_repo_graph_service().list_results, limit=limit)}
 
 
 @router.get("/repo-graph/results/{graph_id}")
 async def ep_get_repo_graph_result(graph_id: str):
-    result = _repo_graph_service().get_result(graph_id)
+    result = await _run_sync(_repo_graph_service().get_result, graph_id)
     if result is None:
         raise HTTPException(404, f"Unknown repo graph: {graph_id}")
     return result
@@ -2005,9 +2141,7 @@ async def ep_scenarios():
 
 @router.post("/session/{session_id}/message")
 async def ep_user_message(session_id: str, req: MessageRequest):
-    session = store.get(session_id)
-    if not session:
-        raise HTTPException(404, f"Session not found: {session_id}")
+    session = await _get_session_or_404(session_id)
     if session.get("parallel_parent_id"):
         _raise_session_action_error(
             409,
@@ -2052,9 +2186,7 @@ async def ep_user_message(session_id: str, req: MessageRequest):
 
 @router.post("/session/{session_id}/continue")
 async def ep_continue_session(session_id: str, req: MessageRequest):
-    session = store.get(session_id)
-    if not session:
-        raise HTTPException(404, f"Session not found: {session_id}")
+    session = await _get_session_or_404(session_id)
     if session.get("parallel_parent_id"):
         _raise_session_action_error(
             409,
@@ -2120,9 +2252,7 @@ async def ep_continue_session(session_id: str, req: MessageRequest):
 
 @router.post("/session/{session_id}/control")
 async def ep_session_control(session_id: str, req: ControlRequest):
-    session = store.get(session_id)
-    if not session:
-        raise HTTPException(404, f"Session not found: {session_id}")
+    session = await _get_session_or_404(session_id)
 
     action = req.action.strip().lower()
     if session.get("parallel_parent_id"):
@@ -2544,7 +2674,8 @@ async def ep_guardrail_audit(limit: int = 100, tool_id: str | None = None):
 
 @router.get("/settings/workspaces")
 async def ep_list_workspaces():
-    return [_workspace_preset_to_dict(preset) for preset in store.list_workspaces()]
+    presets = await _run_sync(store.list_workspaces)
+    return [_workspace_preset_to_dict(preset) for preset in presets]
 
 
 @router.post("/settings/workspaces")
@@ -2554,7 +2685,8 @@ async def ep_add_workspace(preset: WorkspacePreset):
     errors = _validate_workspace_paths_exist(preset.paths)
     if errors:
         raise HTTPException(422, {"message": "Invalid workspace paths", "errors": errors})
-    return _workspace_preset_to_dict(store.add_workspace(preset))
+    created = await _run_sync(store.add_workspace, preset)
+    return _workspace_preset_to_dict(created)
 
 
 @router.put("/settings/workspaces/{workspace_id}")
@@ -2563,7 +2695,7 @@ async def ep_update_workspace(workspace_id: str, updates: dict):
         errors = _validate_workspace_paths_exist(list(updates.get("paths") or []))
         if errors:
             raise HTTPException(422, {"message": "Invalid workspace paths", "errors": errors})
-    updated = store.update_workspace(workspace_id, updates)
+    updated = await _run_sync(store.update_workspace, workspace_id, updates)
     if not updated:
         raise HTTPException(404, f"Workspace preset not found: {workspace_id}")
     return _workspace_preset_to_dict(updated)
@@ -2571,7 +2703,7 @@ async def ep_update_workspace(workspace_id: str, updates: dict):
 
 @router.delete("/settings/workspaces/{workspace_id}")
 async def ep_delete_workspace(workspace_id: str):
-    if not store.delete_workspace(workspace_id):
+    if not await _run_sync(store.delete_workspace, workspace_id):
         raise HTTPException(404, f"Workspace preset not found: {workspace_id}")
     return {"status": "deleted"}
 
