@@ -1,9 +1,11 @@
 """Lossless adapter: converts Quorum ExecutionBrief (dataclass) → ExecutionBriefV2 (Pydantic)."""
+
 from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
 
+from founderos_contracts.citations import Citation
 from founderos_contracts.brief_v2 import (
     ApprovalPolicy,
     BudgetPolicy,
@@ -52,6 +54,48 @@ def _convert_evidence_bundle(bundle: SharedEvidenceBundle) -> EvidenceBundle:
     )
 
 
+def _convert_citations(bundle: SharedEvidenceBundle | None) -> list[Citation]:
+    if bundle is None:
+        return []
+
+    citations: list[Citation] = []
+    for item in bundle.items:
+        title = str(
+            item.summary or item.source or item.kind or item.evidence_id
+        ).strip()
+        if not title:
+            title = item.evidence_id
+
+        url = ""
+        for candidate in (item.source, item.artifact_path):
+            text = str(candidate or "").strip()
+            if text.startswith(("http://", "https://")):
+                url = text
+                break
+
+        note_parts: list[str] = []
+        source = str(item.source or "").strip()
+        artifact_path = str(item.artifact_path or "").strip()
+        if source and source != url:
+            note_parts.append(f"source={source}")
+        if artifact_path and artifact_path != url:
+            note_parts.append(f"artifact={artifact_path}")
+        if item.tags:
+            note_parts.append(f"tags={', '.join(item.tags[:5])}")
+
+        citations.append(
+            Citation(
+                citation_id=item.evidence_id,
+                title=title,
+                url=url,
+                source_type=item.kind,
+                quoted_text=str(item.raw_content or ""),
+                note="; ".join(note_parts),
+            )
+        )
+    return citations
+
+
 def shared_brief_to_v2(
     brief: ExecutionBrief,
     *,
@@ -92,6 +136,8 @@ def shared_brief_to_v2(
     evidence = (
         _convert_evidence_bundle(brief.evidence) if brief.evidence is not None else None
     )
+    citations = _convert_citations(brief.evidence)
+    source_pack_ref = brief.evidence.bundle_id if brief.evidence is not None else None
 
     return ExecutionBriefV2(
         schema_version="2.0",
@@ -106,14 +152,16 @@ def shared_brief_to_v2(
         research_summary=brief.simulation_summary or "",
         success_criteria=list(brief.acceptance_criteria),
         budget_policy=BudgetPolicy(tier=brief.budget_tier.value),
-        approval_policy=ApprovalPolicy(founder_approval_required=founder_approval_required),
+        approval_policy=ApprovalPolicy(
+            founder_approval_required=founder_approval_required
+        ),
         recommended_tech_stack=list(brief.recommended_tech_stack),
         story_breakdown=story_breakdown,
         risks=risks,
         repo_dna_snapshot=brief.repo_dna_snapshot,
         evidence=evidence,
-        citations=[],
-        source_pack_ref=None,
+        citations=citations,
+        source_pack_ref=source_pack_ref,
         repo_instruction_refs=[],
         brief_approval_status=brief_approval_status,
         approved_at=approved_at,

@@ -1,4 +1,5 @@
 """Tests for the Quorum → ExecutionBriefV2 lossless adapter."""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -75,7 +76,9 @@ def _make_full_brief() -> ExecutionBrief:
 def test_shared_brief_to_v2_preserves_all_fields() -> None:
     """Every field from the source brief should appear correctly in the V2 output."""
     brief = _make_full_brief()
-    v2 = shared_brief_to_v2(brief, initiative_id="init-99", option_id="opt-1", decision_id="dec-7")
+    v2 = shared_brief_to_v2(
+        brief, initiative_id="init-99", option_id="opt-1", decision_id="dec-7"
+    )
 
     assert v2.schema_version == "2.0"
     assert v2.brief_id == "brief-001"
@@ -108,9 +111,11 @@ def test_shared_brief_to_v2_preserves_all_fields() -> None:
     assert v2.created_at == datetime(2024, 6, 1, tzinfo=timezone.utc)
     assert v2.updated_at is not None
 
-    # New fields default to empty
-    assert v2.citations == []
-    assert v2.source_pack_ref is None
+    # New fields should be derived from existing evidence when available
+    assert len(v2.citations) == 1
+    assert v2.citations[0].citation_id == "ei-001"
+    assert v2.citations[0].title == "Strong PMF signals in SMB segment"
+    assert v2.source_pack_ref == "eb-001"
     assert v2.repo_instruction_refs == []
     assert v2.brief_approval_status == "pending"
 
@@ -124,8 +129,13 @@ def test_shared_brief_to_v2_does_not_lose_stories() -> None:
     story = v2.story_breakdown[0]
 
     assert story.title == "User can log in"
-    assert story.description == "As a user I want to log in so I can access my dashboard"
-    assert story.acceptance_criteria == ["Login form appears", "Valid credentials grant access"]
+    assert (
+        story.description == "As a user I want to log in so I can access my dashboard"
+    )
+    assert story.acceptance_criteria == [
+        "Login form appears",
+        "Valid credentials grant access",
+    ]
     assert story.effort == "small"
 
 
@@ -150,6 +160,15 @@ def test_shared_brief_to_v2_converts_evidence() -> None:
     assert item.source == "primary_research"
     assert item.confidence == 0.9  # HIGH → 0.9
     assert item.tags == ["smb", "pmf"]
+
+    assert len(v2.citations) == 1
+    citation = v2.citations[0]
+    assert citation.citation_id == "ei-001"
+    assert citation.source_type == "market_research"
+    assert citation.url == ""
+    assert citation.quoted_text == "Full raw text here"
+    assert "source=primary_research" in citation.note
+    assert "artifact=/artifacts/research.md" in citation.note
 
 
 def test_shared_brief_to_v2_handles_none_evidence() -> None:
